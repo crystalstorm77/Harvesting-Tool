@@ -37,7 +37,7 @@ ART_STATE_BOTTOM_RATIO = 0.88
 ART_STATE_VALIDATION_WINDOW_FRAMES = 15 * FRAME_RATE
 ART_STATE_BASELINE_MAX_SAMPLES = 15
 ART_STATE_MIN_RATIO = 0.015
-ART_STATE_MIN_BLOCKS = 10
+ART_STATE_MIN_BLOCKS = 18
 ART_STATE_REVEAL_WINDOW_FRAMES = 3 * FRAME_RATE
 OVERLAY_COMPACT_BLOCKS = 18
 OVERLAY_POST_INSTABILITY_RATIO = 0.008
@@ -672,13 +672,45 @@ def collect_window_samples(
     ]
 
 
+def is_meaningful_update_signal(
+    adjacent_ratio: float,
+    persistent_ratio: float,
+    settings: DetectorSettings,
+) -> bool:
+    return (
+        persistent_ratio >= compute_weak_ratio_threshold(settings)
+        or adjacent_ratio >= compute_weak_ratio_threshold(settings) * 4
+    )
+
+
+def find_effective_update_end(
+    burst_start: int,
+    burst_end: int,
+    signal_rows: list[dict[str, float | int]],
+    settings: DetectorSettings,
+) -> int:
+    burst_rows = [row for row in signal_rows if burst_start <= int(row["frame_index"]) <= burst_end]
+    if not burst_rows:
+        return burst_end
+
+    effective_end = burst_end
+    for row in reversed(burst_rows):
+        adjacent_ratio = float(row["adjacent_ratio"])
+        persistent_ratio = float(row["persistent_ratio"])
+        if is_meaningful_update_signal(adjacent_ratio, persistent_ratio, settings):
+            effective_end = int(row["frame_index"]) + settings.sample_stride
+            break
+    return min(burst_end, max(burst_start, effective_end))
+
+
 def build_art_state_windows(
     burst_index: int,
     merged_bursts: list[tuple[int, int]],
+    effective_update_end: int,
     chapter_range: ChapterRange,
     settings: DetectorSettings,
 ) -> tuple[tuple[int, int], tuple[int, int]]:
-    burst_start, burst_end = merged_bursts[burst_index]
+    burst_start, _ = merged_bursts[burst_index]
     previous_end = chapter_range.start.total_frames
     next_start = chapter_range.end.total_frames
     if burst_index > 0:
@@ -688,24 +720,25 @@ def build_art_state_windows(
 
     pre_window_start = max(previous_end, burst_start - ART_STATE_VALIDATION_WINDOW_FRAMES)
     pre_window_end = max(pre_window_start, burst_start)
-    post_window_start = min(next_start, burst_end + settings.sample_stride)
-    post_window_end = min(next_start, burst_end + ART_STATE_VALIDATION_WINDOW_FRAMES)
+    post_window_start = min(next_start, effective_update_end + settings.sample_stride)
+    post_window_end = min(next_start, effective_update_end + ART_STATE_VALIDATION_WINDOW_FRAMES)
     return (pre_window_start, pre_window_end), (post_window_start, post_window_end)
-
 
 
 def build_reveal_window(
     burst_index: int,
     merged_bursts: list[tuple[int, int]],
     chapter_range: ChapterRange,
-    post_window_end: int,
+    effective_update_end: int,
+    raw_burst_end: int,
 ) -> tuple[int, int]:
-    reveal_start = post_window_end
+    reveal_start = max(raw_burst_end, effective_update_end)
     reveal_limit = chapter_range.end.total_frames
     if burst_index + 2 < len(merged_bursts):
         reveal_limit = merged_bursts[burst_index + 2][0]
     reveal_end = min(reveal_limit, reveal_start + ART_STATE_REVEAL_WINDOW_FRAMES)
     return reveal_start, max(reveal_start, reveal_end)
+
 
 def summarize_burst_signal(
     burst_start: int,
@@ -731,9 +764,16 @@ def validate_merged_burst_art_state(
     cv2,
 ) -> dict[str, object]:
     burst_start, burst_end = merged_bursts[burst_index]
+    effective_update_end = find_effective_update_end(
+        burst_start=burst_start,
+        burst_end=burst_end,
+        signal_rows=signal_rows,
+        settings=settings,
+    )
     (pre_window_start, pre_window_end), (post_window_start, post_window_end) = build_art_state_windows(
         burst_index=burst_index,
         merged_bursts=merged_bursts,
+        effective_update_end=effective_update_end,
         chapter_range=chapter_range,
         settings=settings,
     )
@@ -741,8 +781,10 @@ def validate_merged_burst_art_state(
         burst_index=burst_index,
         merged_bursts=merged_bursts,
         chapter_range=chapter_range,
-        post_window_end=post_window_end,
+        effective_update_end=effective_update_end,
+        raw_burst_end=burst_end,
     )
+    idle_hold_frames = max(0, burst_end - effective_update_end)
 
     pre_samples = collect_window_samples(sampled_frames, pre_window_start, pre_window_end)
     post_samples = collect_window_samples(sampled_frames, post_window_start, post_window_end)
@@ -761,6 +803,9 @@ def validate_merged_burst_art_state(
             'overlay_like': False,
             'reveal_ratio': 0.0,
             'reveal_recovery_ratio': 0.0,
+            'effective_update_end': Timecode(total_frames=effective_update_end).to_hhmmssff(),
+            'idle_hold_duration': Timecode(total_frames=idle_hold_frames).to_hhmmssff(),
+            'trimmed_idle_hold': idle_hold_frames > 0,
             'mean_adjacent_ratio': mean_adjacent_ratio,
             'peak_persistent_ratio': peak_persistent_ratio,
             'pre_window_start': Timecode(total_frames=pre_window_start).to_hhmmssff(),
@@ -818,6 +863,9 @@ def validate_merged_burst_art_state(
         'overlay_like': overlay_like,
         'reveal_ratio': reveal_ratio,
         'reveal_recovery_ratio': reveal_recovery_ratio,
+        'effective_update_end': Timecode(total_frames=effective_update_end).to_hhmmssff(),
+        'idle_hold_duration': Timecode(total_frames=idle_hold_frames).to_hhmmssff(),
+        'trimmed_idle_hold': idle_hold_frames > 0,
         'mean_adjacent_ratio': mean_adjacent_ratio,
         'peak_persistent_ratio': peak_persistent_ratio,
         'pre_window_start': Timecode(total_frames=pre_window_start).to_hhmmssff(),
@@ -1065,6 +1113,9 @@ def detect_activity_bursts(
                     'overlay_like': bool(validation['overlay_like']),
                     'reveal_ratio': round(float(validation['reveal_ratio']), 6),
                     'reveal_recovery_ratio': round(float(validation['reveal_recovery_ratio']), 6),
+                      'effective_update_end': validation['effective_update_end'],
+                      'idle_hold_duration': validation['idle_hold_duration'],
+                      'trimmed_idle_hold': bool(validation['trimmed_idle_hold']),
                     'mean_adjacent_ratio': round(float(validation['mean_adjacent_ratio']), 6),
                     'peak_persistent_ratio': round(float(validation['peak_persistent_ratio']), 6),
                     'pre_window_start': validation['pre_window_start'],
@@ -1103,6 +1154,8 @@ def detect_candidate_clips(
         debug_bundle=debug_bundle,
     )
     return build_candidate_clips(str(video_path), chapter_range, bursts, settings, debug_bundle=debug_bundle)
+
+
 
 
 

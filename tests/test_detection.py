@@ -19,6 +19,7 @@ from harvesting_tool.detection import (
     backtrack_event_start,
     build_art_state_windows,
     build_reveal_window,
+    find_effective_update_end,
     build_candidate_clips,
     build_cut_list_payload,
     classify_activity_signal,
@@ -222,6 +223,7 @@ class CandidateClipTests(unittest.TestCase):
         (pre_start, pre_end), (post_start, post_end) = build_art_state_windows(
             burst_index=1,
             merged_bursts=merged_bursts,
+            effective_update_end=660,
             chapter_range=chapter,
             settings=settings,
         )
@@ -239,11 +241,30 @@ class CandidateClipTests(unittest.TestCase):
             burst_index=1,
             merged_bursts=merged_bursts,
             chapter_range=chapter,
-            post_window_end=900,
+            effective_update_end=900,
+            raw_burst_end=930,
         )
 
-        self.assertEqual(reveal_start, 900)
-        self.assertEqual(reveal_end, min(1200, 900 + ART_STATE_REVEAL_WINDOW_FRAMES))
+        self.assertEqual(reveal_start, 930)
+        self.assertEqual(reveal_end, min(1200, 930 + ART_STATE_REVEAL_WINDOW_FRAMES))
+
+    def test_effective_update_end_trims_idle_hold_tail(self) -> None:
+        settings = make_settings()
+        signal_rows = [
+            {'frame_index': 300, 'adjacent_ratio': 0.01, 'persistent_ratio': 0.004},
+            {'frame_index': 303, 'adjacent_ratio': 0.009, 'persistent_ratio': 0.003},
+            {'frame_index': 306, 'adjacent_ratio': 0.0, 'persistent_ratio': 0.0},
+            {'frame_index': 309, 'adjacent_ratio': 0.0, 'persistent_ratio': 0.0},
+        ]
+
+        effective_end = find_effective_update_end(
+            burst_start=300,
+            burst_end=312,
+            signal_rows=signal_rows,
+            settings=settings,
+        )
+
+        self.assertEqual(effective_end, 306)
 # ============================================================
 # SECTION D - File Writing Tests
 # ============================================================
@@ -271,5 +292,7 @@ class CutListWritingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 

@@ -46,22 +46,13 @@ Clip 5
 Clip 6
   Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample.mp4
   Chapter: 00:00:00:00 -> 00:02:03:14
-  Activity: 00:01:19:22 -> 00:01:25:05
-  Clip: 00:01:19:20 -> 00:01:25:09
-  Duration: 00:00:05:19
-  Lead-in: 0s 2f
-  Tail-after: 0s 4f
-
-Clip 7
-  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample.mp4
-  Chapter: 00:00:00:00 -> 00:02:03:14
   Activity: 00:01:45:04 -> 00:01:50:15
   Clip: 00:01:45:02 -> 00:01:50:19
   Duration: 00:00:05:17
   Lead-in: 0s 2f
   Tail-after: 0s 4f
 
-Clip 8
+Clip 7
   Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample.mp4
   Chapter: 00:00:00:00 -> 00:02:03:14
   Activity: 00:01:56:04 -> 00:01:59:17
