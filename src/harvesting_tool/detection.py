@@ -26,9 +26,14 @@ MAX_ACTIVE_RATIO = 0.18
 PROGRESS_STEP_PERCENT = 5
 TOTAL_GRID_BLOCKS = GRID_ROWS * GRID_COLUMNS
 BACKTRACK_BUFFER_SAMPLES = 20
-END_INACTIVE_SAMPLES = 3
+ENTER_TRAIL_EXCESS_BLOCKS = 4
+REMAIN_TRAIL_EXCESS_BLOCKS = 3
+ENTER_ADJACENT_BLOCK_SUPPORT = 6
+REMAIN_ADJACENT_BLOCK_SUPPORT = 5
+END_INACTIVE_SAMPLES = 2
 PERSISTENT_MOTION_RATIO = 0.55
 SECONDARY_PERSISTENT_MOTION_RATIO = 0.35
+TRAIL_MASK_WINDOW = 4
 
 ART_STATE_LEFT_RATIO = 0.20
 ART_STATE_TOP_RATIO = 0.12
@@ -42,6 +47,9 @@ ART_STATE_REVEAL_WINDOW_FRAMES = 3 * FRAME_RATE
 OVERLAY_COMPACT_BLOCKS = 18
 OVERLAY_POST_INSTABILITY_RATIO = 0.008
 VALIDATION_MERGE_GAP_FRAMES = FRAME_RATE
+ART_STATE_SUBWINDOW_FRAMES = FRAME_RATE
+ART_STATE_SUBWINDOW_STEP_FRAMES = FRAME_RATE // 2
+ART_STATE_ONSET_RECOVERY_WINDOWS = 2
 # ============================================================
 # SECTION B - Timecode And Clip Data Structures
 # ============================================================
@@ -162,6 +170,11 @@ class SampleDebugRow:
     timecode: str
     adjacent_change_score: float
     persistent_change_score: float
+    adjacent_blocks: int
+    persistent_blocks: int
+    trail_blocks: int
+    trail_excess_blocks: int
+    trail_persistent_ratio: float
     locality_score: float
     global_change_score: float
     enter_active: bool
@@ -257,6 +270,11 @@ def write_debug_artifacts(debug_stem: Path, debug_bundle: DetectionDebugBundle) 
                 "timecode",
                 "adjacent_change_score",
                 "persistent_change_score",
+                "adjacent_blocks",
+                "persistent_blocks",
+                "trail_blocks",
+                "trail_excess_blocks",
+                "trail_persistent_ratio",
                 "locality_score",
                 "global_change_score",
                 "enter_active",
@@ -274,6 +292,11 @@ def write_debug_artifacts(debug_stem: Path, debug_bundle: DetectionDebugBundle) 
                     "timecode": row.timecode,
                     "adjacent_change_score": f"{row.adjacent_change_score:.6f}",
                     "persistent_change_score": f"{row.persistent_change_score:.6f}",
+                    "adjacent_blocks": str(row.adjacent_blocks),
+                    "persistent_blocks": str(row.persistent_blocks),
+                    "trail_blocks": str(row.trail_blocks),
+                    "trail_excess_blocks": str(row.trail_excess_blocks),
+                    "trail_persistent_ratio": f"{row.trail_persistent_ratio:.6f}",
                     "locality_score": f"{row.locality_score:.6f}",
                     "global_change_score": f"{row.global_change_score:.6f}",
                     "enter_active": str(row.enter_active),
@@ -368,10 +391,11 @@ def build_candidate_clips(
     bursts: Iterable[tuple[int, int]],
     settings: DetectorSettings,
     debug_bundle: DetectionDebugBundle | None = None,
+    trust_burst_boundaries: bool = False,
 ) -> list[CandidateClip]:
     clips: list[CandidateClip] = []
     normalized_bursts = normalize_activity_bursts(bursts, settings.min_burst_length)
-    merged_bursts = merge_activity_bursts(normalized_bursts, settings.pause_threshold)
+    merged_bursts = normalized_bursts if trust_burst_boundaries else merge_activity_bursts(normalized_bursts, settings.pause_threshold)
     if debug_bundle is not None and not debug_bundle.merged_bursts:
         debug_bundle.merged_bursts = [
             {
@@ -454,11 +478,28 @@ def is_weak_art_change_signal(
     )
 
 
+def has_structural_activity_support(
+    adjacent_blocks: int,
+    trail_excess_blocks: int,
+    entering: bool,
+) -> bool:
+    if entering:
+        return (
+            adjacent_blocks >= ENTER_ADJACENT_BLOCK_SUPPORT
+            or trail_excess_blocks >= ENTER_TRAIL_EXCESS_BLOCKS
+        )
+    return (
+        adjacent_blocks >= REMAIN_ADJACENT_BLOCK_SUPPORT
+        or trail_excess_blocks >= REMAIN_TRAIL_EXCESS_BLOCKS
+    )
+
+
 def should_enter_active_state(
     adjacent_ratio: float,
     persistent_ratio: float,
     adjacent_blocks: int,
     persistent_blocks: int,
+    trail_excess_blocks: int,
     settings: DetectorSettings,
 ) -> bool:
     enter_threshold = compute_enter_ratio_threshold(settings)
@@ -468,6 +509,11 @@ def should_enter_active_state(
         and persistent_blocks >= 2
         and persistent_blocks <= MAX_ACTIVE_BLOCKS
         and adjacent_ratio <= MAX_ACTIVE_RATIO
+        and has_structural_activity_support(
+            adjacent_blocks=adjacent_blocks,
+            trail_excess_blocks=trail_excess_blocks,
+            entering=True,
+        )
     )
 
 
@@ -476,15 +522,21 @@ def should_remain_active_state(
     persistent_ratio: float,
     adjacent_blocks: int,
     persistent_blocks: int,
+    trail_excess_blocks: int,
     settings: DetectorSettings,
 ) -> bool:
     remain_threshold = compute_remain_ratio_threshold(settings)
     return (
         persistent_ratio >= remain_threshold
         and persistent_ratio <= MAX_ACTIVE_RATIO
-        and persistent_blocks >= 1
+        and persistent_blocks >= 2
         and persistent_blocks <= MAX_ACTIVE_BLOCKS
         and adjacent_ratio <= MAX_ACTIVE_RATIO
+        and has_structural_activity_support(
+            adjacent_blocks=adjacent_blocks,
+            trail_excess_blocks=trail_excess_blocks,
+            entering=False,
+        )
     )
 
 
@@ -493,6 +545,7 @@ def classify_activity_signal(
     persistent_ratio: float,
     adjacent_blocks: int,
     persistent_blocks: int,
+    trail_excess_blocks: int,
     settings: DetectorSettings,
 ) -> bool:
     return should_enter_active_state(
@@ -500,6 +553,7 @@ def classify_activity_signal(
         persistent_ratio=persistent_ratio,
         adjacent_blocks=adjacent_blocks,
         persistent_blocks=persistent_blocks,
+        trail_excess_blocks=trail_excess_blocks,
         settings=settings,
     )
 
@@ -537,6 +591,11 @@ def append_sample_debug_row(
     current_frame: int,
     adjacent_change_score: float,
     persistent_change_score: float,
+    adjacent_blocks: int,
+    persistent_blocks: int,
+    trail_blocks: int,
+    trail_excess_blocks: int,
+    trail_persistent_ratio: float,
     locality_score: float,
     global_change_score: float,
     enter_active: bool,
@@ -554,6 +613,11 @@ def append_sample_debug_row(
             timecode=Timecode(total_frames=current_frame).to_hhmmssff(),
             adjacent_change_score=adjacent_change_score,
             persistent_change_score=persistent_change_score,
+            adjacent_blocks=adjacent_blocks,
+            persistent_blocks=persistent_blocks,
+            trail_blocks=trail_blocks,
+            trail_excess_blocks=trail_excess_blocks,
+            trail_persistent_ratio=trail_persistent_ratio,
             locality_score=locality_score,
             global_change_score=global_change_score,
             enter_active=enter_active,
@@ -606,6 +670,16 @@ def build_persistent_change_mask(previous_gray, current_gray, next_gray, setting
     )
     _, persistent_mask = cv2.threshold(persistent_mask, 127, 255, cv2.THRESH_BINARY)
     return prev_current_mask, persistent_mask
+
+
+def build_trail_mask(recent_persistent_masks: Iterable[object], cv2):
+    trail_mask = None
+    for mask in recent_persistent_masks:
+        if trail_mask is None:
+            trail_mask = mask.copy()
+        else:
+            trail_mask = cv2.bitwise_or(trail_mask, mask)
+    return trail_mask
 
 
 def build_art_state_change_mask(baseline_art_gray, current_art_gray, settings: DetectorSettings, cv2):
@@ -738,22 +812,217 @@ def build_reveal_window(
         reveal_limit = merged_bursts[burst_index + 2][0]
     reveal_end = min(reveal_limit, reveal_start + ART_STATE_REVEAL_WINDOW_FRAMES)
     return reveal_start, max(reveal_start, reveal_end)
-
-
 def summarize_burst_signal(
     burst_start: int,
     burst_end: int,
     signal_rows: list[dict[str, float | int]],
-) -> tuple[float, float]:
+) -> tuple[float, float, float, float, float, float, float]:
     burst_rows = [row for row in signal_rows if burst_start <= int(row['frame_index']) <= burst_end]
     if not burst_rows:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     mean_adjacent_ratio = sum(float(row['adjacent_ratio']) for row in burst_rows) / len(burst_rows)
     peak_persistent_ratio = max(float(row['persistent_ratio']) for row in burst_rows)
-    return mean_adjacent_ratio, peak_persistent_ratio
+    mean_adjacent_blocks = sum(int(row['adjacent_blocks']) for row in burst_rows) / len(burst_rows)
+    mean_persistent_blocks = sum(int(row['persistent_blocks']) for row in burst_rows) / len(burst_rows)
+    mean_trail_blocks = sum(int(row['trail_blocks']) for row in burst_rows) / len(burst_rows)
+    mean_trail_excess_blocks = sum(int(row['trail_excess_blocks']) for row in burst_rows) / len(burst_rows)
+    mean_trail_persistent_ratio = sum(float(row['trail_persistent_ratio']) for row in burst_rows) / len(burst_rows)
+    return (
+        mean_adjacent_ratio,
+        peak_persistent_ratio,
+        mean_adjacent_blocks,
+        mean_persistent_blocks,
+        mean_trail_blocks,
+        mean_trail_excess_blocks,
+        mean_trail_persistent_ratio,
+    )
 
 
+def compute_required_art_state_ratio(mean_adjacent_ratio: float, settings: DetectorSettings) -> float:
+    return max(
+        ART_STATE_MIN_RATIO,
+        compute_enter_ratio_threshold(settings) * 0.5,
+        mean_adjacent_ratio * 0.08,
+    )
+
+
+def evaluate_art_state_transition(
+    pre_baseline,
+    post_baseline,
+    post_samples: list[dict[str, object]],
+    reveal_baseline,
+    required_ratio: float,
+    settings: DetectorSettings,
+    cv2,
+) -> dict[str, object]:
+    if pre_baseline is None or post_baseline is None:
+        return {
+            'validated': False,
+            'art_state_ratio': 0.0,
+            'art_state_blocks': 0,
+            'overlay_instability_ratio': 0.0,
+            'overlay_like': False,
+            'reveal_ratio': 0.0,
+            'reveal_recovery_ratio': 0.0,
+        }
+
+    art_state_mask = build_art_state_change_mask(pre_baseline, post_baseline, settings, cv2)
+    art_state_ratio = float(art_state_mask.mean()) / 255.0
+    art_state_blocks = count_active_blocks(art_state_mask)
+    overlay_instability_ratio = compute_overlay_instability_ratio(
+        changed_mask=art_state_mask,
+        post_baseline=post_baseline,
+        post_samples=post_samples,
+        settings=settings,
+        cv2=cv2,
+    )
+    reveal_ratio = 0.0
+    reveal_recovery_ratio = 1.0
+    if reveal_baseline is not None:
+        reveal_mask = build_art_state_change_mask(post_baseline, reveal_baseline, settings, cv2)
+        focused_reveal_mask = cv2.bitwise_and(reveal_mask, art_state_mask)
+        reveal_ratio = float(focused_reveal_mask.mean()) / 255.0
+        reveal_recovery_mask = build_art_state_change_mask(pre_baseline, reveal_baseline, settings, cv2)
+        focused_recovery_mask = cv2.bitwise_and(reveal_recovery_mask, art_state_mask)
+        reveal_recovery_ratio = float(focused_recovery_mask.mean()) / 255.0
+    overlay_like = (
+        art_state_blocks <= OVERLAY_COMPACT_BLOCKS
+        and (
+            overlay_instability_ratio >= OVERLAY_POST_INSTABILITY_RATIO
+            or (reveal_ratio >= art_state_ratio * 0.45 and reveal_recovery_ratio <= art_state_ratio * 0.35)
+        )
+    )
+    validated = (
+        art_state_ratio >= required_ratio
+        and art_state_blocks >= ART_STATE_MIN_BLOCKS
+        and not overlay_like
+    )
+    return {
+        'validated': validated,
+        'art_state_ratio': art_state_ratio,
+        'art_state_blocks': art_state_blocks,
+        'overlay_instability_ratio': overlay_instability_ratio,
+        'overlay_like': overlay_like,
+        'reveal_ratio': reveal_ratio,
+        'reveal_recovery_ratio': reveal_recovery_ratio,
+    }
+
+
+def build_subwindow_ranges(burst_start: int, burst_end: int) -> list[tuple[int, int]]:
+    subwindows: list[tuple[int, int]] = []
+    window_start = burst_start
+    while window_start < burst_end:
+        window_end = min(burst_end, window_start + ART_STATE_SUBWINDOW_FRAMES)
+        if window_end <= window_start:
+            break
+        subwindows.append((window_start, window_end))
+        if window_end >= burst_end:
+            break
+        window_start += ART_STATE_SUBWINDOW_STEP_FRAMES
+    return subwindows
+
+
+def merge_validated_subranges(
+    ranges: list[tuple[int, int]],
+    max_gap_frames: int,
+) -> list[tuple[int, int]]:
+    if not ranges:
+        return []
+
+    merged: list[tuple[int, int]] = [ranges[0]]
+    for start_frame, end_frame in ranges[1:]:
+        previous_start, previous_end = merged[-1]
+        if start_frame - previous_end <= max_gap_frames:
+            merged[-1] = (previous_start, max(previous_end, end_frame))
+        else:
+            merged.append((start_frame, end_frame))
+    return merged
+
+
+def has_localized_activity_support(
+    window_start: int,
+    window_end: int,
+    signal_rows: list[dict[str, float | int]],
+    settings: DetectorSettings,
+) -> bool:
+    for row in signal_rows:
+        frame_index = int(row['frame_index'])
+        if frame_index < window_start or frame_index >= window_end:
+            continue
+
+        adjacent_ratio = float(row['adjacent_ratio'])
+        persistent_ratio = float(row['persistent_ratio'])
+        adjacent_blocks = int(row['adjacent_blocks'])
+        persistent_blocks = int(row['persistent_blocks'])
+        trail_excess_blocks = int(row['trail_excess_blocks'])
+        if should_enter_active_state(
+            adjacent_ratio,
+            persistent_ratio,
+            adjacent_blocks,
+            persistent_blocks,
+            trail_excess_blocks,
+            settings,
+        ) or should_remain_active_state(
+            adjacent_ratio,
+            persistent_ratio,
+            adjacent_blocks,
+            persistent_blocks,
+            trail_excess_blocks,
+            settings,
+        ):
+            return True
+    return False
+
+
+def localize_validated_subranges(
+    pre_baseline,
+    burst_start: int,
+    effective_update_end: int,
+    next_boundary: int,
+    sampled_frames: list[dict[str, object]],
+    signal_rows: list[dict[str, float | int]],
+    required_ratio: float,
+    settings: DetectorSettings,
+    cv2,
+) -> dict[str, object]:
+    subwindow_ranges = build_subwindow_ranges(burst_start, effective_update_end)
+    validated_ranges: list[tuple[int, int]] = []
+
+    for window_start, window_end in subwindow_ranges:
+        window_samples = collect_window_samples(sampled_frames, window_start, window_end)
+        post_baseline = build_median_baseline(window_samples)
+        reveal_start = min(next_boundary, window_end)
+        reveal_end = min(next_boundary, window_end + ART_STATE_SUBWINDOW_FRAMES)
+        reveal_samples = collect_window_samples(sampled_frames, reveal_start, reveal_end)
+        reveal_baseline = build_median_baseline(reveal_samples)
+        evaluation = evaluate_art_state_transition(
+            pre_baseline=pre_baseline,
+            post_baseline=post_baseline,
+            post_samples=window_samples,
+            reveal_baseline=reveal_baseline,
+            required_ratio=required_ratio,
+            settings=settings,
+            cv2=cv2,
+        )
+        if bool(evaluation['validated']) and has_localized_activity_support(
+            window_start,
+            window_end,
+            signal_rows,
+            settings,
+        ):
+            recovered_start = max(
+                burst_start,
+                window_start - (ART_STATE_SUBWINDOW_FRAMES * ART_STATE_ONSET_RECOVERY_WINDOWS),
+            )
+            validated_ranges.append((recovered_start, window_end))
+
+    merged_ranges = merge_validated_subranges(validated_ranges, VALIDATION_MERGE_GAP_FRAMES)
+    return {
+        'subwindow_count': len(subwindow_ranges),
+        'validated_subwindow_count': len(validated_ranges),
+        'validated_ranges': merged_ranges,
+    }
 def validate_merged_burst_art_state(
     burst_index: int,
     merged_bursts: list[tuple[int, int]],
@@ -792,7 +1061,16 @@ def validate_merged_burst_art_state(
     pre_baseline = build_median_baseline(pre_samples)
     post_baseline = build_median_baseline(post_samples)
     reveal_baseline = build_median_baseline(reveal_samples)
-    mean_adjacent_ratio, peak_persistent_ratio = summarize_burst_signal(burst_start, burst_end, signal_rows)
+    (
+        mean_adjacent_ratio,
+        peak_persistent_ratio,
+        mean_adjacent_blocks,
+        mean_persistent_blocks,
+        mean_trail_blocks,
+        mean_trail_excess_blocks,
+        mean_trail_persistent_ratio,
+    ) = summarize_burst_signal(burst_start, burst_end, signal_rows)
+    required_ratio = compute_required_art_state_ratio(mean_adjacent_ratio, settings)
 
     if pre_baseline is None or post_baseline is None:
         return {
@@ -808,6 +1086,18 @@ def validate_merged_burst_art_state(
             'trimmed_idle_hold': idle_hold_frames > 0,
             'mean_adjacent_ratio': mean_adjacent_ratio,
             'peak_persistent_ratio': peak_persistent_ratio,
+            'mean_adjacent_blocks': mean_adjacent_blocks,
+            'mean_persistent_blocks': mean_persistent_blocks,
+            'mean_trail_blocks': mean_trail_blocks,
+            'mean_trail_excess_blocks': mean_trail_excess_blocks,
+            'mean_trail_persistent_ratio': mean_trail_persistent_ratio,
+            'validated_subrange_start': None,
+            'validated_subrange_end': None,
+            'validated_subrange_duration': None,
+            'validated_subrange_count': 0,
+            'subwindow_count': 0,
+            'validated_subwindow_count': 0,
+            'validated_subranges': [],
             'pre_window_start': Timecode(total_frames=pre_window_start).to_hhmmssff(),
             'pre_window_end': Timecode(total_frames=pre_window_end).to_hhmmssff(),
             'post_window_start': Timecode(total_frames=post_window_start).to_hhmmssff(),
@@ -819,55 +1109,74 @@ def validate_merged_burst_art_state(
             'reveal_sample_count': len(reveal_samples),
         }
 
-    art_state_mask = build_art_state_change_mask(pre_baseline, post_baseline, settings, cv2)
-    art_state_ratio = float(art_state_mask.mean()) / 255.0
-    art_state_blocks = count_active_blocks(art_state_mask)
-    overlay_instability_ratio = compute_overlay_instability_ratio(
-        changed_mask=art_state_mask,
+    full_evaluation = evaluate_art_state_transition(
+        pre_baseline=pre_baseline,
         post_baseline=post_baseline,
         post_samples=post_samples,
+        reveal_baseline=reveal_baseline,
+        required_ratio=required_ratio,
         settings=settings,
         cv2=cv2,
     )
-    reveal_ratio = 0.0
-    reveal_recovery_ratio = 1.0
-    if reveal_baseline is not None:
-        reveal_mask = build_art_state_change_mask(post_baseline, reveal_baseline, settings, cv2)
-        focused_reveal_mask = cv2.bitwise_and(reveal_mask, art_state_mask)
-        reveal_ratio = float(focused_reveal_mask.mean()) / 255.0
-        reveal_recovery_mask = build_art_state_change_mask(pre_baseline, reveal_baseline, settings, cv2)
-        focused_recovery_mask = cv2.bitwise_and(reveal_recovery_mask, art_state_mask)
-        reveal_recovery_ratio = float(focused_recovery_mask.mean()) / 255.0
-    overlay_like = (
-        art_state_blocks <= OVERLAY_COMPACT_BLOCKS
-        and (
-            overlay_instability_ratio >= OVERLAY_POST_INSTABILITY_RATIO
-            or (reveal_ratio >= art_state_ratio * 0.45 and reveal_recovery_ratio <= art_state_ratio * 0.35)
-        )
+    next_boundary = chapter_range.end.total_frames
+    if burst_index + 1 < len(merged_bursts):
+        next_boundary = merged_bursts[burst_index + 1][0]
+    localization = localize_validated_subranges(
+        pre_baseline=pre_baseline,
+        burst_start=burst_start,
+        effective_update_end=effective_update_end,
+        next_boundary=next_boundary,
+        sampled_frames=sampled_frames,
+        signal_rows=signal_rows,
+        required_ratio=required_ratio,
+        settings=settings,
+        cv2=cv2,
     )
-    required_ratio = max(
-        ART_STATE_MIN_RATIO,
-        compute_enter_ratio_threshold(settings) * 0.5,
-        mean_adjacent_ratio * 0.08,
+    localized_ranges = list(localization['validated_ranges'])
+    validated = bool(localized_ranges) or (
+        (effective_update_end - burst_start) <= ART_STATE_SUBWINDOW_FRAMES and bool(full_evaluation["validated"])
     )
-    validated = (
-        art_state_ratio >= required_ratio
-        and art_state_blocks >= ART_STATE_MIN_BLOCKS
-        and not overlay_like
-    )
+    localized_start = None
+    localized_end = None
+    localized_duration = None
+    if localized_ranges:
+        localized_start = Timecode(total_frames=localized_ranges[0][0]).to_hhmmssff()
+        localized_end = Timecode(total_frames=localized_ranges[-1][1]).to_hhmmssff()
+        localized_duration = Timecode(total_frames=localized_ranges[-1][1] - localized_ranges[0][0]).to_hhmmssff()
+
     return {
         'validated': validated,
-        'art_state_ratio': art_state_ratio,
-        'art_state_blocks': art_state_blocks,
-        'overlay_instability_ratio': overlay_instability_ratio,
-        'overlay_like': overlay_like,
-        'reveal_ratio': reveal_ratio,
-        'reveal_recovery_ratio': reveal_recovery_ratio,
+        'art_state_ratio': full_evaluation['art_state_ratio'],
+        'art_state_blocks': full_evaluation['art_state_blocks'],
+        'overlay_instability_ratio': full_evaluation['overlay_instability_ratio'],
+        'overlay_like': full_evaluation['overlay_like'],
+        'reveal_ratio': full_evaluation['reveal_ratio'],
+        'reveal_recovery_ratio': full_evaluation['reveal_recovery_ratio'],
         'effective_update_end': Timecode(total_frames=effective_update_end).to_hhmmssff(),
         'idle_hold_duration': Timecode(total_frames=idle_hold_frames).to_hhmmssff(),
         'trimmed_idle_hold': idle_hold_frames > 0,
         'mean_adjacent_ratio': mean_adjacent_ratio,
         'peak_persistent_ratio': peak_persistent_ratio,
+        'mean_adjacent_blocks': mean_adjacent_blocks,
+        'mean_persistent_blocks': mean_persistent_blocks,
+        'mean_trail_blocks': mean_trail_blocks,
+        'mean_trail_excess_blocks': mean_trail_excess_blocks,
+        'mean_trail_persistent_ratio': mean_trail_persistent_ratio,
+        'validated_subrange_start': localized_start,
+        'validated_subrange_end': localized_end,
+        'validated_subrange_duration': localized_duration,
+        'validated_subrange_count': len(localized_ranges),
+        'subwindow_count': int(localization['subwindow_count']),
+        'validated_subwindow_count': int(localization['validated_subwindow_count']),
+        'validated_subranges': [
+            {
+                'start': Timecode(total_frames=start_frame).to_hhmmssff(),
+                'end': Timecode(total_frames=end_frame).to_hhmmssff(),
+                'duration': Timecode(total_frames=end_frame - start_frame).to_hhmmssff(),
+            }
+            for start_frame, end_frame in localized_ranges
+        ],
+        'validated_ranges_frames': localized_ranges,
         'pre_window_start': Timecode(total_frames=pre_window_start).to_hhmmssff(),
         'pre_window_end': Timecode(total_frames=pre_window_end).to_hhmmssff(),
         'post_window_start': Timecode(total_frames=post_window_start).to_hhmmssff(),
@@ -908,6 +1217,7 @@ def detect_activity_bursts(
     sampled_frames: deque[dict[str, object]] = deque(maxlen=3)
     sampled_frame_history: list[dict[str, object]] = []
     signal_rows: list[dict[str, float | int]] = []
+    recent_persistent_masks: deque[object] = deque(maxlen=TRAIL_MASK_WINDOW)
 
     def process_sample_window(
         previous_sample: dict[str, object],
@@ -932,8 +1242,13 @@ def detect_activity_bursts(
         )
         adjacent_change_score = float(adjacent_mask.mean()) / 255.0
         persistent_change_score = float(persistent_mask.mean()) / 255.0
+        recent_persistent_masks.append(persistent_mask.copy())
+        trail_mask = build_trail_mask(recent_persistent_masks, cv2)
         adjacent_blocks = count_active_blocks(adjacent_mask)
         persistent_blocks = count_active_blocks(persistent_mask)
+        trail_blocks = count_active_blocks(trail_mask) if trail_mask is not None else 0
+        trail_excess_blocks = max(0, trail_blocks - persistent_blocks)
+        trail_persistent_ratio = trail_blocks / max(1, persistent_blocks)
         locality_score = persistent_blocks / TOTAL_GRID_BLOCKS
         global_change_score = adjacent_change_score
         enter_active = False
@@ -954,6 +1269,11 @@ def detect_activity_bursts(
                 'frame_index': current_frame,
                 'adjacent_ratio': adjacent_change_score,
                 'persistent_ratio': persistent_change_score,
+                'adjacent_blocks': adjacent_blocks,
+                'persistent_blocks': persistent_blocks,
+                'trail_blocks': trail_blocks,
+                'trail_excess_blocks': trail_excess_blocks,
+                'trail_persistent_ratio': trail_persistent_ratio,
             }
         )
 
@@ -963,6 +1283,7 @@ def detect_activity_bursts(
                 persistent_ratio=persistent_change_score,
                 adjacent_blocks=adjacent_blocks,
                 persistent_blocks=persistent_blocks,
+                trail_excess_blocks=trail_excess_blocks,
                 settings=settings,
             ):
                 enter_active = True
@@ -976,6 +1297,7 @@ def detect_activity_bursts(
                 persistent_ratio=persistent_change_score,
                 adjacent_blocks=adjacent_blocks,
                 persistent_blocks=persistent_blocks,
+                trail_excess_blocks=trail_excess_blocks,
                 settings=settings,
             ):
                 remain_active = True
@@ -993,13 +1315,19 @@ def detect_activity_bursts(
 
         notes = (
             f"adjacent_blocks={adjacent_blocks};persistent_blocks={persistent_blocks};"
-            f"inactive_samples={inactive_samples_value}"
+            f"trail_blocks={trail_blocks};trail_excess_blocks={trail_excess_blocks};"
+            f"trail_persistent_ratio={trail_persistent_ratio:.3f};inactive_samples={inactive_samples_value}"
         )
         append_sample_debug_row(
             debug_bundle=debug_bundle,
             current_frame=current_frame,
             adjacent_change_score=adjacent_change_score,
             persistent_change_score=persistent_change_score,
+            adjacent_blocks=adjacent_blocks,
+            persistent_blocks=persistent_blocks,
+            trail_blocks=trail_blocks,
+            trail_excess_blocks=trail_excess_blocks,
+            trail_persistent_ratio=trail_persistent_ratio,
             locality_score=locality_score,
             global_change_score=global_change_score,
             enter_active=enter_active,
@@ -1113,11 +1441,23 @@ def detect_activity_bursts(
                     'overlay_like': bool(validation['overlay_like']),
                     'reveal_ratio': round(float(validation['reveal_ratio']), 6),
                     'reveal_recovery_ratio': round(float(validation['reveal_recovery_ratio']), 6),
-                      'effective_update_end': validation['effective_update_end'],
-                      'idle_hold_duration': validation['idle_hold_duration'],
-                      'trimmed_idle_hold': bool(validation['trimmed_idle_hold']),
+                    'effective_update_end': validation['effective_update_end'],
+                    'idle_hold_duration': validation['idle_hold_duration'],
+                    'trimmed_idle_hold': bool(validation['trimmed_idle_hold']),
                     'mean_adjacent_ratio': round(float(validation['mean_adjacent_ratio']), 6),
                     'peak_persistent_ratio': round(float(validation['peak_persistent_ratio']), 6),
+                    'mean_adjacent_blocks': round(float(validation['mean_adjacent_blocks']), 3),
+                    'mean_persistent_blocks': round(float(validation['mean_persistent_blocks']), 3),
+                    'mean_trail_blocks': round(float(validation['mean_trail_blocks']), 3),
+                    'mean_trail_excess_blocks': round(float(validation['mean_trail_excess_blocks']), 3),
+                    'mean_trail_persistent_ratio': round(float(validation['mean_trail_persistent_ratio']), 3),
+                    'validated_subrange_start': validation['validated_subrange_start'],
+                    'validated_subrange_end': validation['validated_subrange_end'],
+                    'validated_subrange_duration': validation['validated_subrange_duration'],
+                    'validated_subrange_count': int(validation['validated_subrange_count']),
+                    'subwindow_count': int(validation['subwindow_count']),
+                    'validated_subwindow_count': int(validation['validated_subwindow_count']),
+                    'validated_subranges': validation['validated_subranges'],
                     'pre_window_start': validation['pre_window_start'],
                     'pre_window_end': validation['pre_window_end'],
                     'post_window_start': validation['post_window_start'],
@@ -1130,9 +1470,16 @@ def detect_activity_bursts(
                 }
             )
         if bool(validation['validated']):
-            validated_bursts.append((burst_start, burst_end))
+            localized_ranges = list(validation['validated_ranges_frames'])
+            if localized_ranges:
+                validated_bursts.extend(localized_ranges)
+            else:
+                validated_bursts.append((burst_start, burst_end))
 
-    merged_validated_bursts = merge_activity_bursts(validated_bursts, settings.pause_threshold)
+    merged_validated_bursts = merge_activity_bursts(
+        validated_bursts,
+        Timecode(total_frames=VALIDATION_MERGE_GAP_FRAMES),
+    )
 
     if progress_callback is not None:
         progress_callback(100)
@@ -1153,7 +1500,33 @@ def detect_candidate_clips(
         progress_callback=progress_callback,
         debug_bundle=debug_bundle,
     )
-    return build_candidate_clips(str(video_path), chapter_range, bursts, settings, debug_bundle=debug_bundle)
+    return build_candidate_clips(
+        str(video_path),
+        chapter_range,
+        bursts,
+        settings,
+        debug_bundle=debug_bundle,
+        trust_burst_boundaries=True,
+    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

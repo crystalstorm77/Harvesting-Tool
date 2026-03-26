@@ -12,6 +12,7 @@ from pathlib import Path
 from harvesting_tool.detection import (
     ART_STATE_BASELINE_MAX_SAMPLES,
     ART_STATE_REVEAL_WINDOW_FRAMES,
+    VALIDATION_MERGE_GAP_FRAMES,
     DetectionDebugBundle,
     DetectorSettings,
     SampleDebugRow,
@@ -27,8 +28,10 @@ from harvesting_tool.detection import (
     compute_remain_ratio_threshold,
     emit_scan_progress,
     format_cut_list_text,
+    has_localized_activity_support,
     is_weak_art_change_signal,
     merge_activity_bursts,
+    merge_validated_subranges,
     parse_chapter_range,
     select_representative_samples,
     should_enter_active_state,
@@ -99,6 +102,11 @@ class TimecodeAndOutputTests(unittest.TestCase):
                     timecode="00:00:10:00",
                     adjacent_change_score=0.1,
                     persistent_change_score=0.05,
+                    adjacent_blocks=4,
+                    persistent_blocks=3,
+                    trail_blocks=5,
+                    trail_excess_blocks=2,
+                    trail_persistent_ratio=1.666667,
                     locality_score=0.02,
                     global_change_score=0.1,
                     enter_active=True,
@@ -186,12 +194,29 @@ class CandidateClipTests(unittest.TestCase):
         total_frames = sum(clip.duration.total_frames for clip in clips)
         self.assertEqual(Timecode(total_frames=total_frames).to_hhmmssff(), "00:00:09:12")
 
+    def test_trusted_burst_boundaries_skip_editorial_remerge(self) -> None:
+        settings = make_settings()
+        chapter = parse_chapter_range("00:00:00:00", "00:01:00:00")
+        clips = build_candidate_clips(
+            "sample.mp4",
+            chapter,
+            bursts=[(300, 360), (420, 480)],
+            settings=settings,
+            trust_burst_boundaries=True,
+        )
+
+        self.assertEqual(len(clips), 2)
+        self.assertEqual(clips[0].activity_start.to_hhmmssff(), "00:00:10:00")
+        self.assertEqual(clips[0].activity_end.to_hhmmssff(), "00:00:12:00")
+        self.assertEqual(clips[1].activity_start.to_hhmmssff(), "00:00:14:00")
+        self.assertEqual(clips[1].activity_end.to_hhmmssff(), "00:00:16:00")
     def test_thresholds_allow_weaker_remain_than_enter(self) -> None:
         settings = make_settings()
         self.assertGreater(compute_enter_ratio_threshold(settings), compute_remain_ratio_threshold(settings))
-        self.assertTrue(should_enter_active_state(0.006, 0.0004, 6, 3, settings))
-        self.assertFalse(should_enter_active_state(0.006, 0.00002, 6, 1, settings))
-        self.assertTrue(should_remain_active_state(0.004, 0.00012, 4, 1, settings))
+        self.assertTrue(should_enter_active_state(0.006, 0.0004, 6, 3, 4, settings))
+        self.assertFalse(should_enter_active_state(0.006, 0.00002, 6, 1, 0, settings))
+        self.assertFalse(should_remain_active_state(0.004, 0.00012, 4, 1, 0, settings))
+        self.assertTrue(should_remain_active_state(0.004, 0.00012, 5, 2, 3, settings))
 
     def test_backtrack_finds_earliest_recent_weak_signal(self) -> None:
         recent_signals = [(9476, False), (9478, True), (9480, True), (9482, True), (9484, True)]
@@ -204,8 +229,8 @@ class CandidateClipTests(unittest.TestCase):
 
     def test_activity_classifier_prefers_persistent_changes_over_transient_motion(self) -> None:
         settings = make_settings()
-        self.assertTrue(classify_activity_signal(0.007, 0.0004, 6, 3, settings))
-        self.assertFalse(classify_activity_signal(0.009, 0.00002, 6, 0, settings))
+        self.assertTrue(classify_activity_signal(0.007, 0.0004, 6, 3, 4, settings))
+        self.assertFalse(classify_activity_signal(0.009, 0.00002, 6, 0, 0, settings))
 
     def test_select_representative_samples_caps_large_windows(self) -> None:
         samples = [{'frame_index': index} for index in range(40)]
@@ -248,6 +273,47 @@ class CandidateClipTests(unittest.TestCase):
         self.assertEqual(reveal_start, 930)
         self.assertEqual(reveal_end, min(1200, 930 + ART_STATE_REVEAL_WINDOW_FRAMES))
 
+
+    def test_merge_validated_subranges_combines_overlapping_windows(self) -> None:
+        merged = merge_validated_subranges([(300, 330), (315, 345), (390, 420)], 15)
+        self.assertEqual(merged, [(300, 345), (390, 420)])
+
+    def test_localized_activity_support_requires_real_short_term_signal(self) -> None:
+        settings = make_settings()
+        signal_rows = [
+            {
+                'frame_index': 300,
+                'adjacent_ratio': 0.006,
+                'persistent_ratio': 0.0004,
+                'adjacent_blocks': 6,
+                'persistent_blocks': 3,
+                'trail_excess_blocks': 4,
+            },
+            {
+                'frame_index': 330,
+                'adjacent_ratio': 0.003,
+                'persistent_ratio': 0.002,
+                'adjacent_blocks': 4,
+                'persistent_blocks': 4,
+                'trail_excess_blocks': 0,
+            },
+        ]
+
+        self.assertTrue(has_localized_activity_support(300, 315, signal_rows, settings))
+        self.assertFalse(has_localized_activity_support(315, 345, signal_rows, settings))
+    def test_post_validation_merge_uses_tighter_gap_than_editorial_pause_threshold(self) -> None:
+        merged = merge_activity_bursts(
+            [(300, 360), (480, 540)],
+            Timecode(total_frames=VALIDATION_MERGE_GAP_FRAMES),
+        )
+        self.assertEqual(merged, [(300, 360), (480, 540)])
+
+    def test_post_validation_merge_still_combines_small_adjacent_ranges(self) -> None:
+        merged = merge_activity_bursts(
+            [(300, 330), (345, 375)],
+            Timecode(total_frames=VALIDATION_MERGE_GAP_FRAMES),
+        )
+        self.assertEqual(merged, [(300, 375)])
     def test_effective_update_end_trims_idle_hold_tail(self) -> None:
         settings = make_settings()
         signal_rows = [
@@ -292,6 +358,14 @@ class CutListWritingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+
+
+
+
+
 
 
 

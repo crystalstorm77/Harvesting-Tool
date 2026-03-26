@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # SECTION A - Imports And Argument Parsing
 # ============================================================
 
@@ -17,6 +17,8 @@ from harvesting_tool.detection import (
     write_cut_lists,
     write_debug_artifacts,
 )
+from harvesting_tool.resolve_review import ResolveReviewOptions, ResolveReviewResult, create_review_timeline
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +41,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--activity-threshold", type=float, default=12.0, help="Per-pixel delta threshold for activity.")
     parser.add_argument("--active-pixel-ratio", type=float, default=0.015, help="Fraction of changed pixels needed to mark activity.")
     parser.add_argument("--min-burst", default="00:00:00:10", help="Minimum burst length in HH:MM:SS:FF.")
+    parser.add_argument(
+        "--resolve-review-timeline-name",
+        help="Optional DaVinci Resolve review timeline name. When provided, accepted clips are also assembled into a new review timeline using the current active timeline as the source reference.",
+    )
+    parser.add_argument(
+        "--resolve-skip-source-track",
+        action="store_true",
+        help="Do not add the chapter-length source reference clip to track 1 of the Resolve review timeline.",
+    )
     return parser
 
 
@@ -62,6 +73,7 @@ def build_settings(args: argparse.Namespace) -> DetectorSettings:
     )
 
 
+
 def build_progress_reporter() -> Callable[[int], None]:
     last_reported_percent = -1
 
@@ -75,7 +87,18 @@ def build_progress_reporter() -> Callable[[int], None]:
     return report
 
 
-def run(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Path]]:
+
+def build_review_options(args: argparse.Namespace) -> ResolveReviewOptions | None:
+    if not args.resolve_review_timeline_name:
+        return None
+    return ResolveReviewOptions(
+        timeline_name=args.resolve_review_timeline_name,
+        include_source_track=not args.resolve_skip_source_track,
+    )
+
+
+
+def run(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Path], ResolveReviewResult | None]:
     chapter_range = parse_chapter_range(args.chapter_start, args.chapter_end)
     settings = build_settings(args)
     progress_reporter = build_progress_reporter()
@@ -92,7 +115,17 @@ def run(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Path]]:
     debug_paths: dict[str, Path] = {}
     if args.debug_stem and debug_bundle is not None:
         debug_paths = write_debug_artifacts(args.debug_stem, debug_bundle)
-    return text_path, json_path, debug_paths
+
+    review_result: ResolveReviewResult | None = None
+    review_options = build_review_options(args)
+    if review_options is not None:
+        review_result = create_review_timeline(
+            video_path=args.video_path,
+            chapter_range=chapter_range,
+            clips=clips,
+            options=review_options,
+        )
+    return text_path, json_path, debug_paths, review_result
 
 
 # ============================================================
@@ -104,18 +137,22 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        text_path, json_path, debug_paths = run(args)
+        text_path, json_path, debug_paths, review_result = run(args)
     except Exception as exc:  # pragma: no cover - CLI surface
         parser.exit(status=1, message=f"Error: {exc}\n")
 
+    lines = [f"Wrote cut lists to {text_path} and {json_path}"]
     if debug_paths:
         debug_summary = ", ".join(str(path) for path in debug_paths.values())
-        parser.exit(
-            status=0,
-            message=f"Wrote cut lists to {text_path} and {json_path}\nWrote debug artifacts to {debug_summary}\n",
+        lines.append(f"Wrote debug artifacts to {debug_summary}")
+    if review_result is not None:
+        lines.append(
+            "Created Resolve review timeline "
+            f"'{review_result.timeline_name}' from source timeline '{review_result.source_timeline_name}' "
+            f"with {review_result.clip_count} accepted clips."
         )
 
-    parser.exit(status=0, message=f"Wrote cut lists to {text_path} and {json_path}\n")
+    parser.exit(status=0, message="\n".join(lines) + "\n")
 
 
 if __name__ == "__main__":
