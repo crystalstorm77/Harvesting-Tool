@@ -1,18 +1,21 @@
 # ============================================================
-# SECTION A — Imports And Argument Parsing
+# SECTION A - Imports And Argument Parsing
 # ============================================================
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Callable
 
 from harvesting_tool.detection import (
+    DetectionDebugBundle,
     DetectorSettings,
     Timecode,
     detect_candidate_clips,
     parse_chapter_range,
     write_cut_lists,
+    write_debug_artifacts,
 )
 
 
@@ -23,21 +26,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chapter-end", required=True, help="Chapter end timecode in HH:MM:SS:FF at 30 FPS.")
     parser.add_argument("--min-harvest", required=True, help="Minimum harvested duration in HH:MM:SS:FF.")
     parser.add_argument("--max-harvest", required=True, help="Maximum harvested duration in HH:MM:SS:FF.")
-    parser.add_argument("--max-clip-length", required=True, help="Maximum clip length in HH:MM:SS:FF.")
+    parser.add_argument("--min-clip-length", default="00:00:00:15", help="Minimum clip length in HH:MM:SS:FF.")
+    parser.add_argument("--max-clip-length", default="00:00:07:00", help="Maximum clip length in HH:MM:SS:FF.")
+    parser.add_argument("--pause-threshold", default="00:00:05:00", help="Maximum gap between bursts before splitting clips.")
     parser.add_argument("--lead-in-seconds", type=int, default=0, help="Lead-in seconds before detected activity.")
-    parser.add_argument("--lead-in-frames", type=int, default=0, help="Lead-in frames at 30 FPS.")
+    parser.add_argument("--lead-in-frames", type=int, default=2, help="Lead-in frames at 30 FPS.")
     parser.add_argument("--tail-after-seconds", type=int, default=0, help="Tail-after seconds after detected activity.")
-    parser.add_argument("--tail-after-frames", type=int, default=0, help="Tail-after frames at 30 FPS.")
+    parser.add_argument("--tail-after-frames", type=int, default=4, help="Tail-after frames at 30 FPS.")
     parser.add_argument("--output-stem", type=Path, required=True, help="Output path stem used for .txt and .json cut lists.")
+    parser.add_argument("--debug-stem", type=Path, help="Optional output path stem for detector diagnostic files.")
     parser.add_argument("--sample-stride", type=int, default=3, help="Analyze every Nth frame for first-pass activity detection.")
     parser.add_argument("--activity-threshold", type=float, default=12.0, help="Per-pixel delta threshold for activity.")
     parser.add_argument("--active-pixel-ratio", type=float, default=0.015, help="Fraction of changed pixels needed to mark activity.")
-    parser.add_argument("--min-burst", default="00:00:00:15", help="Minimum burst length in HH:MM:SS:FF.")
+    parser.add_argument("--min-burst", default="00:00:00:10", help="Minimum burst length in HH:MM:SS:FF.")
     return parser
 
 
 # ============================================================
-# SECTION B — Settings Construction And Execution
+# SECTION B - Settings Construction And Execution
 # ============================================================
 
 def build_settings(args: argparse.Namespace) -> DetectorSettings:
@@ -46,7 +52,9 @@ def build_settings(args: argparse.Namespace) -> DetectorSettings:
         tail_after=Timecode.from_seconds_and_frames(args.tail_after_seconds, args.tail_after_frames),
         min_harvest=Timecode.from_hhmmssff(args.min_harvest),
         max_harvest=Timecode.from_hhmmssff(args.max_harvest),
+        min_clip_length=Timecode.from_hhmmssff(args.min_clip_length),
         max_clip_length=Timecode.from_hhmmssff(args.max_clip_length),
+        pause_threshold=Timecode.from_hhmmssff(args.pause_threshold),
         sample_stride=args.sample_stride,
         activity_threshold=args.activity_threshold,
         active_pixel_ratio=args.active_pixel_ratio,
@@ -54,16 +62,41 @@ def build_settings(args: argparse.Namespace) -> DetectorSettings:
     )
 
 
-def run(args: argparse.Namespace) -> tuple[Path, Path]:
+def build_progress_reporter() -> Callable[[int], None]:
+    last_reported_percent = -1
+
+    def report(percent_complete: int) -> None:
+        nonlocal last_reported_percent
+        if percent_complete == last_reported_percent:
+            return
+        print(f"Scanning chapter: {percent_complete}%")
+        last_reported_percent = percent_complete
+
+    return report
+
+
+def run(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Path]]:
     chapter_range = parse_chapter_range(args.chapter_start, args.chapter_end)
     settings = build_settings(args)
-    clips = detect_candidate_clips(args.video_path, chapter_range, settings)
+    progress_reporter = build_progress_reporter()
+    debug_bundle = DetectionDebugBundle() if args.debug_stem else None
+    clips = detect_candidate_clips(
+        args.video_path,
+        chapter_range,
+        settings,
+        progress_callback=progress_reporter,
+        debug_bundle=debug_bundle,
+    )
     args.output_stem.parent.mkdir(parents=True, exist_ok=True)
-    return write_cut_lists(args.output_stem, clips, settings)
+    text_path, json_path = write_cut_lists(args.output_stem, clips, settings)
+    debug_paths: dict[str, Path] = {}
+    if args.debug_stem and debug_bundle is not None:
+        debug_paths = write_debug_artifacts(args.debug_stem, debug_bundle)
+    return text_path, json_path, debug_paths
 
 
 # ============================================================
-# SECTION C — Program Entry Point
+# SECTION C - Program Entry Point
 # ============================================================
 
 def main() -> int:
@@ -71,9 +104,16 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        text_path, json_path = run(args)
+        text_path, json_path, debug_paths = run(args)
     except Exception as exc:  # pragma: no cover - CLI surface
         parser.exit(status=1, message=f"Error: {exc}\n")
+
+    if debug_paths:
+        debug_summary = ", ".join(str(path) for path in debug_paths.values())
+        parser.exit(
+            status=0,
+            message=f"Wrote cut lists to {text_path} and {json_path}\nWrote debug artifacts to {debug_summary}\n",
+        )
 
     parser.exit(status=0, message=f"Wrote cut lists to {text_path} and {json_path}\n")
 

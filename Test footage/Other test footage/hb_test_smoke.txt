@@ -1,0 +1,152 @@
+Clip 1
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:00:24:26 -> 00:00:26:03
+  Clip: 00:00:24:24 -> 00:00:26:07
+  Duration: 00:00:01:13
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 2
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:00:35:02 -> 00:00:35:25
+  Clip: 00:00:35:00 -> 00:00:35:29
+  Duration: 00:00:00:29
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 3
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:00:49:04 -> 00:00:49:17
+  Clip: 00:00:49:02 -> 00:00:49:21
+  Duration: 00:00:00:19
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 4
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:02:10:08 -> 00:02:10:23
+  Clip: 00:02:10:06 -> 00:02:10:27
+  Duration: 00:00:00:21
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 5
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:02:29:24 -> 00:02:30:01
+  Clip: 00:02:29:21 -> 00:02:30:06
+  Duration: 00:00:00:15
+  Lead-in: 0s 3f
+  Tail-after: 0s 5f
+
+Clip 6
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:02:47:22 -> 00:02:48:07
+  Clip: 00:02:47:20 -> 00:02:48:11
+  Duration: 00:00:00:21
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 7
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:03:02:06 -> 00:03:02:13
+  Clip: 00:03:02:03 -> 00:03:02:18
+  Duration: 00:00:00:15
+  Lead-in: 0s 3f
+  Tail-after: 0s 5f
+
+Clip 8
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:03:12:26 -> 00:03:13:05
+  Clip: 00:03:12:24 -> 00:03:13:09
+  Duration: 00:00:00:15
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 9
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:03:19:08 -> 00:03:19:23
+  Clip: 00:03:19:06 -> 00:03:19:27
+  Duration: 00:00:00:21
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 10
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:03:29:02 -> 00:03:30:15
+  Clip: 00:03:29:00 -> 00:03:30:19
+  Duration: 00:00:01:19
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 11
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:03:44:28 -> 00:03:45:13
+  Clip: 00:03:44:26 -> 00:03:45:17
+  Duration: 00:00:00:21
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 12
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:04:17:04 -> 00:04:17:25
+  Clip: 00:04:17:02 -> 00:04:17:29
+  Duration: 00:00:00:27
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 13
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:04:34:00 -> 00:04:39:07
+  Clip: 00:04:33:28 -> 00:04:39:11
+  Duration: 00:00:05:13
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 14
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:04:48:28 -> 00:04:51:19
+  Clip: 00:04:48:26 -> 00:04:51:23
+  Duration: 00:00:02:27
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 15
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:05:15:26 -> 00:05:17:17
+  Clip: 00:05:15:24 -> 00:05:17:21
+  Duration: 00:00:01:27
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 16
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:06:09:18 -> 00:06:13:15
+  Clip: 00:06:09:16 -> 00:06:13:19
+  Duration: 00:00:04:03
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 17
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\HB-Test-Venonat.mp4
+  Chapter: 00:00:12:06 -> 00:10:08:00
+  Activity: 00:08:51:06 -> 00:08:51:13
+  Clip: 00:08:51:03 -> 00:08:51:18
+  Duration: 00:00:00:15
+  Lead-in: 0s 3f
+  Tail-after: 0s 5f
