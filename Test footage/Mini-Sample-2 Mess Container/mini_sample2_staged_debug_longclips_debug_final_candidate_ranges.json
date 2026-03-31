@@ -1,0 +1,15 @@
+[
+  {
+    "range_index": 1,
+    "parent_union_index": 5,
+    "start_frame": 1229,
+    "end_frame": 1355,
+    "start_time": "00:00:40:29",
+    "end_time": "00:00:45:05",
+    "source_classifications": [
+      "rocky"
+    ],
+    "includes_retained_undetermined": true,
+    "retained_undetermined_count": 15
+  }
+]

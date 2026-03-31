@@ -1,0 +1,53 @@
+[
+  {
+    "candidate_union_index": 1,
+    "screening_result": "surviving",
+    "surviving": true,
+    "provisional_survival": false,
+    "reason": "union_activity_supported",
+    "within_union_record_count": 118,
+    "before_record_count": 6,
+    "after_record_count": 15,
+    "mean_movement_strength": 0.722542,
+    "mean_temporal_persistence": 0.976342,
+    "mean_spatial_extent": 0.208232,
+    "lasting_change_evidence_score": 0.899628,
+    "before_reference_activity": 0.044639,
+    "after_reference_activity": 0.013191,
+    "reference_windows_reliable": true
+  },
+  {
+    "candidate_union_index": 2,
+    "screening_result": "surviving",
+    "surviving": true,
+    "provisional_survival": false,
+    "reason": "union_activity_supported",
+    "within_union_record_count": 520,
+    "before_record_count": 15,
+    "after_record_count": 15,
+    "mean_movement_strength": 0.71187,
+    "mean_temporal_persistence": 0.921379,
+    "mean_spatial_extent": 0.288187,
+    "lasting_change_evidence_score": 0.87775,
+    "before_reference_activity": 0.0,
+    "after_reference_activity": 0.500945,
+    "reference_windows_reliable": true
+  },
+  {
+    "candidate_union_index": 3,
+    "screening_result": "surviving",
+    "surviving": true,
+    "provisional_survival": false,
+    "reason": "union_activity_supported",
+    "within_union_record_count": 69,
+    "before_record_count": 15,
+    "after_record_count": 15,
+    "mean_movement_strength": 0.713251,
+    "mean_temporal_persistence": 0.971014,
+    "mean_spatial_extent": 0.197723,
+    "lasting_change_evidence_score": 0.894755,
+    "before_reference_activity": 0.0,
+    "after_reference_activity": 0.002753,
+    "reference_windows_reliable": true
+  }
+]

@@ -1,0 +1,15 @@
+[
+  {
+    "range_index": 1,
+    "parent_union_index": 2,
+    "start_frame": 845,
+    "end_frame": 1364,
+    "start_time": "00:00:28:05",
+    "end_time": "00:00:45:14",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_retained_undetermined": false,
+    "retained_undetermined_count": 0
+  }
+]

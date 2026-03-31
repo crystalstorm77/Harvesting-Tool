@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # SECTION A - Imports And Argument Parsing
 # ============================================================
 
@@ -12,12 +12,14 @@ from harvesting_tool.detection import (
     DetectionDebugBundle,
     DetectorSettings,
     Timecode,
+    build_candidate_clips,
     detect_candidate_clips,
     parse_chapter_range,
     write_cut_lists,
     write_debug_artifacts,
 )
 from harvesting_tool.resolve_review import ResolveReviewOptions, ResolveReviewResult, create_review_timeline
+from harvesting_tool.staged_detection import detect_staged_activity_ranges, write_staged_debug_artifacts
 
 
 
@@ -41,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--activity-threshold", type=float, default=12.0, help="Per-pixel delta threshold for activity.")
     parser.add_argument("--active-pixel-ratio", type=float, default=0.015, help="Fraction of changed pixels needed to mark activity.")
     parser.add_argument("--min-burst", default="00:00:00:10", help="Minimum burst length in HH:MM:SS:FF.")
+    parser.add_argument(
+        "--use-staged-detector",
+        action="store_true",
+        help="Run the new staged detector path instead of the current default detector. This is intended for side-by-side benchmarking while the staged detector is still being evaluated.",
+    )
     parser.add_argument(
         "--resolve-review-timeline-name",
         help="Optional DaVinci Resolve review timeline name. When provided, accepted clips are also assembled into a new review timeline using the current active timeline as the source reference.",
@@ -102,19 +109,50 @@ def run(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Path], ResolveR
     chapter_range = parse_chapter_range(args.chapter_start, args.chapter_end)
     settings = build_settings(args)
     progress_reporter = build_progress_reporter()
-    debug_bundle = DetectionDebugBundle() if args.debug_stem else None
-    clips = detect_candidate_clips(
-        args.video_path,
-        chapter_range,
-        settings,
-        progress_callback=progress_reporter,
-        debug_bundle=debug_bundle,
-    )
+
+    if args.use_staged_detector:
+        final_ranges, staged_debug_payload = detect_staged_activity_ranges(
+            video_path=args.video_path,
+            chapter_range=chapter_range,
+            settings=settings,
+            progress_callback=progress_reporter,
+        )
+        clips = build_candidate_clips(
+            str(args.video_path),
+            chapter_range,
+            final_ranges,
+            settings,
+            trust_burst_boundaries=True,
+        )
+        staged_debug_payload['candidate_clips'] = [
+            {
+                'clip_index': index,
+                'clip_start': clip.clip_start.to_hhmmssff(),
+                'clip_end': clip.clip_end.to_hhmmssff(),
+                'activity_start': clip.activity_start.to_hhmmssff(),
+                'activity_end': clip.activity_end.to_hhmmssff(),
+                'duration': clip.duration.to_hhmmssff(),
+            }
+            for index, clip in enumerate(clips, start=1)
+        ]
+        debug_paths: dict[str, Path] = {}
+        if args.debug_stem:
+            debug_paths = write_staged_debug_artifacts(args.debug_stem, staged_debug_payload)
+    else:
+        debug_bundle = DetectionDebugBundle() if args.debug_stem else None
+        clips = detect_candidate_clips(
+            args.video_path,
+            chapter_range,
+            settings,
+            progress_callback=progress_reporter,
+            debug_bundle=debug_bundle,
+        )
+        debug_paths = {}
+        if args.debug_stem and debug_bundle is not None:
+            debug_paths = write_debug_artifacts(args.debug_stem, debug_bundle)
+
     args.output_stem.parent.mkdir(parents=True, exist_ok=True)
     text_path, json_path = write_cut_lists(args.output_stem, clips, settings)
-    debug_paths: dict[str, Path] = {}
-    if args.debug_stem and debug_bundle is not None:
-        debug_paths = write_debug_artifacts(args.debug_stem, debug_bundle)
 
     review_result: ResolveReviewResult | None = None
     review_options = build_review_options(args)
