@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import cv2
+import numpy as np
 from harvesting_tool.detection import (
     ART_STATE_BASELINE_MAX_SAMPLES,
     ART_STATE_REVEAL_WINDOW_FRAMES,
@@ -19,7 +21,12 @@ from harvesting_tool.detection import (
     Timecode,
     backtrack_event_start,
     build_art_state_windows,
+    build_candidate_unions,
+    build_movement_spans,
+    refine_surviving_unions,
+    assemble_final_activity_ranges,
     build_reveal_window,
+    build_window_footprint_mask,
     find_effective_update_end,
     build_candidate_clips,
     build_cut_list_payload,
@@ -32,6 +39,8 @@ from harvesting_tool.detection import (
     is_weak_art_change_signal,
     merge_activity_bursts,
     merge_validated_subranges,
+    find_onset_recovery_start,
+    should_continue_refined_run,
     parse_chapter_range,
     select_representative_samples,
     should_enter_active_state,
@@ -135,6 +144,39 @@ class TimecodeAndOutputTests(unittest.TestCase):
 # ============================================================
 
 class CandidateClipTests(unittest.TestCase):
+    def test_build_movement_spans_discards_raw_events_below_minimum_length(self) -> None:
+        settings = make_settings()
+        movement_spans = build_movement_spans(
+            [(300, 306), (360, 390)],
+            settings,
+        )
+
+        self.assertEqual(movement_spans, [(360, 390)])
+
+    def test_build_candidate_unions_merges_nearby_movement_spans_with_validation_gap(self) -> None:
+        candidate_unions = build_candidate_unions([(300, 330), (345, 375), (480, 510)])
+        self.assertEqual(candidate_unions, [(300, 375), (480, 510)])
+
+    def test_refine_surviving_unions_keeps_only_screened_survivors(self) -> None:
+        screened_candidate_unions = [
+            {
+                'validated': False,
+                'surviving_ranges_frames': [(300, 360)],
+                'candidate_union_index': 1,
+            },
+            {
+                'validated': True,
+                'surviving_ranges_frames': [(420, 450), (480, 510)],
+                'candidate_union_index': 2,
+            },
+        ]
+
+        surviving_union_ranges = refine_surviving_unions(screened_candidate_unions)
+        self.assertEqual(surviving_union_ranges, [(420, 450), (480, 510)])
+
+    def test_assemble_final_activity_ranges_applies_post_refinement_merge(self) -> None:
+        final_activity_ranges = assemble_final_activity_ranges([(300, 330), (345, 375), (480, 510)])
+        self.assertEqual(final_activity_ranges, [(300, 375), (480, 510)])
     def test_nearby_bursts_merge_when_gap_is_within_pause_threshold(self) -> None:
         settings = make_settings()
         merged = merge_activity_bursts([(300, 330), (360, 390), (600, 630)], settings.pause_threshold)
@@ -278,6 +320,33 @@ class CandidateClipTests(unittest.TestCase):
         merged = merge_validated_subranges([(300, 330), (315, 345), (390, 420)], 15)
         self.assertEqual(merged, [(300, 345), (390, 420)])
 
+    def test_find_onset_recovery_start_stops_before_weak_footprint_windows(self) -> None:
+        window_evaluations = [
+            {'start': 300, 'activity_support': True, 'overlay_like': False, 'footprint_art_state_blocks': 1},
+            {'start': 330, 'activity_support': True, 'overlay_like': False, 'footprint_art_state_blocks': 4},
+            {'start': 360, 'activity_support': True, 'overlay_like': False, 'footprint_art_state_blocks': 6},
+        ]
+
+        recovery_start = find_onset_recovery_start(window_evaluations, 2)
+        self.assertEqual(recovery_start, 330)
+
+    def test_should_continue_refined_run_requires_real_footprint_persistence_without_anchor(self) -> None:
+        weak_window = {
+            'anchor_valid': False,
+            'activity_support': True,
+            'footprint_art_state_blocks': 2,
+            'footprint_art_state_ratio': 0.001,
+        }
+        strong_window = {
+            'anchor_valid': False,
+            'activity_support': True,
+            'footprint_art_state_blocks': 6,
+            'footprint_art_state_ratio': 0.004,
+        }
+
+        self.assertFalse(should_continue_refined_run(weak_window, 0.015))
+        self.assertTrue(should_continue_refined_run(strong_window, 0.015))
+
     def test_localized_activity_support_requires_real_short_term_signal(self) -> None:
         settings = make_settings()
         signal_rows = [
@@ -300,7 +369,23 @@ class CandidateClipTests(unittest.TestCase):
         ]
 
         self.assertTrue(has_localized_activity_support(300, 315, signal_rows, settings))
-        self.assertFalse(has_localized_activity_support(315, 345, signal_rows, settings))
+        self.assertFalse(has_localized_activity_support(345, 360, signal_rows, settings))
+
+    def test_window_footprint_mask_tracks_touched_blocks(self) -> None:
+        settings = make_settings()
+        first = np.zeros((120, 120), dtype=np.uint8)
+        second = first.copy()
+        second[20:40, 30:50] = 255
+        window_samples = [
+            {'art_gray': first},
+            {'art_gray': second},
+        ]
+
+        footprint_mask = build_window_footprint_mask(window_samples, settings, cv2)
+
+        self.assertIsNotNone(footprint_mask)
+        self.assertGreaterEqual(int((footprint_mask > 0).sum()), 100)
+
     def test_post_validation_merge_uses_tighter_gap_than_editorial_pause_threshold(self) -> None:
         merged = merge_activity_bursts(
             [(300, 360), (480, 540)],
@@ -358,6 +443,20 @@ class CutListWritingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

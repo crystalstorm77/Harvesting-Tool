@@ -44,12 +44,22 @@ ART_STATE_BASELINE_MAX_SAMPLES = 15
 ART_STATE_MIN_RATIO = 0.015
 ART_STATE_MIN_BLOCKS = 18
 ART_STATE_REVEAL_WINDOW_FRAMES = 3 * FRAME_RATE
+ART_STATE_LONG_REVEAL_OFFSET_FRAMES = FRAME_RATE
+ART_STATE_LONG_REVEAL_WINDOW_FRAMES = 3 * FRAME_RATE
 OVERLAY_COMPACT_BLOCKS = 18
 OVERLAY_POST_INSTABILITY_RATIO = 0.008
+FOOTPRINT_MIN_BLOCKS = 8
+FOOTPRINT_COMPACT_BLOCKS = OVERLAY_COMPACT_BLOCKS * 2
+FOOTPRINT_OCCLUSION_RECOVERY_MAX_RATIO = 0.12
+ONSET_RECOVERY_MIN_FOOTPRINT_BLOCKS = 3
+REFINEMENT_CONTINUE_MIN_FOOTPRINT_BLOCKS = 4
+REFINEMENT_CONTINUE_MIN_RATIO_SCALE = 0.2
 VALIDATION_MERGE_GAP_FRAMES = FRAME_RATE
 ART_STATE_SUBWINDOW_FRAMES = FRAME_RATE
 ART_STATE_SUBWINDOW_STEP_FRAMES = FRAME_RATE // 2
-ART_STATE_ONSET_RECOVERY_WINDOWS = 2
+ART_STATE_UNSUPPORTED_STOP_WINDOWS = 2
+ART_STATE_RESTART_BLOCK_GAIN = 5
+ART_STATE_RESTART_RATIO_GAIN = 0.005
 # ============================================================
 # SECTION B - Timecode And Clip Data Structures
 # ============================================================
@@ -354,6 +364,22 @@ def merge_activity_bursts(
     return merged
 
 
+def build_movement_spans(
+    raw_movement_events: Iterable[tuple[int, int]],
+    settings: DetectorSettings,
+) -> list[tuple[int, int]]:
+    return normalize_activity_bursts(raw_movement_events, settings.min_burst_length)
+
+
+def build_candidate_unions(
+    movement_spans: Iterable[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    return merge_activity_bursts(
+        movement_spans,
+        Timecode(total_frames=VALIDATION_MERGE_GAP_FRAMES),
+    )
+
+
 def expand_clip_window(
     chunk_start: int,
     chunk_end: int,
@@ -641,6 +667,55 @@ def count_active_blocks(mask) -> int:
     return int((block_activity >= BLOCK_ACTIVITY_RATIO).sum())
 
 
+def build_active_block_mask(mask, cv2):
+    grid_height = mask.shape[0] // GRID_ROWS
+    grid_width = mask.shape[1] // GRID_COLUMNS
+    if grid_height <= 0 or grid_width <= 0:
+        return mask.copy()
+
+    trimmed_height = grid_height * GRID_ROWS
+    trimmed_width = grid_width * GRID_COLUMNS
+    trimmed = mask[:trimmed_height, :trimmed_width]
+    block_grid = trimmed.reshape(GRID_ROWS, grid_height, GRID_COLUMNS, grid_width)
+    block_activity = block_grid.mean(axis=(1, 3)) / 255.0
+    active_blocks = (block_activity >= BLOCK_ACTIVITY_RATIO).astype(np.uint8) * 255
+    expanded = np.repeat(np.repeat(active_blocks, grid_height, axis=0), grid_width, axis=1)
+    block_mask = np.zeros_like(mask)
+    block_mask[:trimmed_height, :trimmed_width] = expanded
+    return block_mask
+
+
+def build_window_footprint_mask(
+    window_samples: list[dict[str, object]],
+    settings: DetectorSettings,
+    cv2,
+):
+    if len(window_samples) < 2:
+        return None
+
+    footprint_mask = None
+    previous_sample = window_samples[0]
+    for current_sample in window_samples[1:]:
+        motion_mask = build_art_state_change_mask(
+            previous_sample['art_gray'],
+            current_sample['art_gray'],
+            settings,
+            cv2,
+        )
+        if footprint_mask is None:
+            footprint_mask = motion_mask
+        else:
+            footprint_mask = cv2.bitwise_or(footprint_mask, motion_mask)
+        previous_sample = current_sample
+
+    if footprint_mask is None:
+        return None
+    active_block_mask = build_active_block_mask(footprint_mask, cv2)
+    if count_active_blocks(active_block_mask) == 0:
+        return None
+    return active_block_mask
+
+
 def extract_art_state_region(gray_frame):
     frame_height, frame_width = gray_frame.shape[:2]
     left = int(frame_width * ART_STATE_LEFT_RATIO)
@@ -852,9 +927,11 @@ def evaluate_art_state_transition(
     post_baseline,
     post_samples: list[dict[str, object]],
     reveal_baseline,
+    long_reveal_baseline,
     required_ratio: float,
     settings: DetectorSettings,
     cv2,
+    footprint_mask=None,
 ) -> dict[str, object]:
     if pre_baseline is None or post_baseline is None:
         return {
@@ -865,6 +942,13 @@ def evaluate_art_state_transition(
             'overlay_like': False,
             'reveal_ratio': 0.0,
             'reveal_recovery_ratio': 0.0,
+            'long_reveal_ratio': 0.0,
+            'long_reveal_recovery_ratio': 0.0,
+            'footprint_block_count': 0,
+            'footprint_art_state_ratio': 0.0,
+            'footprint_art_state_blocks': 0,
+            'footprint_reveal_recovery_ratio': 0.0,
+            'footprint_long_reveal_recovery_ratio': 0.0,
         }
 
     art_state_mask = build_art_state_change_mask(pre_baseline, post_baseline, settings, cv2)
@@ -879,6 +963,13 @@ def evaluate_art_state_transition(
     )
     reveal_ratio = 0.0
     reveal_recovery_ratio = 1.0
+    long_reveal_ratio = 0.0
+    long_reveal_recovery_ratio = 1.0
+    footprint_block_count = 0
+    footprint_art_state_ratio = 0.0
+    footprint_art_state_blocks = 0
+    footprint_reveal_recovery_ratio = 0.0
+    footprint_long_reveal_recovery_ratio = 0.0
     if reveal_baseline is not None:
         reveal_mask = build_art_state_change_mask(post_baseline, reveal_baseline, settings, cv2)
         focused_reveal_mask = cv2.bitwise_and(reveal_mask, art_state_mask)
@@ -886,11 +977,44 @@ def evaluate_art_state_transition(
         reveal_recovery_mask = build_art_state_change_mask(pre_baseline, reveal_baseline, settings, cv2)
         focused_recovery_mask = cv2.bitwise_and(reveal_recovery_mask, art_state_mask)
         reveal_recovery_ratio = float(focused_recovery_mask.mean()) / 255.0
+    if long_reveal_baseline is not None:
+        long_reveal_mask = build_art_state_change_mask(post_baseline, long_reveal_baseline, settings, cv2)
+        focused_long_reveal_mask = cv2.bitwise_and(long_reveal_mask, art_state_mask)
+        long_reveal_ratio = float(focused_long_reveal_mask.mean()) / 255.0
+        long_reveal_recovery_mask = build_art_state_change_mask(pre_baseline, long_reveal_baseline, settings, cv2)
+        focused_long_recovery_mask = cv2.bitwise_and(long_reveal_recovery_mask, art_state_mask)
+        long_reveal_recovery_ratio = float(focused_long_recovery_mask.mean()) / 255.0
+
+    if footprint_mask is not None:
+        footprint_block_count = count_active_blocks(footprint_mask)
+        focused_art_state_mask = cv2.bitwise_and(art_state_mask, footprint_mask)
+        footprint_art_state_ratio = float(focused_art_state_mask.mean()) / 255.0
+        footprint_art_state_blocks = count_active_blocks(focused_art_state_mask)
+        if reveal_baseline is not None:
+            reveal_recovery_mask = build_art_state_change_mask(pre_baseline, reveal_baseline, settings, cv2)
+            focused_footprint_recovery_mask = cv2.bitwise_and(reveal_recovery_mask, footprint_mask)
+            footprint_reveal_recovery_ratio = float(focused_footprint_recovery_mask.mean()) / 255.0
+        if long_reveal_baseline is not None:
+            long_reveal_recovery_mask = build_art_state_change_mask(pre_baseline, long_reveal_baseline, settings, cv2)
+            focused_footprint_long_recovery_mask = cv2.bitwise_and(long_reveal_recovery_mask, footprint_mask)
+            footprint_long_reveal_recovery_ratio = float(focused_footprint_long_recovery_mask.mean()) / 255.0
+    else:
+        footprint_art_state_ratio = art_state_ratio
+        footprint_art_state_blocks = art_state_blocks
+        footprint_reveal_recovery_ratio = reveal_recovery_ratio
+        footprint_long_reveal_recovery_ratio = long_reveal_recovery_ratio
+
+    transient_occlusion_like = (
+        art_state_blocks <= OVERLAY_COMPACT_BLOCKS * 2
+        and long_reveal_ratio >= art_state_ratio * 0.45
+        and long_reveal_recovery_ratio <= art_state_ratio * 0.2
+    )
     overlay_like = (
         art_state_blocks <= OVERLAY_COMPACT_BLOCKS
         and (
             overlay_instability_ratio >= OVERLAY_POST_INSTABILITY_RATIO
             or (reveal_ratio >= art_state_ratio * 0.45 and reveal_recovery_ratio <= art_state_ratio * 0.35)
+            or transient_occlusion_like
         )
     )
     validated = (
@@ -906,6 +1030,13 @@ def evaluate_art_state_transition(
         'overlay_like': overlay_like,
         'reveal_ratio': reveal_ratio,
         'reveal_recovery_ratio': reveal_recovery_ratio,
+        'long_reveal_ratio': long_reveal_ratio,
+        'long_reveal_recovery_ratio': long_reveal_recovery_ratio,
+        'footprint_block_count': footprint_block_count,
+        'footprint_art_state_ratio': footprint_art_state_ratio,
+        'footprint_art_state_blocks': footprint_art_state_blocks,
+        'footprint_reveal_recovery_ratio': footprint_reveal_recovery_ratio,
+        'footprint_long_reveal_recovery_ratio': footprint_long_reveal_recovery_ratio,
     }
 
 
@@ -938,6 +1069,35 @@ def merge_validated_subranges(
         else:
             merged.append((start_frame, end_frame))
     return merged
+
+def find_onset_recovery_start(
+    window_evaluations: list[dict[str, object]],
+    window_index: int,
+) -> int:
+    recovery_index = window_index
+    while recovery_index > 0:
+        previous_window = window_evaluations[recovery_index - 1]
+        if (
+            not bool(previous_window['activity_support'])
+            or bool(previous_window['overlay_like'])
+            or int(previous_window['footprint_art_state_blocks']) < ONSET_RECOVERY_MIN_FOOTPRINT_BLOCKS
+        ):
+            break
+        recovery_index -= 1
+    return int(window_evaluations[recovery_index]['start'])
+
+def should_continue_refined_run(
+    window_info: dict[str, object],
+    required_ratio: float,
+) -> bool:
+    if not bool(window_info['activity_support']):
+        return False
+    if bool(window_info['anchor_valid']):
+        return True
+    return (
+        int(window_info['footprint_art_state_blocks']) >= REFINEMENT_CONTINUE_MIN_FOOTPRINT_BLOCKS
+        and float(window_info['footprint_art_state_ratio']) >= required_ratio * REFINEMENT_CONTINUE_MIN_RATIO_SCALE
+    )
 
 
 def has_localized_activity_support(
@@ -987,41 +1147,143 @@ def localize_validated_subranges(
     cv2,
 ) -> dict[str, object]:
     subwindow_ranges = build_subwindow_ranges(burst_start, effective_update_end)
-    validated_ranges: list[tuple[int, int]] = []
+    window_evaluations: list[dict[str, object]] = []
 
     for window_start, window_end in subwindow_ranges:
         window_samples = collect_window_samples(sampled_frames, window_start, window_end)
         post_baseline = build_median_baseline(window_samples)
+        footprint_mask = build_window_footprint_mask(window_samples, settings, cv2)
         reveal_start = min(next_boundary, window_end)
         reveal_end = min(next_boundary, window_end + ART_STATE_SUBWINDOW_FRAMES)
         reveal_samples = collect_window_samples(sampled_frames, reveal_start, reveal_end)
         reveal_baseline = build_median_baseline(reveal_samples)
+        long_reveal_start = min(next_boundary, window_end + ART_STATE_LONG_REVEAL_OFFSET_FRAMES)
+        long_reveal_end = min(next_boundary, long_reveal_start + ART_STATE_LONG_REVEAL_WINDOW_FRAMES)
+        long_reveal_samples = collect_window_samples(sampled_frames, long_reveal_start, long_reveal_end)
+        long_reveal_baseline = build_median_baseline(long_reveal_samples)
         evaluation = evaluate_art_state_transition(
             pre_baseline=pre_baseline,
             post_baseline=post_baseline,
             post_samples=window_samples,
             reveal_baseline=reveal_baseline,
+            long_reveal_baseline=long_reveal_baseline,
             required_ratio=required_ratio,
             settings=settings,
             cv2=cv2,
+            footprint_mask=footprint_mask,
         )
-        if bool(evaluation['validated']) and has_localized_activity_support(
-            window_start,
-            window_end,
-            signal_rows,
-            settings,
-        ):
-            recovered_start = max(
-                burst_start,
-                window_start - (ART_STATE_SUBWINDOW_FRAMES * ART_STATE_ONSET_RECOVERY_WINDOWS),
+        activity_support = has_localized_activity_support(window_start, window_end, signal_rows, settings)
+        footprint_art_state_ratio = float(evaluation['footprint_art_state_ratio'])
+        footprint_long_reveal_recovery_ratio = float(evaluation['footprint_long_reveal_recovery_ratio'])
+        footprint_occlusion_like = (
+            bool(evaluation['validated'])
+            and int(evaluation['footprint_block_count']) > 0
+            and int(evaluation['footprint_block_count']) <= FOOTPRINT_COMPACT_BLOCKS
+            and footprint_art_state_ratio >= required_ratio * 1.2
+            and footprint_long_reveal_recovery_ratio <= max(
+                required_ratio * 0.1,
+                footprint_art_state_ratio * FOOTPRINT_OCCLUSION_RECOVERY_MAX_RATIO,
             )
-            validated_ranges.append((recovered_start, window_end))
+        )
+        window_evaluations.append(
+            {
+                'start': window_start,
+                'end': window_end,
+                'anchor_valid': bool(evaluation['validated']) and not footprint_occlusion_like,
+                'activity_support': bool(activity_support),
+                'art_state_ratio': float(evaluation['art_state_ratio']),
+                'art_state_blocks': int(evaluation['art_state_blocks']),
+                'overlay_like': bool(evaluation['overlay_like']),
+                'long_reveal_ratio': float(evaluation['long_reveal_ratio']),
+                'long_reveal_recovery_ratio': float(evaluation['long_reveal_recovery_ratio']),
+                'footprint_block_count': int(evaluation['footprint_block_count']),
+                'footprint_art_state_ratio': footprint_art_state_ratio,
+                'footprint_art_state_blocks': int(evaluation['footprint_art_state_blocks']),
+                'footprint_reveal_recovery_ratio': float(evaluation['footprint_reveal_recovery_ratio']),
+                'footprint_long_reveal_recovery_ratio': footprint_long_reveal_recovery_ratio,
+                'footprint_occlusion_like': footprint_occlusion_like,
+            }
+        )
 
-    merged_ranges = merge_validated_subranges(validated_ranges, VALIDATION_MERGE_GAP_FRAMES)
+
+    validated_ranges: list[tuple[int, int]] = []
+    active_start: int | None = None
+    active_end: int | None = None
+    unsupported_streak = 0
+    restart_reference_blocks: int | None = None
+    restart_reference_ratio: float | None = None
+
+    for window_index, window_info in enumerate(window_evaluations):
+        anchor_valid = bool(window_info['anchor_valid'])
+        activity_support = bool(window_info['activity_support'])
+        window_start = int(window_info['start'])
+        window_end = int(window_info['end'])
+        art_state_blocks = int(window_info['art_state_blocks'])
+        art_state_ratio = float(window_info['art_state_ratio'])
+
+        if active_start is None:
+            should_start = False
+            if anchor_valid and activity_support:
+                if restart_reference_blocks is None:
+                    should_start = True
+                else:
+                    should_start = (
+                        art_state_blocks >= restart_reference_blocks + ART_STATE_RESTART_BLOCK_GAIN
+                        or art_state_ratio >= restart_reference_ratio + ART_STATE_RESTART_RATIO_GAIN
+                    )
+            if should_start:
+                if restart_reference_blocks is None:
+                    active_start = find_onset_recovery_start(window_evaluations, window_index)
+                else:
+                    active_start = window_start
+                active_end = window_end
+                unsupported_streak = 0
+        else:
+            if should_continue_refined_run(window_info, required_ratio):
+                active_end = window_end
+                unsupported_streak = 0
+            else:
+                unsupported_streak += 1
+                if unsupported_streak >= ART_STATE_UNSUPPORTED_STOP_WINDOWS:
+                    close_start_index = max(0, window_index - (ART_STATE_UNSUPPORTED_STOP_WINDOWS - 1))
+                    close_frame = int(window_evaluations[close_start_index]['start'])
+                    validated_ranges.append((active_start, close_frame))
+                    restart_reference_blocks = art_state_blocks
+                    restart_reference_ratio = art_state_ratio
+                    active_start = None
+                    active_end = None
+                    unsupported_streak = 0
+
+    if active_start is not None and active_end is not None:
+        validated_ranges.append((active_start, active_end))
+
+    merged_ranges = merge_validated_subranges(validated_ranges, 0)
+    validated_subwindow_count = sum(1 for window_info in window_evaluations if bool(window_info['anchor_valid']))
+    subwindow_debug = [
+        {
+            'start': Timecode(total_frames=int(window_info['start'])).to_hhmmssff(),
+            'end': Timecode(total_frames=int(window_info['end'])).to_hhmmssff(),
+            'anchor_valid': bool(window_info['anchor_valid']),
+            'activity_support': bool(window_info['activity_support']),
+            'art_state_ratio': round(float(window_info['art_state_ratio']), 6),
+            'art_state_blocks': int(window_info['art_state_blocks']),
+            'overlay_like': bool(window_info['overlay_like']),
+            'long_reveal_ratio': round(float(window_info['long_reveal_ratio']), 6),
+            'long_reveal_recovery_ratio': round(float(window_info['long_reveal_recovery_ratio']), 6),
+            'footprint_block_count': int(window_info['footprint_block_count']),
+            'footprint_art_state_ratio': round(float(window_info['footprint_art_state_ratio']), 6),
+            'footprint_art_state_blocks': int(window_info['footprint_art_state_blocks']),
+            'footprint_reveal_recovery_ratio': round(float(window_info['footprint_reveal_recovery_ratio']), 6),
+            'footprint_long_reveal_recovery_ratio': round(float(window_info['footprint_long_reveal_recovery_ratio']), 6),
+            'footprint_occlusion_like': bool(window_info['footprint_occlusion_like']),
+        }
+        for window_info in window_evaluations
+    ]
     return {
         'subwindow_count': len(subwindow_ranges),
-        'validated_subwindow_count': len(validated_ranges),
+        'validated_subwindow_count': validated_subwindow_count,
         'validated_ranges': merged_ranges,
+        'subwindow_debug': subwindow_debug,
     }
 def validate_merged_burst_art_state(
     burst_index: int,
@@ -1098,6 +1360,7 @@ def validate_merged_burst_art_state(
             'subwindow_count': 0,
             'validated_subwindow_count': 0,
             'validated_subranges': [],
+            'subwindow_debug': [],
             'pre_window_start': Timecode(total_frames=pre_window_start).to_hhmmssff(),
             'pre_window_end': Timecode(total_frames=pre_window_end).to_hhmmssff(),
             'post_window_start': Timecode(total_frames=post_window_start).to_hhmmssff(),
@@ -1114,6 +1377,7 @@ def validate_merged_burst_art_state(
         post_baseline=post_baseline,
         post_samples=post_samples,
         reveal_baseline=reveal_baseline,
+        long_reveal_baseline=None,
         required_ratio=required_ratio,
         settings=settings,
         cv2=cv2,
@@ -1177,6 +1441,7 @@ def validate_merged_burst_art_state(
             for start_frame, end_frame in localized_ranges
         ],
         'validated_ranges_frames': localized_ranges,
+        'subwindow_debug': list(localization['subwindow_debug']),
         'pre_window_start': Timecode(total_frames=pre_window_start).to_hhmmssff(),
         'pre_window_end': Timecode(total_frames=pre_window_end).to_hhmmssff(),
         'post_window_start': Timecode(total_frames=post_window_start).to_hhmmssff(),
@@ -1189,26 +1454,19 @@ def validate_merged_burst_art_state(
     }
 
 
-def detect_activity_bursts(
+def detect_movement_spans(
     video_path: Path,
     chapter_range: ChapterRange,
     settings: DetectorSettings,
+    cv2,
     progress_callback: Callable[[int], None] | None = None,
     debug_bundle: DetectionDebugBundle | None = None,
-) -> list[tuple[int, int]]:
-    try:
-        import cv2  # type: ignore
-    except ImportError as exc:  # pragma: no cover - runtime environment dependent
-        raise RuntimeError(
-            "OpenCV is required for first-pass video detection in this version. "
-            "Install an OpenCV package in the runtime environment before running detection."
-        ) from exc
-
+) -> tuple[list[tuple[int, int]], list[dict[str, object]], list[dict[str, float | int]]]:
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
         raise RuntimeError(f"Unable to open video file: {video_path}")
 
-    raw_bursts: list[tuple[int, int]] = []
+    raw_movement_events: list[tuple[int, int]] = []
     active_start: int | None = None
     active_end: int | None = None
     last_progress_percent = -PROGRESS_STEP_PERCENT
@@ -1307,7 +1565,7 @@ def detect_activity_bursts(
             else:
                 inactive_samples_value += 1
                 if inactive_samples_value >= END_INACTIVE_SAMPLES:
-                    raw_bursts.append((active_start_value, active_end_value if active_end_value is not None else current_frame))
+                    raw_movement_events.append((active_start_value, active_end_value if active_end_value is not None else current_frame))
                     active_start_value = None
                     active_end_value = None
                     inactive_samples_value = 0
@@ -1397,93 +1655,169 @@ def detect_activity_bursts(
             )
 
         if active_start is not None:
-            raw_bursts.append((active_start, active_end if active_end is not None else chapter_range.end.total_frames))
+            raw_movement_events.append((active_start, active_end if active_end is not None else chapter_range.end.total_frames))
     finally:
         capture.release()
 
-    normalized_bursts = normalize_activity_bursts(raw_bursts, settings.min_burst_length)
-    validation_bursts = merge_activity_bursts(normalized_bursts, Timecode(total_frames=VALIDATION_MERGE_GAP_FRAMES))
-    validated_bursts: list[tuple[int, int]] = []
-
+    movement_spans = build_movement_spans(raw_movement_events, settings)
     if debug_bundle is not None:
         debug_bundle.micro_events = [
             {
-                'micro_event_index': burst_index,
-                'start': Timecode(total_frames=burst_start).to_hhmmssff(),
-                'end': Timecode(total_frames=burst_end).to_hhmmssff(),
-                'duration': Timecode(total_frames=burst_end - burst_start).to_hhmmssff(),
+                'micro_event_index': span_index,
+                'movement_span_index': span_index,
+                'start': Timecode(total_frames=span_start).to_hhmmssff(),
+                'end': Timecode(total_frames=span_end).to_hhmmssff(),
+                'duration': Timecode(total_frames=span_end - span_start).to_hhmmssff(),
+                'footprint_size': None,
             }
-            for burst_index, (burst_start, burst_end) in enumerate(normalized_bursts, start=1)
+            for span_index, (span_start, span_end) in enumerate(movement_spans, start=1)
         ]
-        debug_bundle.merged_bursts = []
+    return movement_spans, sampled_frame_history, signal_rows
 
-    for burst_index, (burst_start, burst_end) in enumerate(validation_bursts, start=1):
+def screen_candidate_unions(
+    candidate_unions: list[tuple[int, int]],
+    sampled_frames: list[dict[str, object]],
+    signal_rows: list[dict[str, float | int]],
+    chapter_range: ChapterRange,
+    settings: DetectorSettings,
+    cv2,
+) -> list[dict[str, object]]:
+    screened_unions: list[dict[str, object]] = []
+    for union_index, (union_start, union_end) in enumerate(candidate_unions, start=1):
         validation = validate_merged_burst_art_state(
-            burst_index=burst_index - 1,
-            merged_bursts=validation_bursts,
-            sampled_frames=sampled_frame_history,
+            burst_index=union_index - 1,
+            merged_bursts=candidate_unions,
+            sampled_frames=sampled_frames,
             signal_rows=signal_rows,
             chapter_range=chapter_range,
             settings=settings,
             cv2=cv2,
         )
+        localized_ranges = list(validation['validated_ranges_frames'])
+        surviving_ranges = localized_ranges if localized_ranges else [(union_start, union_end)]
+        screening_result = 'surviving' if bool(validation['validated']) else 'rejected'
+        screened_unions.append(
+            {
+                'burst_index': union_index,
+                'candidate_union_index': union_index,
+                'start_frame': union_start,
+                'end_frame': union_end,
+                'start': Timecode(total_frames=union_start).to_hhmmssff(),
+                'end': Timecode(total_frames=union_end).to_hhmmssff(),
+                'duration': Timecode(total_frames=union_end - union_start).to_hhmmssff(),
+                'validated': bool(validation['validated']),
+                'screening_result': screening_result,
+                'art_state_ratio': round(float(validation['art_state_ratio']), 6),
+                'art_state_blocks': int(validation['art_state_blocks']),
+                'overlay_instability_ratio': round(float(validation['overlay_instability_ratio']), 6),
+                'overlay_like': bool(validation['overlay_like']),
+                'reveal_ratio': round(float(validation['reveal_ratio']), 6),
+                'reveal_recovery_ratio': round(float(validation['reveal_recovery_ratio']), 6),
+                'effective_update_end': validation['effective_update_end'],
+                'idle_hold_duration': validation['idle_hold_duration'],
+                'trimmed_idle_hold': bool(validation['trimmed_idle_hold']),
+                'mean_adjacent_ratio': round(float(validation['mean_adjacent_ratio']), 6),
+                'peak_persistent_ratio': round(float(validation['peak_persistent_ratio']), 6),
+                'mean_adjacent_blocks': round(float(validation['mean_adjacent_blocks']), 3),
+                'mean_persistent_blocks': round(float(validation['mean_persistent_blocks']), 3),
+                'mean_trail_blocks': round(float(validation['mean_trail_blocks']), 3),
+                'mean_trail_excess_blocks': round(float(validation['mean_trail_excess_blocks']), 3),
+                'mean_trail_persistent_ratio': round(float(validation['mean_trail_persistent_ratio']), 3),
+                'validated_subrange_start': validation['validated_subrange_start'],
+                'validated_subrange_end': validation['validated_subrange_end'],
+                'validated_subrange_duration': validation['validated_subrange_duration'],
+                'validated_subrange_count': int(validation['validated_subrange_count']),
+                'subwindow_count': int(validation['subwindow_count']),
+                'validated_subwindow_count': int(validation['validated_subwindow_count']),
+                'validated_subranges': validation['validated_subranges'],
+                'surviving_ranges_frames': surviving_ranges,
+                'subwindow_debug': validation['subwindow_debug'],
+                'pre_window_start': validation['pre_window_start'],
+                'pre_window_end': validation['pre_window_end'],
+                'post_window_start': validation['post_window_start'],
+                'post_window_end': validation['post_window_end'],
+                'reveal_window_start': validation['reveal_window_start'],
+                'reveal_window_end': validation['reveal_window_end'],
+                'pre_sample_count': int(validation['pre_sample_count']),
+                'post_sample_count': int(validation['post_sample_count']),
+                'reveal_sample_count': int(validation['reveal_sample_count']),
+            }
+        )
+    return screened_unions
+
+def refine_surviving_unions(
+    screened_candidate_unions: list[dict[str, object]],
+    debug_bundle: DetectionDebugBundle | None = None,
+) -> list[tuple[int, int]]:
+    surviving_union_ranges: list[tuple[int, int]] = []
+
+    if debug_bundle is not None:
+        debug_bundle.merged_bursts = []
+
+    for screened_union in screened_candidate_unions:
         if debug_bundle is not None:
             debug_bundle.merged_bursts.append(
                 {
-                    'burst_index': burst_index,
-                    'start': Timecode(total_frames=burst_start).to_hhmmssff(),
-                    'end': Timecode(total_frames=burst_end).to_hhmmssff(),
-                    'duration': Timecode(total_frames=burst_end - burst_start).to_hhmmssff(),
-                    'validated': bool(validation['validated']),
-                    'art_state_ratio': round(float(validation['art_state_ratio']), 6),
-                    'art_state_blocks': int(validation['art_state_blocks']),
-                    'overlay_instability_ratio': round(float(validation['overlay_instability_ratio']), 6),
-                    'overlay_like': bool(validation['overlay_like']),
-                    'reveal_ratio': round(float(validation['reveal_ratio']), 6),
-                    'reveal_recovery_ratio': round(float(validation['reveal_recovery_ratio']), 6),
-                    'effective_update_end': validation['effective_update_end'],
-                    'idle_hold_duration': validation['idle_hold_duration'],
-                    'trimmed_idle_hold': bool(validation['trimmed_idle_hold']),
-                    'mean_adjacent_ratio': round(float(validation['mean_adjacent_ratio']), 6),
-                    'peak_persistent_ratio': round(float(validation['peak_persistent_ratio']), 6),
-                    'mean_adjacent_blocks': round(float(validation['mean_adjacent_blocks']), 3),
-                    'mean_persistent_blocks': round(float(validation['mean_persistent_blocks']), 3),
-                    'mean_trail_blocks': round(float(validation['mean_trail_blocks']), 3),
-                    'mean_trail_excess_blocks': round(float(validation['mean_trail_excess_blocks']), 3),
-                    'mean_trail_persistent_ratio': round(float(validation['mean_trail_persistent_ratio']), 3),
-                    'validated_subrange_start': validation['validated_subrange_start'],
-                    'validated_subrange_end': validation['validated_subrange_end'],
-                    'validated_subrange_duration': validation['validated_subrange_duration'],
-                    'validated_subrange_count': int(validation['validated_subrange_count']),
-                    'subwindow_count': int(validation['subwindow_count']),
-                    'validated_subwindow_count': int(validation['validated_subwindow_count']),
-                    'validated_subranges': validation['validated_subranges'],
-                    'pre_window_start': validation['pre_window_start'],
-                    'pre_window_end': validation['pre_window_end'],
-                    'post_window_start': validation['post_window_start'],
-                    'post_window_end': validation['post_window_end'],
-                    'reveal_window_start': validation['reveal_window_start'],
-                    'reveal_window_end': validation['reveal_window_end'],
-                    'pre_sample_count': int(validation['pre_sample_count']),
-                    'post_sample_count': int(validation['post_sample_count']),
-                    'reveal_sample_count': int(validation['reveal_sample_count']),
+                    key: value
+                    for key, value in screened_union.items()
+                    if key != 'surviving_ranges_frames'
                 }
             )
-        if bool(validation['validated']):
-            localized_ranges = list(validation['validated_ranges_frames'])
-            if localized_ranges:
-                validated_bursts.extend(localized_ranges)
-            else:
-                validated_bursts.append((burst_start, burst_end))
+        if bool(screened_union['validated']):
+            surviving_union_ranges.extend(list(screened_union['surviving_ranges_frames']))
 
-    merged_validated_bursts = merge_activity_bursts(
-        validated_bursts,
+    return surviving_union_ranges
+
+def assemble_final_activity_ranges(
+    surviving_union_ranges: Iterable[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    return merge_activity_bursts(
+        surviving_union_ranges,
         Timecode(total_frames=VALIDATION_MERGE_GAP_FRAMES),
     )
 
+def detect_activity_bursts(
+    video_path: Path,
+    chapter_range: ChapterRange,
+    settings: DetectorSettings,
+    progress_callback: Callable[[int], None] | None = None,
+    debug_bundle: DetectionDebugBundle | None = None,
+) -> list[tuple[int, int]]:
+    try:
+        import cv2  # type: ignore
+    except ImportError as exc:  # pragma: no cover - runtime environment dependent
+        raise RuntimeError(
+            "OpenCV is required for first-pass video detection in this version. "
+            "Install an OpenCV package in the runtime environment before running detection."
+        ) from exc
+
+    movement_spans, sampled_frame_history, signal_rows = detect_movement_spans(
+        video_path=video_path,
+        chapter_range=chapter_range,
+        settings=settings,
+        cv2=cv2,
+        progress_callback=progress_callback,
+        debug_bundle=debug_bundle,
+    )
+    candidate_unions = build_candidate_unions(movement_spans)
+    screened_candidate_unions = screen_candidate_unions(
+        candidate_unions=candidate_unions,
+        sampled_frames=sampled_frame_history,
+        signal_rows=signal_rows,
+        chapter_range=chapter_range,
+        settings=settings,
+        cv2=cv2,
+    )
+    surviving_union_ranges = refine_surviving_unions(
+        screened_candidate_unions=screened_candidate_unions,
+        debug_bundle=debug_bundle,
+    )
+
+    final_activity_ranges = assemble_final_activity_ranges(surviving_union_ranges)
+
     if progress_callback is not None:
         progress_callback(100)
-    return merged_validated_bursts
+    return final_activity_ranges
 
 
 def detect_candidate_clips(
@@ -1508,6 +1842,37 @@ def detect_candidate_clips(
         debug_bundle=debug_bundle,
         trust_burst_boundaries=True,
     )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
