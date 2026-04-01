@@ -17,7 +17,9 @@ from harvesting_tool.staged_detection import (
     MovementEvidenceRecord,
     MovementSpan,
     ScreenedCandidateUnion,
+    TOTAL_GRID_BLOCKS,
     assemble_stage6_candidate_ranges,
+    build_stage6_candidate_groups,
     build_movement_evidence_record,
     build_stage1_movement_spans,
     build_stage2_candidate_unions,
@@ -578,6 +580,40 @@ class TimeSliceClassificationTests(unittest.TestCase):
         self.assertEqual(slices[1].classification, "valid")
         self.assertEqual(slices[1].reason, "slice_activity_supported")
 
+    def test_stage4_keeps_moderately_strong_active_reference_slice_undetermined_in_long_strong_union(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=960)
+        screened_union = screened_union.__class__(
+            candidate_union=screened_union.candidate_union,
+            screening_result=screened_union.screening_result,
+            surviving=screened_union.surviving,
+            provisional_survival=screened_union.provisional_survival,
+            reason=screened_union.reason,
+            within_union_record_count=screened_union.within_union_record_count,
+            before_record_count=screened_union.before_record_count,
+            after_record_count=screened_union.after_record_count,
+            mean_movement_strength=screened_union.mean_movement_strength,
+            mean_temporal_persistence=screened_union.mean_temporal_persistence,
+            mean_spatial_extent=screened_union.mean_spatial_extent,
+            lasting_change_evidence_score=0.73,
+            before_reference_activity=screened_union.before_reference_activity,
+            after_reference_activity=screened_union.after_reference_activity,
+            reference_windows_reliable=screened_union.reference_windows_reliable,
+        )
+        records = [
+            make_record(1, 304, movement_present=True, movement_strength_score=0.76, temporal_persistence_score=0.74, spatial_extent_score=0.72, touched_grid_coordinates=((2, 2), (2, 3), (2, 4), (3, 2), (3, 3), (3, 4))),
+            make_record(2, 332, movement_present=True, movement_strength_score=0.75, temporal_persistence_score=0.73, spatial_extent_score=0.72, touched_grid_coordinates=((3, 2), (3, 3), (3, 4), (4, 2), (4, 3), (4, 4))),
+            make_record(3, 292, movement_present=True, movement_strength_score=0.76, temporal_persistence_score=0.74, spatial_extent_score=0.62),
+            make_record(4, 298, movement_present=True, movement_strength_score=0.75, temporal_persistence_score=0.73, spatial_extent_score=0.62),
+            make_record(5, 632, movement_present=True, movement_strength_score=0.75, temporal_persistence_score=0.73, spatial_extent_score=0.62),
+            make_record(6, 638, movement_present=True, movement_strength_score=0.76, temporal_persistence_score=0.74, spatial_extent_score=0.62),
+        ]
+
+        slices = classify_stage4_time_slices([screened_union], records)
+
+        self.assertEqual(len(slices), 2)
+        self.assertEqual(slices[0].classification, "undetermined")
+        self.assertEqual(slices[0].reason, "reference_windows_too_active")
+
     def test_stage4_marks_strong_slice_with_active_references_as_undetermined(self) -> None:
         screened_union = make_screened_union(start_frame=300, end_frame=420)
         records = [
@@ -728,7 +764,7 @@ class SubSliceRefinementTests(unittest.TestCase):
                 start_time="00:00:10:00",
                 end_time="00:00:10:15",
                 footprint=frozenset({(2, 2), (2, 3)}),
-                footprint_size=2,
+                footprint_size=8,
                 within_slice_record_count=2,
                 classification="invalid",
                 reason="reference_windows_too_active",
@@ -742,6 +778,111 @@ class SubSliceRefinementTests(unittest.TestCase):
 
         self.assertEqual(rescued.classification, "rocky")
         self.assertEqual(rescued.reason, "active_reference_minimum_size_reached")
+
+    def test_stage5_rescues_moderate_undetermined_leaf_in_long_strong_union(self) -> None:
+        rescued = classify_stage5_minimum_size_leaf(
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=1,
+                slice_level=3,
+                start_frame=300,
+                end_frame=315,
+                start_time="00:00:10:00",
+                end_time="00:00:10:15",
+                footprint=frozenset({(2, 2), (2, 3)}),
+                footprint_size=8,
+                within_slice_record_count=2,
+                classification="undetermined",
+                reason="reference_windows_too_active",
+                lasting_change_evidence_score=0.59,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=True,
+            ),
+            allow_long_strong_union_rocky_rescue=True,
+        )
+
+        self.assertEqual(rescued.classification, "rocky")
+        self.assertEqual(rescued.reason, "long_strong_union_minimum_size_reached")
+
+
+    def test_stage5_rescues_invalid_leaf_when_parent_activity_is_strong(self) -> None:
+        rescued = classify_stage5_minimum_size_leaf(
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=1,
+                slice_level=3,
+                start_frame=300,
+                end_frame=315,
+                start_time="00:00:10:00",
+                end_time="00:00:10:15",
+                footprint=frozenset({(2, 2), (2, 3)}),
+                footprint_size=8,
+                within_slice_record_count=2,
+                classification="invalid",
+                reason="reference_windows_too_active",
+                lasting_change_evidence_score=0.59,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=True,
+            ),
+            allow_high_parent_activity_rescue=True,
+        )
+
+        self.assertEqual(rescued.classification, "rocky")
+        self.assertEqual(rescued.reason, "high_parent_activity_minimum_size_reached")
+
+    def test_stage5_rescues_reference_unreliable_undetermined_leaf(self) -> None:
+        rescued = classify_stage5_minimum_size_leaf(
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=1,
+                slice_level=3,
+                start_frame=300,
+                end_frame=315,
+                start_time="00:00:10:00",
+                end_time="00:00:10:15",
+                footprint=frozenset({(2, 2), (2, 3)}),
+                footprint_size=8,
+                within_slice_record_count=2,
+                classification="undetermined",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.61,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=False,
+            ),
+            allow_reference_unreliable_rescue=True,
+        )
+
+        self.assertEqual(rescued.classification, "rocky")
+        self.assertEqual(rescued.reason, "reference_unreliable_minimum_size_reached")
+
+    def test_stage5_rescues_structural_gap_invalid_leaf(self) -> None:
+        rescued = classify_stage5_minimum_size_leaf(
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=1,
+                slice_level=3,
+                start_frame=300,
+                end_frame=315,
+                start_time="00:00:10:00",
+                end_time="00:00:10:15",
+                footprint=frozenset({(2, 2), (2, 3)}),
+                footprint_size=8,
+                within_slice_record_count=2,
+                classification="invalid",
+                reason="reference_windows_too_active",
+                lasting_change_evidence_score=0.58,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=True,
+            ),
+            allow_structural_gap_rescue=True,
+        )
+
+        self.assertEqual(rescued.classification, "rocky")
+        self.assertEqual(rescued.reason, "structural_gap_minimum_size_reached")
 
     def test_stage5_stops_at_minimum_subdivision_size(self) -> None:
         screened_union = make_screened_union(start_frame=300, end_frame=312)
@@ -806,7 +947,7 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
                 start_time="00:00:10:15",
                 end_time="00:00:11:00",
                 footprint=frozenset({(2, 3), (3, 3)}),
-                footprint_size=2,
+                footprint_size=8,
                 within_slice_record_count=2,
                 classification="valid",
                 reason="slice_activity_supported",
@@ -826,6 +967,87 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         self.assertEqual(final_ranges[0].retained_undetermined_count, 1)
         self.assertEqual(final_ranges[0].source_classifications, ("rocky", "valid"))
 
+    def test_stage6_merges_same_union_ranges_across_short_internal_gap(self) -> None:
+        refined_slices = [
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=1,
+                slice_level=1,
+                start_frame=300,
+                end_frame=315,
+                start_time="00:00:10:00",
+                end_time="00:00:10:15",
+                footprint=frozenset({(2, 2)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="reference_unreliable_minimum_size_reached",
+                lasting_change_evidence_score=0.69,
+                before_reference_activity=0.72,
+                after_reference_activity=0.68,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=2,
+                parent_union_index=1,
+                slice_level=1,
+                start_frame=338,
+                end_frame=353,
+                start_time="00:00:11:08",
+                end_time="00:00:11:23",
+                footprint=frozenset({(2, 3)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="reference_unreliable_minimum_size_reached",
+                lasting_change_evidence_score=0.68,
+                before_reference_activity=0.70,
+                after_reference_activity=0.67,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=3,
+                parent_union_index=1,
+                slice_level=1,
+                start_frame=353,
+                end_frame=368,
+                start_time="00:00:11:23",
+                end_time="00:00:12:08",
+                footprint=frozenset({(2, 4)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="reference_unreliable_minimum_size_reached",
+                lasting_change_evidence_score=0.69,
+                before_reference_activity=0.69,
+                after_reference_activity=0.66,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=4,
+                parent_union_index=1,
+                slice_level=1,
+                start_frame=368,
+                end_frame=383,
+                start_time="00:00:12:08",
+                end_time="00:00:12:23",
+                footprint=frozenset({(2, 5)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="reference_unreliable_minimum_size_reached",
+                lasting_change_evidence_score=0.70,
+                before_reference_activity=0.68,
+                after_reference_activity=0.66,
+                reference_windows_reliable=True,
+            ),
+        ]
+
+        final_ranges = assemble_stage6_candidate_ranges(refined_slices)
+
+        self.assertEqual(len(final_ranges), 1)
+        self.assertEqual(final_ranges[0].start_frame, 300)
+        self.assertEqual(final_ranges[0].end_frame, 383)
     def test_stage6_drops_isolated_rocky_minimum_size_slice(self) -> None:
         refined_slices = [
             ClassifiedTimeSlice(
@@ -934,6 +1156,231 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         self.assertEqual(final_ranges[0].end_frame, 560)
         self.assertEqual(final_ranges[0].source_classifications, ("rocky",))
 
+    def test_stage6_keeps_strong_quiet_parent_rocky_cluster(self) -> None:
+        refined_slices = [
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3794,
+                end_frame=3804,
+                start_time="00:02:06:14",
+                end_time="00:02:06:24",
+                footprint=frozenset({(2, 1)}),
+                footprint_size=17,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.660857,
+                before_reference_activity=0.078307,
+                after_reference_activity=0.777679,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=2,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3804,
+                end_frame=3815,
+                start_time="00:02:06:24",
+                end_time="00:02:07:05",
+                footprint=frozenset({(2, 2)}),
+                footprint_size=16,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.667455,
+                before_reference_activity=0.616898,
+                after_reference_activity=0.775000,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=3,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3815,
+                end_frame=3825,
+                start_time="00:02:07:05",
+                end_time="00:02:07:15",
+                footprint=frozenset({(2, 3)}),
+                footprint_size=14,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.654046,
+                before_reference_activity=0.773661,
+                after_reference_activity=0.811735,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=4,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3825,
+                end_frame=3836,
+                start_time="00:02:07:15",
+                end_time="00:02:07:26",
+                footprint=frozenset({(2, 4)}),
+                footprint_size=17,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.659071,
+                before_reference_activity=0.777679,
+                after_reference_activity=0.829911,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=5,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3836,
+                end_frame=3846,
+                start_time="00:02:07:26",
+                end_time="00:02:08:06",
+                footprint=frozenset({(2, 5)}),
+                footprint_size=42,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.694411,
+                before_reference_activity=0.779592,
+                after_reference_activity=0.800446,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=6,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3846,
+                end_frame=3857,
+                start_time="00:02:08:06",
+                end_time="00:02:08:17",
+                footprint=frozenset({(2, 6)}),
+                footprint_size=41,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.691775,
+                before_reference_activity=0.813265,
+                after_reference_activity=0.768878,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=7,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3857,
+                end_frame=3867,
+                start_time="00:02:08:17",
+                end_time="00:02:08:27",
+                footprint=frozenset({(2, 7)}),
+                footprint_size=14,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.663536,
+                before_reference_activity=0.803125,
+                after_reference_activity=0.764286,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=8,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3867,
+                end_frame=3878,
+                start_time="00:02:08:27",
+                end_time="00:02:09:08",
+                footprint=frozenset({(3, 2)}),
+                footprint_size=12,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.649393,
+                before_reference_activity=0.772321,
+                after_reference_activity=0.783036,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=9,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3878,
+                end_frame=3888,
+                start_time="00:02:09:08",
+                end_time="00:02:09:18",
+                footprint=frozenset({(3, 3)}),
+                footprint_size=13,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.672589,
+                before_reference_activity=0.764286,
+                after_reference_activity=0.770982,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=10,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3888,
+                end_frame=3899,
+                start_time="00:02:09:18",
+                end_time="00:02:09:29",
+                footprint=frozenset({(3, 4)}),
+                footprint_size=14,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.668461,
+                before_reference_activity=0.778061,
+                after_reference_activity=0.762755,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=11,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3899,
+                end_frame=3909,
+                start_time="00:02:09:29",
+                end_time="00:02:10:09",
+                footprint=frozenset({(3, 5)}),
+                footprint_size=12,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.656913,
+                before_reference_activity=0.781696,
+                after_reference_activity=0.762755,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=12,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=3909,
+                end_frame=3920,
+                start_time="00:02:10:09",
+                end_time="00:02:10:20",
+                footprint=frozenset({(3, 6)}),
+                footprint_size=11,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.646976,
+                before_reference_activity=0.769643,
+                after_reference_activity=0.000000,
+                reference_windows_reliable=True,
+            ),
+        ]
+
+        final_ranges = assemble_stage6_candidate_ranges(refined_slices)
+
+        self.assertEqual(len(final_ranges), 1)
+        self.assertEqual(final_ranges[0].start_frame, 3794)
+        self.assertEqual(final_ranges[0].end_frame, 3920)
     def test_stage6_keeps_active_reference_rocky_reason_as_candidate(self) -> None:
         refined_slices = [
             ClassifiedTimeSlice(
@@ -980,6 +1427,67 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         self.assertEqual(final_ranges[0].start_frame, 400)
         self.assertEqual(final_ranges[0].source_classifications, ("rocky", "valid"))
 
+    def test_stage6_drops_short_long_strong_cluster_with_only_one_rescue_slice(self) -> None:
+        refined_slices = [
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=4,
+                slice_level=1,
+                start_frame=800,
+                end_frame=815,
+                start_time="00:00:26:20",
+                end_time="00:00:27:05",
+                footprint=frozenset({(2, 2)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="long_strong_union_minimum_size_reached",
+                lasting_change_evidence_score=0.59,
+                before_reference_activity=0.47,
+                after_reference_activity=0.67,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=2,
+                parent_union_index=4,
+                slice_level=1,
+                start_frame=815,
+                end_frame=830,
+                start_time="00:00:27:05",
+                end_time="00:00:27:20",
+                footprint=frozenset({(2, 3)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.67,
+                before_reference_activity=0.76,
+                after_reference_activity=0.46,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=3,
+                parent_union_index=4,
+                slice_level=1,
+                start_frame=830,
+                end_frame=845,
+                start_time="00:00:27:20",
+                end_time="00:00:28:05",
+                footprint=frozenset({(2, 4)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.67,
+                before_reference_activity=0.57,
+                after_reference_activity=0.49,
+                reference_windows_reliable=True,
+            ),
+        ]
+
+        final_ranges = assemble_stage6_candidate_ranges(refined_slices)
+
+        self.assertEqual(final_ranges, [])
     def test_stage6_keeps_long_active_reference_rocky_cluster(self) -> None:
         refined_slices = [
             ClassifiedTimeSlice(
@@ -1031,7 +1539,7 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
                 within_slice_record_count=1,
                 classification="rocky",
                 reason="minimum_subdivision_size_reached",
-                lasting_change_evidence_score=0.63,
+                lasting_change_evidence_score=0.70,
                 before_reference_activity=0.76,
                 after_reference_activity=0.75,
                 reference_windows_reliable=True,
@@ -1078,6 +1586,321 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
 
         self.assertEqual(len(final_ranges), 1)
         self.assertEqual(final_ranges[0].start_frame, 800)
+        self.assertEqual(final_ranges[0].source_classifications, ("rocky",))
+
+
+    def test_stage6_merges_rocky_clusters_across_small_gap(self) -> None:
+        refined_slices = [
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=5,
+                slice_level=1,
+                start_frame=300,
+                end_frame=315,
+                start_time="00:00:10:00",
+                end_time="00:00:10:15",
+                footprint=frozenset({(2, 2)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="reference_unreliable_minimum_size_reached",
+                lasting_change_evidence_score=0.70,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=2,
+                parent_union_index=5,
+                slice_level=1,
+                start_frame=315,
+                end_frame=330,
+                start_time="00:00:10:15",
+                end_time="00:00:11:00",
+                footprint=frozenset({(2, 3)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.71,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=3,
+                parent_union_index=5,
+                slice_level=1,
+                start_frame=342,
+                end_frame=357,
+                start_time="00:00:11:12",
+                end_time="00:00:11:27",
+                footprint=frozenset({(2, 4)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.71,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=4,
+                parent_union_index=5,
+                slice_level=1,
+                start_frame=357,
+                end_frame=372,
+                start_time="00:00:11:27",
+                end_time="00:00:12:12",
+                footprint=frozenset({(2, 5)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="reference_unreliable_minimum_size_reached",
+                lasting_change_evidence_score=0.70,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+        ]
+
+        final_ranges = assemble_stage6_candidate_ranges(refined_slices)
+
+        self.assertEqual(len(final_ranges), 1)
+        self.assertEqual(final_ranges[0].start_frame, 300)
+        self.assertEqual(final_ranges[0].end_frame, 372)
+        self.assertEqual(final_ranges[0].source_classifications, ("rocky",))
+
+    def test_stage6_keeps_long_strong_union_rocky_cluster(self) -> None:
+        refined_slices = [
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=6,
+                slice_level=1,
+                start_frame=300,
+                end_frame=315,
+                start_time="00:00:10:00",
+                end_time="00:00:10:15",
+                footprint=frozenset({(2, 2)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="long_strong_union_minimum_size_reached",
+                lasting_change_evidence_score=0.61,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=2,
+                parent_union_index=6,
+                slice_level=1,
+                start_frame=315,
+                end_frame=330,
+                start_time="00:00:10:15",
+                end_time="00:00:11:00",
+                footprint=frozenset({(2, 3)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.60,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=3,
+                parent_union_index=6,
+                slice_level=1,
+                start_frame=330,
+                end_frame=345,
+                start_time="00:00:11:00",
+                end_time="00:00:11:15",
+                footprint=frozenset({(2, 4)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.61,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=4,
+                parent_union_index=6,
+                slice_level=1,
+                start_frame=345,
+                end_frame=360,
+                start_time="00:00:11:15",
+                end_time="00:00:12:00",
+                footprint=frozenset({(2, 5)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.60,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+        ]
+
+        final_ranges = assemble_stage6_candidate_ranges(refined_slices)
+
+        self.assertEqual(len(final_ranges), 1)
+        self.assertEqual(final_ranges[0].start_frame, 300)
+        self.assertEqual(final_ranges[0].end_frame, 360)
+        self.assertEqual(final_ranges[0].source_classifications, ("rocky",))
+
+    def test_stage6_keeps_high_parent_activity_rocky_cluster(self) -> None:
+        refined_slices = [
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=7,
+                slice_level=1,
+                start_frame=500,
+                end_frame=515,
+                start_time="00:00:16:20",
+                end_time="00:00:17:05",
+                footprint=frozenset({(2, 2)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="high_parent_activity_minimum_size_reached",
+                lasting_change_evidence_score=0.59,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=2,
+                parent_union_index=7,
+                slice_level=1,
+                start_frame=515,
+                end_frame=530,
+                start_time="00:00:17:05",
+                end_time="00:00:17:20",
+                footprint=frozenset({(2, 3)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="high_parent_activity_minimum_size_reached",
+                lasting_change_evidence_score=0.60,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=3,
+                parent_union_index=7,
+                slice_level=1,
+                start_frame=530,
+                end_frame=545,
+                start_time="00:00:17:20",
+                end_time="00:00:18:05",
+                footprint=frozenset({(2, 4)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="high_parent_activity_minimum_size_reached",
+                lasting_change_evidence_score=0.59,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=4,
+                parent_union_index=7,
+                slice_level=1,
+                start_frame=545,
+                end_frame=560,
+                start_time="00:00:18:05",
+                end_time="00:00:18:20",
+                footprint=frozenset({(2, 5)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="high_parent_activity_minimum_size_reached",
+                lasting_change_evidence_score=0.60,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=True,
+            ),
+        ]
+
+        final_ranges = assemble_stage6_candidate_ranges(refined_slices)
+
+        self.assertEqual(len(final_ranges), 1)
+        self.assertEqual(final_ranges[0].start_frame, 500)
+        self.assertEqual(final_ranges[0].end_frame, 560)
+        self.assertEqual(final_ranges[0].source_classifications, ("rocky",))
+
+    def test_stage6_keeps_short_long_strong_union_rocky_cluster(self) -> None:
+        refined_slices = [
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=8,
+                slice_level=1,
+                start_frame=750,
+                end_frame=765,
+                start_time="00:00:25:00",
+                end_time="00:00:25:15",
+                footprint=frozenset({(2, 2)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.61,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=2,
+                parent_union_index=8,
+                slice_level=1,
+                start_frame=765,
+                end_frame=777,
+                start_time="00:00:25:15",
+                end_time="00:00:25:27",
+                footprint=frozenset({(2, 3)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="long_strong_union_minimum_size_reached",
+                lasting_change_evidence_score=0.60,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=3,
+                parent_union_index=8,
+                slice_level=1,
+                start_frame=777,
+                end_frame=784,
+                start_time="00:00:25:27",
+                end_time="00:00:26:04",
+                footprint=frozenset({(2, 4)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="long_strong_union_minimum_size_reached",
+                lasting_change_evidence_score=0.585,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+        ]
+
+        final_ranges = assemble_stage6_candidate_ranges(refined_slices)
+
+        self.assertEqual(len(final_ranges), 1)
+        self.assertEqual(final_ranges[0].start_frame, 750)
+        self.assertEqual(final_ranges[0].end_frame, 784)
         self.assertEqual(final_ranges[0].source_classifications, ("rocky",))
 
 
@@ -1142,6 +1965,261 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         final_ranges = assemble_stage6_candidate_ranges(refined_slices)
         self.assertEqual(final_ranges, [])
 
+    def test_stage6_keeps_short_abrupt_canvas_change_cluster(self) -> None:
+        refined_slices = [
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=900,
+                end_frame=908,
+                start_time="00:00:30:00",
+                end_time="00:00:30:08",
+                footprint=frozenset((row_index, column_index) for row_index in range(12) for column_index in range(12)),
+                footprint_size=TOTAL_GRID_BLOCKS,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.655,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=2,
+                parent_union_index=9,
+                slice_level=1,
+                start_frame=908,
+                end_frame=916,
+                start_time="00:00:30:08",
+                end_time="00:00:30:16",
+                footprint=frozenset({(4, 4), (4, 5)}),
+                footprint_size=8,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.665,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+        ]
+
+        final_ranges = assemble_stage6_candidate_ranges(refined_slices)
+
+        self.assertEqual(len(final_ranges), 1)
+        self.assertEqual(final_ranges[0].start_frame, 900)
+        self.assertEqual(final_ranges[0].end_frame, 916)
+        self.assertEqual(final_ranges[0].source_classifications, ("rocky",))
+
+    def test_stage6_keeps_reference_unreliable_rocky_cluster(self) -> None:
+        refined_slices = [
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=11,
+                slice_level=1,
+                start_frame=1000,
+                end_frame=1015,
+                start_time="00:00:33:10",
+                end_time="00:00:33:25",
+                footprint=frozenset({(4, 4)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="reference_unreliable_minimum_size_reached",
+                lasting_change_evidence_score=0.63,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=False,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=2,
+                parent_union_index=11,
+                slice_level=1,
+                start_frame=1015,
+                end_frame=1030,
+                start_time="00:00:33:25",
+                end_time="00:00:34:10",
+                footprint=frozenset({(4, 5)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="reference_unreliable_minimum_size_reached",
+                lasting_change_evidence_score=0.62,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=False,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=3,
+                parent_union_index=11,
+                slice_level=1,
+                start_frame=1030,
+                end_frame=1045,
+                start_time="00:00:34:10",
+                end_time="00:00:34:25",
+                footprint=frozenset({(4, 6)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="reference_unreliable_minimum_size_reached",
+                lasting_change_evidence_score=0.63,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=False,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=4,
+                parent_union_index=11,
+                slice_level=1,
+                start_frame=1045,
+                end_frame=1060,
+                start_time="00:00:34:25",
+                end_time="00:00:35:10",
+                footprint=frozenset({(4, 7)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="reference_unreliable_minimum_size_reached",
+                lasting_change_evidence_score=0.64,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=False,
+            ),
+        ]
+
+        final_ranges = assemble_stage6_candidate_ranges(refined_slices)
+
+        self.assertEqual(len(final_ranges), 1)
+        self.assertEqual(final_ranges[0].start_frame, 1000)
+        self.assertEqual(final_ranges[0].end_frame, 1060)
+        self.assertEqual(final_ranges[0].source_classifications, ("rocky",))
+
+    def test_stage6_keeps_structural_gap_rocky_cluster(self) -> None:
+        refined_slices = [
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=12,
+                slice_level=1,
+                start_frame=1100,
+                end_frame=1115,
+                start_time="00:00:36:20",
+                end_time="00:00:37:05",
+                footprint=frozenset({(2, 2)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="structural_gap_minimum_size_reached",
+                lasting_change_evidence_score=0.59,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=2,
+                parent_union_index=12,
+                slice_level=1,
+                start_frame=1115,
+                end_frame=1130,
+                start_time="00:00:37:05",
+                end_time="00:00:37:20",
+                footprint=frozenset({(2, 3)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="structural_gap_minimum_size_reached",
+                lasting_change_evidence_score=0.59,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=3,
+                parent_union_index=12,
+                slice_level=1,
+                start_frame=1130,
+                end_frame=1145,
+                start_time="00:00:37:20",
+                end_time="00:00:38:05",
+                footprint=frozenset({(2, 4)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="structural_gap_minimum_size_reached",
+                lasting_change_evidence_score=0.59,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=4,
+                parent_union_index=12,
+                slice_level=1,
+                start_frame=1145,
+                end_frame=1160,
+                start_time="00:00:38:05",
+                end_time="00:00:38:20",
+                footprint=frozenset({(2, 5)}),
+                footprint_size=1,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="structural_gap_minimum_size_reached",
+                lasting_change_evidence_score=0.59,
+                before_reference_activity=0.76,
+                after_reference_activity=0.75,
+                reference_windows_reliable=True,
+            ),
+        ]
+
+        final_ranges = assemble_stage6_candidate_ranges(refined_slices)
+
+        self.assertEqual(len(final_ranges), 1)
+        self.assertEqual(final_ranges[0].start_frame, 1100)
+        self.assertEqual(final_ranges[0].end_frame, 1160)
+        self.assertEqual(final_ranges[0].source_classifications, ("rocky",))
+    def test_stage6_drops_short_small_footprint_cluster_without_abrupt_signature(self) -> None:
+        refined_slices = [
+            ClassifiedTimeSlice(
+                slice_index=1,
+                parent_union_index=10,
+                slice_level=1,
+                start_frame=930,
+                end_frame=938,
+                start_time="00:00:31:00",
+                end_time="00:00:31:08",
+                footprint=frozenset({(4, 4), (4, 5)}),
+                footprint_size=8,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.655,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+            ClassifiedTimeSlice(
+                slice_index=2,
+                parent_union_index=10,
+                slice_level=1,
+                start_frame=938,
+                end_frame=946,
+                start_time="00:00:31:08",
+                end_time="00:00:31:16",
+                footprint=frozenset({(4, 6), (4, 7)}),
+                footprint_size=8,
+                within_slice_record_count=1,
+                classification="rocky",
+                reason="minimum_subdivision_size_reached",
+                lasting_change_evidence_score=0.665,
+                before_reference_activity=0.72,
+                after_reference_activity=0.70,
+                reference_windows_reliable=True,
+            ),
+        ]
+
+        final_ranges = assemble_stage6_candidate_ranges(refined_slices)
+        self.assertEqual(final_ranges, [])
+
     def test_stage6_merges_contiguous_valid_ranges_within_same_union(self) -> None:
         refined_slices = [
             ClassifiedTimeSlice(
@@ -1191,6 +2269,35 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         self.assertEqual(final_ranges[0].source_classifications, ("valid",))
 if __name__ == "__main__":
     unittest.main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

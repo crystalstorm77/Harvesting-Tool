@@ -107,6 +107,25 @@ class ResolveReviewPlanningTests(unittest.TestCase):
         self.assertEqual(clip.activity_start.to_hhmmssff(), "00:00:10:02")
         self.assertEqual(clip.clip_end.to_hhmmssff(), "00:00:12:09")
 
+    def test_candidate_clip_from_dict_clamps_negative_tail_after_to_zero(self) -> None:
+        clip = candidate_clip_from_dict(
+            {
+                "clip_index": 4,
+                "source_path": "A:\\sample.mp4",
+                "chapter_start": "00:00:00:00",
+                "chapter_end": "00:02:00:00",
+                "activity_start": "00:01:58:00",
+                "activity_end": "00:02:00:01",
+                "clip_start": "00:01:57:28",
+                "clip_end": "00:02:00:00",
+                "lead_in": {"seconds": 0, "frames": 2},
+                "tail_after": {"seconds": -1, "frames": 29},
+            }
+        )
+
+        self.assertEqual(clip.tail_after.total_frames, 0)
+        self.assertEqual(clip.clip_end.to_hhmmssff(), "00:02:00:00")
+
     def test_load_review_payload_uses_first_clip_as_source_and_chapter_reference(self) -> None:
         payload = {
             "clips": [
@@ -151,3 +170,4 @@ class ResolveReviewPlanningTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

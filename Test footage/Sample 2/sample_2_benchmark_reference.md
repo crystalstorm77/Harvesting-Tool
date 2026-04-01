@@ -111,4 +111,4 @@ Start: 00:03:24:11
 End: 00:03:34:01
 Notes: Third real drawing section with valid canvas updates.
 
-Total video length: 00:03:34:01
+Total video length: 00:03:39:00

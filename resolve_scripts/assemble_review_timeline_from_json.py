@@ -8,8 +8,8 @@ from pathlib import Path
 import sys
 
 REPO_ROOT = Path(r"A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool")
-HARVEST_JSON_PATH = REPO_ROOT / "Test footage" / "mini_sample2_staged_debug_longclips.json"
-REVIEW_TIMELINE_NAME = "Mini-Sample-2 Rocky 2"
+HARVEST_JSON_PATH = REPO_ROOT / "Test footage" / "sample2_staged_benchmark.json"
+REVIEW_TIMELINE_NAME = "Sample-2 Base  T13"
 INCLUDE_SOURCE_TRACK = True
 
 

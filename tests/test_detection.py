@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # SECTION A - Imports And Helpers
 # ============================================================
 
@@ -236,6 +236,22 @@ class CandidateClipTests(unittest.TestCase):
         total_frames = sum(clip.duration.total_frames for clip in clips)
         self.assertEqual(Timecode(total_frames=total_frames).to_hhmmssff(), "00:00:09:12")
 
+    def test_candidate_clip_clamps_activity_end_and_tail_after_at_chapter_end(self) -> None:
+        settings = make_settings()
+        chapter = parse_chapter_range("00:00:00:00", "00:00:10:00")
+        clips = build_candidate_clips(
+            "sample.mp4",
+            chapter,
+            bursts=[(295, 305)],
+            settings=settings,
+            trust_burst_boundaries=True,
+        )
+
+        self.assertEqual(len(clips), 1)
+        self.assertEqual(clips[0].activity_end.to_hhmmssff(), "00:00:10:00")
+        self.assertEqual(clips[0].clip_end.to_hhmmssff(), "00:00:10:00")
+        self.assertEqual(clips[0].tail_after.to_seconds_frames(), {"seconds": 0, "frames": 0})
+
     def test_trusted_burst_boundaries_skip_editorial_remerge(self) -> None:
         settings = make_settings()
         chapter = parse_chapter_range("00:00:00:00", "00:01:00:00")
@@ -443,6 +459,7 @@ class CutListWritingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

@@ -4400,9 +4400,9 @@
     "parent_union_index": 17,
     "slice_level": 0,
     "start_frame": 5398,
-    "end_frame": 5913,
+    "end_frame": 5910,
     "start_time": "00:02:59:28",
-    "end_time": "00:03:17:03",
+    "end_time": "00:03:17:00",
     "footprint": [
       [
         0,
@@ -4982,12 +4982,12 @@
       ]
     ],
     "footprint_size": 144,
-    "within_slice_record_count": 258,
+    "within_slice_record_count": 256,
     "classification": "undetermined",
     "reason": "mixed_reference_activity",
-    "lasting_change_evidence_score": 0.641068,
+    "lasting_change_evidence_score": 0.621612,
     "before_reference_activity": 0.07463,
-    "after_reference_activity": 0.862857,
+    "after_reference_activity": 0.952857,
     "reference_windows_reliable": true,
     "parent_range": null
   },
@@ -4995,10 +4995,10 @@
     "slice_index": 2,
     "parent_union_index": 17,
     "slice_level": 0,
-    "start_frame": 5913,
-    "end_frame": 6428,
-    "start_time": "00:03:17:03",
-    "end_time": "00:03:34:08",
+    "start_frame": 5910,
+    "end_frame": 6422,
+    "start_time": "00:03:17:00",
+    "end_time": "00:03:34:02",
     "footprint": [
       [
         0,
@@ -5578,233 +5578,13 @@
       ]
     ],
     "footprint_size": 144,
-    "within_slice_record_count": 257,
+    "within_slice_record_count": 256,
     "classification": "undetermined",
-    "reason": "mixed_reference_activity",
-    "lasting_change_evidence_score": 0.791608,
+    "reason": "reference_windows_unreliable",
+    "lasting_change_evidence_score": 0.796779,
     "before_reference_activity": 1.0,
-    "after_reference_activity": 0.010447,
-    "reference_windows_reliable": true,
-    "parent_range": null
-  },
-  {
-    "slice_index": 1,
-    "parent_union_index": 18,
-    "slice_level": 0,
-    "start_frame": 6486,
-    "end_frame": 6490,
-    "start_time": "00:03:36:06",
-    "end_time": "00:03:36:10",
-    "footprint": [
-      [
-        5,
-        4
-      ],
-      [
-        5,
-        5
-      ],
-      [
-        6,
-        4
-      ],
-      [
-        6,
-        5
-      ],
-      [
-        7,
-        5
-      ]
-    ],
-    "footprint_size": 5,
-    "within_slice_record_count": 2,
-    "classification": "undetermined",
-    "reason": "mixed_reference_activity",
-    "lasting_change_evidence_score": 0.656988,
-    "before_reference_activity": 0.150714,
-    "after_reference_activity": 0.202203,
-    "reference_windows_reliable": true,
-    "parent_range": null
-  },
-  {
-    "slice_index": 2,
-    "parent_union_index": 18,
-    "slice_level": 0,
-    "start_frame": 6490,
-    "end_frame": 6494,
-    "start_time": "00:03:36:10",
-    "end_time": "00:03:36:14",
-    "footprint": [
-      [
-        0,
-        11
-      ],
-      [
-        1,
-        4
-      ],
-      [
-        1,
-        5
-      ],
-      [
-        1,
-        11
-      ],
-      [
-        2,
-        5
-      ],
-      [
-        2,
-        6
-      ],
-      [
-        2,
-        7
-      ],
-      [
-        2,
-        11
-      ],
-      [
-        3,
-        3
-      ],
-      [
-        3,
-        4
-      ],
-      [
-        3,
-        5
-      ],
-      [
-        3,
-        6
-      ],
-      [
-        3,
-        7
-      ],
-      [
-        3,
-        11
-      ],
-      [
-        4,
-        3
-      ],
-      [
-        4,
-        4
-      ],
-      [
-        4,
-        5
-      ],
-      [
-        4,
-        6
-      ],
-      [
-        4,
-        7
-      ],
-      [
-        4,
-        11
-      ],
-      [
-        5,
-        3
-      ],
-      [
-        5,
-        4
-      ],
-      [
-        5,
-        5
-      ],
-      [
-        5,
-        6
-      ],
-      [
-        5,
-        11
-      ],
-      [
-        6,
-        2
-      ],
-      [
-        6,
-        3
-      ],
-      [
-        6,
-        4
-      ],
-      [
-        6,
-        5
-      ],
-      [
-        6,
-        6
-      ],
-      [
-        6,
-        11
-      ],
-      [
-        7,
-        3
-      ],
-      [
-        7,
-        4
-      ],
-      [
-        7,
-        5
-      ],
-      [
-        7,
-        6
-      ],
-      [
-        7,
-        11
-      ],
-      [
-        8,
-        11
-      ],
-      [
-        9,
-        11
-      ],
-      [
-        10,
-        11
-      ],
-      [
-        11,
-        11
-      ]
-    ],
-    "footprint_size": 40,
-    "within_slice_record_count": 2,
-    "classification": "undetermined",
-    "reason": "mixed_reference_activity",
-    "lasting_change_evidence_score": 0.691931,
-    "before_reference_activity": 0.45,
     "after_reference_activity": 0.0,
-    "reference_windows_reliable": true,
+    "reference_windows_reliable": false,
     "parent_range": null
   }
 ]

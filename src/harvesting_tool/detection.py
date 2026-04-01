@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # SECTION A - Imports And Constants
 # ============================================================
 
@@ -443,6 +443,7 @@ def build_candidate_clips(
         while chunk_start < activity_end_frame:
             chunk_end = min(chunk_start + content_limit, activity_end_frame)
             clip_start_frame, clip_end_frame = expand_clip_window(chunk_start, chunk_end, chapter_range, settings)
+            clamped_activity_end_frame = min(chunk_end, clip_end_frame)
 
             clip = CandidateClip(
                 clip_index=next_index,
@@ -450,11 +451,11 @@ def build_candidate_clips(
                 chapter_start=chapter_range.start,
                 chapter_end=chapter_range.end,
                 activity_start=Timecode(total_frames=chunk_start),
-                activity_end=Timecode(total_frames=chunk_end),
+                activity_end=Timecode(total_frames=clamped_activity_end_frame),
                 clip_start=Timecode(total_frames=clip_start_frame),
                 clip_end=Timecode(total_frames=clip_end_frame),
                 lead_in=Timecode(total_frames=chunk_start - clip_start_frame),
-                tail_after=Timecode(total_frames=clip_end_frame - chunk_end),
+                tail_after=Timecode(total_frames=max(0, clip_end_frame - clamped_activity_end_frame)),
             )
             clips.append(clip)
             next_index += 1
@@ -1842,6 +1843,7 @@ def detect_candidate_clips(
         debug_bundle=debug_bundle,
         trust_burst_boundaries=True,
     )
+
 
 
 

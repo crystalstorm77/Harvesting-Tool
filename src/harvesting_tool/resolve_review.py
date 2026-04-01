@@ -63,6 +63,12 @@ class Timecode:
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}"
 
 
+def clamp_non_negative_seconds_frames(seconds: int, frames: int) -> tuple[int, int]:
+    total_frames = max(0, (seconds * FRAME_RATE) + frames)
+    normalized_seconds, normalized_frames = divmod(total_frames, FRAME_RATE)
+    return normalized_seconds, normalized_frames
+
+
 @dataclass(frozen=True)
 class ChapterRange:
     start: Timecode
@@ -131,6 +137,15 @@ def candidate_clip_from_dict(payload: dict[str, object]) -> CandidateClip:
     if not isinstance(lead_in_payload, dict) or not isinstance(tail_after_payload, dict):
         raise ValueError("Candidate clip payload is missing lead-in or tail-after timing data.")
 
+    lead_in_seconds, lead_in_frames = clamp_non_negative_seconds_frames(
+        int(lead_in_payload["seconds"]),
+        int(lead_in_payload["frames"]),
+    )
+    tail_after_seconds, tail_after_frames = clamp_non_negative_seconds_frames(
+        int(tail_after_payload["seconds"]),
+        int(tail_after_payload["frames"]),
+    )
+
     return CandidateClip(
         clip_index=int(payload["clip_index"]),
         source_path=str(payload["source_path"]),
@@ -141,12 +156,12 @@ def candidate_clip_from_dict(payload: dict[str, object]) -> CandidateClip:
         clip_start=Timecode.from_hhmmssff(str(payload["clip_start"])),
         clip_end=Timecode.from_hhmmssff(str(payload["clip_end"])),
         lead_in=Timecode.from_seconds_and_frames(
-            int(lead_in_payload["seconds"]),
-            int(lead_in_payload["frames"]),
+            lead_in_seconds,
+            lead_in_frames,
         ),
         tail_after=Timecode.from_seconds_and_frames(
-            int(tail_after_payload["seconds"]),
-            int(tail_after_payload["frames"]),
+            tail_after_seconds,
+            tail_after_frames,
         ),
     )
 
@@ -400,3 +415,4 @@ def create_review_timeline(
         clip_count=len(clips),
         source_track_included=options.include_source_track,
     )
+

@@ -61,10 +61,32 @@ STAGE4_MIN_CONTRAST_SCORE = 0.05
 STRONG_ACTIVE_REFERENCE_UNDETERMINED_FLOOR = 0.60
 ROCKY_MINIMUM_SIZE_EVIDENCE_FLOOR = 0.60
 ACTIVE_REFERENCE_ROCKY_RESCUE_FLOOR = 0.55
+LONG_STRONG_UNION_MIN_FRAMES = FRAME_RATE * 20
+LONG_STRONG_UNION_STAGE3_SCORE_FLOOR = 0.70
+LONG_STRONG_UNION_ACTIVE_REFERENCE_UNDETERMINED_FLOOR = 0.58
+HIGH_PARENT_ACTIVITY_PARENT_SCORE_FLOOR = 0.75
+HIGH_PARENT_ACTIVITY_RESCUE_FLOOR = 0.58
+REFERENCE_UNRELIABLE_PARENT_SCORE_FLOOR = 0.78
+REFERENCE_UNRELIABLE_RESCUE_FLOOR = 0.60
+STRUCTURAL_GAP_PARENT_SCORE_FLOOR = 0.65
+STRUCTURAL_GAP_RESCUE_FLOOR = 0.58
+LONG_STRONG_UNION_MINIMUM_RESCUE_FOOTPRINT = 8
+STRUCTURAL_GAP_MINIMUM_RESCUE_FOOTPRINT = 7
 STAGE5_MIN_SUBDIVISION_FRAMES = 15
 STAGE6_MIN_ROCKY_CLUSTER_FRAMES = FRAME_RATE
 STAGE6_MIN_ROCKY_SLICE_COUNT = 4
 STAGE6_MIN_ROCKY_CLUSTER_AVERAGE_EVIDENCE = 0.68
+STAGE6_MIN_SHORT_ROCKY_SLICE_COUNT = 3
+STAGE6_STRONG_QUIET_PARENT_CLUSTER_MIN_FRAMES = FRAME_RATE * 3
+STAGE6_STRONG_QUIET_PARENT_CLUSTER_MIN_AVERAGE_EVIDENCE = 0.65
+STAGE6_STRONG_QUIET_PARENT_CLUSTER_MIN_FOOTPRINT = 40
+STAGE6_STRONG_QUIET_PARENT_MAX_EDGE_ACTIVITY = 0.16
+STAGE6_SAME_UNION_MERGE_GAP_FRAMES = FRAME_RATE + (FRAME_RATE // 2)
+STAGE6_EXTENDED_GAP_BUDGET_FRAMES = STAGE6_SAME_UNION_MERGE_GAP_FRAMES + 1
+STAGE6_ABRUPT_CANVAS_CHANGE_MAX_FRAMES = FRAME_RATE
+STAGE6_ABRUPT_CANVAS_CHANGE_MAX_SLICE_COUNT = 2
+STAGE6_ABRUPT_CANVAS_CHANGE_MIN_EVIDENCE = 0.64
+STAGE6_ABRUPT_CANVAS_CHANGE_MIN_FOOTPRINT = TOTAL_GRID_BLOCKS
 
 
 @dataclass(frozen=True)
@@ -807,7 +829,11 @@ def classify_time_slice(
         and after_reference_activity > STAGE4_MAX_REFERENCE_ACTIVITY
     )
     relaxed_boundary_contrast_score = STAGE4_MIN_CONTRAST_SCORE * 0.8
-
+    long_strong_union_supports_refinement = (
+        (screened_candidate_union.candidate_union.end_frame - screened_candidate_union.candidate_union.start_frame)
+        >= LONG_STRONG_UNION_MIN_FRAMES
+        and screened_candidate_union.lasting_change_evidence_score >= LONG_STRONG_UNION_STAGE3_SCORE_FLOOR
+    )
     if not slice_records or footprint_size == 0 or lasting_change_evidence_score <= STAGE4_INVALID_EVIDENCE_SCORE:
         classification = 'invalid'
         reason = 'weak_slice_activity'
@@ -817,7 +843,11 @@ def classify_time_slice(
     elif (
         lasting_change_evidence_score >= STAGE4_VALID_EVIDENCE_SCORE
         and (
-            contrast_score >= STAGE4_MIN_CONTRAST_SCORE
+            (contrast_score >= STAGE4_MIN_CONTRAST_SCORE
+             and (
+                 not both_references_active
+                 or screened_candidate_union.lasting_change_evidence_score >= LONG_STRONG_UNION_STAGE3_SCORE_FLOOR
+             ))
             or (quiet_reference_available and contrast_score >= relaxed_boundary_contrast_score)
             or (quiet_reference_available and reference_activity_ceiling <= STAGE4_MAX_REFERENCE_ACTIVITY)
         )
@@ -828,7 +858,13 @@ def classify_time_slice(
         classification = 'undetermined'
         reason = 'mixed_reference_activity'
     elif contrast_score < 0 and both_references_active:
-        if lasting_change_evidence_score >= STRONG_ACTIVE_REFERENCE_UNDETERMINED_FLOOR:
+        if (
+            lasting_change_evidence_score >= STRONG_ACTIVE_REFERENCE_UNDETERMINED_FLOOR
+            or (
+                long_strong_union_supports_refinement
+                and lasting_change_evidence_score >= LONG_STRONG_UNION_ACTIVE_REFERENCE_UNDETERMINED_FLOOR
+            )
+        ):
             classification = 'undetermined'
             reason = 'reference_windows_too_active'
         else:
@@ -906,13 +942,47 @@ def build_stage5_sub_slice_ranges(time_slice: ClassifiedTimeSlice) -> list[tuple
 def classify_stage5_minimum_size_leaf(
     time_slice: ClassifiedTimeSlice,
     allow_active_reference_rescue: bool = False,
+    allow_long_strong_union_rocky_rescue: bool = False,
+    allow_high_parent_activity_rescue: bool = False,
+    allow_reference_unreliable_rescue: bool = False,
+    allow_structural_gap_rescue: bool = False,
 ) -> ClassifiedTimeSlice:
+    if (
+        allow_reference_unreliable_rescue
+        and time_slice.classification == 'undetermined'
+        and time_slice.footprint_size > 0
+        and time_slice.lasting_change_evidence_score >= REFERENCE_UNRELIABLE_RESCUE_FLOOR
+    ):
+        return replace(time_slice, classification='rocky', reason='reference_unreliable_minimum_size_reached')
     if (
         time_slice.classification == 'undetermined'
         and time_slice.footprint_size > 0
         and time_slice.lasting_change_evidence_score >= ROCKY_MINIMUM_SIZE_EVIDENCE_FLOOR
     ):
         return replace(time_slice, classification='rocky', reason='minimum_subdivision_size_reached')
+    if (
+        allow_long_strong_union_rocky_rescue
+        and time_slice.classification == 'undetermined'
+        and time_slice.footprint_size > 0
+        and time_slice.lasting_change_evidence_score >= LONG_STRONG_UNION_ACTIVE_REFERENCE_UNDETERMINED_FLOOR
+    ):
+        return replace(time_slice, classification='rocky', reason='long_strong_union_minimum_size_reached')
+    if (
+        allow_structural_gap_rescue
+        and time_slice.classification == 'invalid'
+        and time_slice.reason == 'reference_windows_too_active'
+        and time_slice.footprint_size > 0
+        and time_slice.lasting_change_evidence_score >= STRUCTURAL_GAP_RESCUE_FLOOR
+    ):
+        return replace(time_slice, classification='rocky', reason='structural_gap_minimum_size_reached')
+    if (
+        allow_high_parent_activity_rescue
+        and time_slice.classification == 'invalid'
+        and time_slice.reason == 'reference_windows_too_active'
+        and time_slice.footprint_size > 0
+        and time_slice.lasting_change_evidence_score >= HIGH_PARENT_ACTIVITY_RESCUE_FLOOR
+    ):
+        return replace(time_slice, classification='rocky', reason='high_parent_activity_minimum_size_reached')
     if (
         allow_active_reference_rescue
         and time_slice.classification == 'invalid'
@@ -940,25 +1010,68 @@ def refine_stage5_sub_slices(
         for time_slice in classified_time_slices
         if time_slice.classification == 'valid'
     }
+    long_strong_unions = {
+        screened_candidate_union.candidate_union.union_index
+        for screened_candidate_union in screened_candidate_unions
+        if (
+            not screened_candidate_union.provisional_survival
+            and (screened_candidate_union.candidate_union.end_frame - screened_candidate_union.candidate_union.start_frame)
+            >= LONG_STRONG_UNION_MIN_FRAMES
+            and screened_candidate_union.lasting_change_evidence_score >= LONG_STRONG_UNION_STAGE3_SCORE_FLOOR
+        )
+    }
 
-    def refine_slice(time_slice: ClassifiedTimeSlice) -> list[ClassifiedTimeSlice]:
+    def refine_slice(
+        time_slice: ClassifiedTimeSlice,
+        allow_high_parent_activity_rescue: bool = False,
+        allow_reference_unreliable_rescue: bool = False,
+        allow_structural_gap_rescue: bool = False,
+    ) -> list[ClassifiedTimeSlice]:
         allow_active_reference_rescue = time_slice.parent_union_index in unions_with_valid_slice
+        allow_long_strong_union_rocky_rescue = time_slice.parent_union_index in long_strong_unions
+        current_slice_supports_high_parent_activity_rescue = (
+            time_slice.classification == 'undetermined'
+            and time_slice.reason in {'mixed_reference_activity', 'reference_windows_too_active'}
+            and time_slice.lasting_change_evidence_score >= HIGH_PARENT_ACTIVITY_PARENT_SCORE_FLOOR
+        )
+        current_slice_supports_reference_unreliable_rescue = (
+            time_slice.classification == 'undetermined'
+            and time_slice.reason == 'reference_windows_unreliable'
+            and time_slice.lasting_change_evidence_score >= REFERENCE_UNRELIABLE_PARENT_SCORE_FLOOR
+        )
+        current_slice_supports_structural_gap_rescue = (
+            time_slice.classification == 'undetermined'
+            and time_slice.lasting_change_evidence_score >= STRUCTURAL_GAP_PARENT_SCORE_FLOOR
+            and (
+                (time_slice.reason == 'reference_windows_too_active'
+                 and time_slice.parent_union_index in long_strong_unions)
+                or (
+                    time_slice.reason == 'mixed_reference_activity'
+                    and time_slice.before_reference_activity <= STAGE4_MAX_REFERENCE_ACTIVITY
+                    and time_slice.after_reference_activity > STAGE4_MAX_REFERENCE_ACTIVITY
+                )
+            )
+        )
         slice_duration = time_slice.end_frame - time_slice.start_frame
 
         if time_slice.classification == 'invalid':
             if (
-                allow_active_reference_rescue
+                (allow_active_reference_rescue or allow_high_parent_activity_rescue or allow_structural_gap_rescue)
                 and time_slice.reason == 'reference_windows_too_active'
                 and slice_duration <= minimum_subdivision_frames
             ):
                 return [
                     classify_stage5_minimum_size_leaf(
                         time_slice,
-                        allow_active_reference_rescue=True,
+                        allow_active_reference_rescue=allow_active_reference_rescue,
+                        allow_long_strong_union_rocky_rescue=allow_long_strong_union_rocky_rescue,
+                        allow_high_parent_activity_rescue=allow_high_parent_activity_rescue,
+                        allow_reference_unreliable_rescue=allow_reference_unreliable_rescue,
+                        allow_structural_gap_rescue=allow_structural_gap_rescue,
                     )
                 ]
             if not (
-                allow_active_reference_rescue
+                (allow_active_reference_rescue or allow_high_parent_activity_rescue or allow_structural_gap_rescue)
                 and time_slice.reason == 'reference_windows_too_active'
                 and slice_duration > minimum_subdivision_frames
             ):
@@ -967,11 +1080,15 @@ def refine_stage5_sub_slices(
         elif time_slice.classification != 'undetermined':
             return [time_slice]
 
-        if slice_duration <= minimum_subdivision_frames:
+        if slice_duration <= 1:
             return [
                 classify_stage5_minimum_size_leaf(
                     time_slice,
                     allow_active_reference_rescue=allow_active_reference_rescue,
+                    allow_long_strong_union_rocky_rescue=allow_long_strong_union_rocky_rescue,
+                    allow_high_parent_activity_rescue=allow_high_parent_activity_rescue,
+                    allow_reference_unreliable_rescue=allow_reference_unreliable_rescue,
+                    allow_structural_gap_rescue=allow_structural_gap_rescue,
                 )
             ]
 
@@ -980,6 +1097,10 @@ def refine_stage5_sub_slices(
                 classify_stage5_minimum_size_leaf(
                     time_slice,
                     allow_active_reference_rescue=allow_active_reference_rescue,
+                    allow_long_strong_union_rocky_rescue=allow_long_strong_union_rocky_rescue,
+                    allow_high_parent_activity_rescue=allow_high_parent_activity_rescue,
+                    allow_reference_unreliable_rescue=allow_reference_unreliable_rescue,
+                    allow_structural_gap_rescue=allow_structural_gap_rescue,
                 )
             ]
 
@@ -993,6 +1114,10 @@ def refine_stage5_sub_slices(
                 classify_stage5_minimum_size_leaf(
                     time_slice,
                     allow_active_reference_rescue=time_slice.parent_union_index in unions_with_valid_slice,
+                    allow_long_strong_union_rocky_rescue=time_slice.parent_union_index in long_strong_unions,
+                    allow_high_parent_activity_rescue=allow_high_parent_activity_rescue,
+                    allow_reference_unreliable_rescue=allow_reference_unreliable_rescue,
+                    allow_structural_gap_rescue=allow_structural_gap_rescue,
                 )
             ]
 
@@ -1003,37 +1128,41 @@ def refine_stage5_sub_slices(
                 minimum_subdivision_frames,
                 min(STAGE3_REFERENCE_WINDOW_FRAMES, sub_slice_duration),
             )
-            classified_sub_slice = classify_time_slice(
-                screened_candidate_union=screened_candidate_union,
-                slice_index=slice_index,
-                slice_level=time_slice.slice_level + 1,
-                slice_start=slice_start,
-                slice_end=slice_end,
-                records=ordered_records,
-                reference_window_frames=sub_slice_reference_window,
-            )
             classified_sub_slice = replace(
-                classified_sub_slice,
+                classify_time_slice(
+                    screened_candidate_union,
+                    slice_index=slice_index,
+                    slice_level=time_slice.slice_level + 1,
+                    slice_start=slice_start,
+                    slice_end=slice_end,
+                    records=ordered_records,
+                    reference_window_frames=sub_slice_reference_window,
+                ),
                 parent_range=(time_slice.start_frame, time_slice.end_frame),
             )
-            refined_leaves.extend(refine_slice(classified_sub_slice))
+            refined_leaves.extend(
+                refine_slice(
+                    classified_sub_slice,
+                    allow_high_parent_activity_rescue=(
+                        allow_high_parent_activity_rescue
+                        or current_slice_supports_high_parent_activity_rescue
+                    ),
+                    allow_reference_unreliable_rescue=(
+                        allow_reference_unreliable_rescue
+                        or current_slice_supports_reference_unreliable_rescue
+                    ),
+                    allow_structural_gap_rescue=(
+                        allow_structural_gap_rescue
+                        or current_slice_supports_structural_gap_rescue
+                    ),
+                )
+            )
         return refined_leaves
 
     refined_slices: list[ClassifiedTimeSlice] = []
     for time_slice in classified_time_slices:
         refined_slices.extend(refine_slice(time_slice))
     return refined_slices
-# ============================================================
-# SECTION I - Stage 6 Final Candidate Range Assembly
-# ============================================================
-
-
-def slices_are_adjacent(first_slice: ClassifiedTimeSlice, second_slice: ClassifiedTimeSlice) -> bool:
-    return (
-        first_slice.parent_union_index == second_slice.parent_union_index
-        and first_slice.end_frame == second_slice.start_frame
-    )
-
 
 
 def is_stage6_candidate_slice(
@@ -1044,16 +1173,25 @@ def is_stage6_candidate_slice(
         return True
     if time_slice.classification != 'rocky':
         return False
-    if time_slice.reason not in {'minimum_subdivision_size_reached', 'active_reference_minimum_size_reached'}:
+    if time_slice.reason not in {'minimum_subdivision_size_reached', 'active_reference_minimum_size_reached', 'long_strong_union_minimum_size_reached', 'high_parent_activity_minimum_size_reached', 'reference_unreliable_minimum_size_reached', 'structural_gap_minimum_size_reached'}:
         return False
     return (time_slice.end_frame - time_slice.start_frame) <= maximum_retained_frames
+
+
+
+def supports_extended_stage6_gap(slice_info: ClassifiedTimeSlice) -> bool:
+    return slice_info.reason in {
+        'long_strong_union_minimum_size_reached',
+        'structural_gap_minimum_size_reached',
+        'reference_unreliable_minimum_size_reached',
+    }
 
 
 
 def build_stage6_candidate_groups(
     refined_slices: Iterable[ClassifiedTimeSlice],
     maximum_retained_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
-    merge_gap_frames: int = 0,
+    merge_gap_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
 ) -> list[list[ClassifiedTimeSlice]]:
     ordered_slices = [
         slice_info
@@ -1068,19 +1206,35 @@ def build_stage6_candidate_groups(
 
     candidate_groups: list[list[ClassifiedTimeSlice]] = []
     current_group: list[ClassifiedTimeSlice] = [ordered_slices[0]]
+    current_group_supports_extended_gap = supports_extended_stage6_gap(ordered_slices[0])
+    current_group_extended_gap_frames = 0
     for next_slice in ordered_slices[1:]:
         previous_slice = current_group[-1]
         same_union = next_slice.parent_union_index == previous_slice.parent_union_index
-        close_enough = (next_slice.start_frame - previous_slice.end_frame) <= merge_gap_frames
-        if same_union and close_enough:
+        gap_frames = next_slice.start_frame - previous_slice.end_frame
+        close_enough = gap_frames <= merge_gap_frames
+        next_slice_supports_extended_gap = supports_extended_stage6_gap(next_slice)
+        extended_gap_allowed = (
+            same_union
+            and not close_enough
+            and gap_frames <= STAGE6_SAME_UNION_MERGE_GAP_FRAMES
+            and (current_group_supports_extended_gap or next_slice_supports_extended_gap)
+            and (current_group_extended_gap_frames + gap_frames) <= STAGE6_EXTENDED_GAP_BUDGET_FRAMES
+        )
+        if same_union and (close_enough or extended_gap_allowed):
             current_group.append(next_slice)
+            current_group_supports_extended_gap = (
+                current_group_supports_extended_gap or next_slice_supports_extended_gap
+            )
+            if extended_gap_allowed:
+                current_group_extended_gap_frames += gap_frames
         else:
             candidate_groups.append(current_group)
             current_group = [next_slice]
+            current_group_supports_extended_gap = next_slice_supports_extended_gap
+            current_group_extended_gap_frames = 0
     candidate_groups.append(current_group)
     return candidate_groups
-
-
 
 def should_keep_stage6_group(candidate_group: list[ClassifiedTimeSlice]) -> bool:
     if not candidate_group:
@@ -1095,6 +1249,35 @@ def should_keep_stage6_group(candidate_group: list[ClassifiedTimeSlice]) -> bool
         slice_info.reason == 'active_reference_minimum_size_reached'
         for slice_info in candidate_group
     )
+    long_strong_union_rescue_count = sum(
+        1 for slice_info in candidate_group
+        if slice_info.reason == 'long_strong_union_minimum_size_reached'
+    )
+    contains_long_strong_union_rescue = long_strong_union_rescue_count > 0
+    contains_high_parent_activity_rescue = any(
+        slice_info.reason == 'high_parent_activity_minimum_size_reached'
+        for slice_info in candidate_group
+    )
+    contains_reference_unreliable_rescue = any(
+        slice_info.reason == 'reference_unreliable_minimum_size_reached'
+        for slice_info in candidate_group
+    )
+    contains_structural_gap_rescue = any(
+        slice_info.reason == 'structural_gap_minimum_size_reached'
+        for slice_info in candidate_group
+    )
+    contains_abrupt_canvas_change = any(
+        slice_info.footprint_size >= STAGE6_ABRUPT_CANVAS_CHANGE_MIN_FOOTPRINT
+        for slice_info in candidate_group
+    )
+    strong_quiet_parent_cluster_survival = (
+        total_duration >= STAGE6_STRONG_QUIET_PARENT_CLUSTER_MIN_FRAMES
+        and rocky_slice_count >= STAGE6_MIN_ROCKY_SLICE_COUNT
+        and average_rocky_evidence >= STAGE6_STRONG_QUIET_PARENT_CLUSTER_MIN_AVERAGE_EVIDENCE
+        and max(slice_info.footprint_size for slice_info in candidate_group) >= STAGE6_STRONG_QUIET_PARENT_CLUSTER_MIN_FOOTPRINT
+        and candidate_group[0].before_reference_activity <= STAGE6_STRONG_QUIET_PARENT_MAX_EDGE_ACTIVITY
+        and candidate_group[-1].after_reference_activity <= STAGE6_STRONG_QUIET_PARENT_MAX_EDGE_ACTIVITY
+    )
     standard_cluster_survival = (
         total_duration >= STAGE6_MIN_ROCKY_CLUSTER_FRAMES
         and rocky_slice_count >= STAGE6_MIN_ROCKY_SLICE_COUNT
@@ -1106,13 +1289,59 @@ def should_keep_stage6_group(candidate_group: list[ClassifiedTimeSlice]) -> bool
         and rocky_slice_count >= STAGE6_MIN_ROCKY_SLICE_COUNT
         and average_rocky_evidence >= (ROCKY_MINIMUM_SIZE_EVIDENCE_FLOOR + 0.02)
     )
-    return standard_cluster_survival or long_active_reference_survival
-
+    long_strong_union_survival = (
+        contains_long_strong_union_rescue
+        and total_duration >= STAGE6_MIN_ROCKY_CLUSTER_FRAMES
+        and rocky_slice_count >= STAGE6_MIN_ROCKY_SLICE_COUNT
+        and average_rocky_evidence >= (LONG_STRONG_UNION_ACTIVE_REFERENCE_UNDETERMINED_FLOOR + 0.02)
+    )
+    short_long_strong_union_survival = (
+        contains_long_strong_union_rescue
+        and long_strong_union_rescue_count >= 2
+        and total_duration >= STAGE6_MIN_ROCKY_CLUSTER_FRAMES
+        and rocky_slice_count >= STAGE6_MIN_SHORT_ROCKY_SLICE_COUNT
+        and average_rocky_evidence >= LONG_STRONG_UNION_ACTIVE_REFERENCE_UNDETERMINED_FLOOR
+    )
+    high_parent_activity_survival = (
+        contains_high_parent_activity_rescue
+        and total_duration >= STAGE6_MIN_ROCKY_CLUSTER_FRAMES
+        and rocky_slice_count >= STAGE6_MIN_ROCKY_SLICE_COUNT
+        and average_rocky_evidence >= (HIGH_PARENT_ACTIVITY_RESCUE_FLOOR + 0.01)
+    )
+    reference_unreliable_survival = (
+        contains_reference_unreliable_rescue
+        and total_duration >= STAGE6_MIN_ROCKY_CLUSTER_FRAMES
+        and rocky_slice_count >= STAGE6_MIN_ROCKY_SLICE_COUNT
+        and average_rocky_evidence >= (REFERENCE_UNRELIABLE_RESCUE_FLOOR + 0.02)
+    )
+    structural_gap_survival = (
+        contains_structural_gap_rescue
+        and total_duration >= STAGE6_MIN_ROCKY_CLUSTER_FRAMES
+        and rocky_slice_count >= STAGE6_MIN_ROCKY_SLICE_COUNT
+        and average_rocky_evidence >= (STRUCTURAL_GAP_RESCUE_FLOOR + 0.01)
+    )
+    abrupt_canvas_change_survival = (
+        contains_abrupt_canvas_change
+        and total_duration <= STAGE6_ABRUPT_CANVAS_CHANGE_MAX_FRAMES
+        and rocky_slice_count <= STAGE6_ABRUPT_CANVAS_CHANGE_MAX_SLICE_COUNT
+        and average_rocky_evidence >= STAGE6_ABRUPT_CANVAS_CHANGE_MIN_EVIDENCE
+    )
+    return (
+        standard_cluster_survival
+        or long_active_reference_survival
+        or long_strong_union_survival
+        or short_long_strong_union_survival
+        or high_parent_activity_survival
+        or reference_unreliable_survival
+        or structural_gap_survival
+        or strong_quiet_parent_cluster_survival
+        or abrupt_canvas_change_survival
+    )
 
 def assemble_stage6_candidate_ranges(
     refined_slices: Iterable[ClassifiedTimeSlice],
     retained_undetermined_max_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
-    merge_gap_frames: int = 0,
+    merge_gap_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
 ) -> list[FinalCandidateRange]:
     candidate_groups = build_stage6_candidate_groups(
         refined_slices,
@@ -1297,6 +1526,53 @@ def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, list
         output_path.write_text(json.dumps(items, indent=2), encoding='utf-8')
         output_paths[section_name] = output_path
     return output_paths
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
