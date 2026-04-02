@@ -49,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the new staged detector path instead of the current default detector. This is intended for side-by-side benchmarking while the staged detector is still being evaluated.",
     )
     parser.add_argument(
+        "--staged-stage3-art-state-prototype",
+        action="store_true",
+        help="When used with --use-staged-detector, switch Stage 3 union screening to the experimental before/after art-state prototype path instead of the legacy movement-record score.",
+    )
+    parser.add_argument(
         "--resolve-review-timeline-name",
         help="Optional DaVinci Resolve review timeline name. When provided, accepted clips are also assembled into a new review timeline using the current active timeline as the source reference.",
     )
@@ -116,6 +121,7 @@ def run(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Path], ResolveR
             chapter_range=chapter_range,
             settings=settings,
             progress_callback=progress_reporter,
+            use_stage3_art_state_prototype=args.staged_stage3_art_state_prototype,
         )
         clips = build_candidate_clips(
             str(args.video_path),

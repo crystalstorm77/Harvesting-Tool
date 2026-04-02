@@ -45,10 +45,12 @@ class CliRoutingTests(unittest.TestCase):
                 '--max-harvest', '00:01:00:00',
                 '--output-stem', 'out/sample',
                 '--use-staged-detector',
+                '--staged-stage3-art-state-prototype',
             ]
         )
 
         self.assertTrue(args.use_staged_detector)
+        self.assertTrue(args.staged_stage3_art_state_prototype)
 
     def test_run_uses_staged_detector_path_when_flag_is_enabled(self) -> None:
         parser = build_parser()
@@ -65,6 +67,7 @@ class CliRoutingTests(unittest.TestCase):
                     '--output-stem', str(output_stem),
                     '--debug-stem', str(debug_stem),
                     '--use-staged-detector',
+                    '--staged-stage3-art-state-prototype',
                 ]
             )
 
@@ -79,7 +82,13 @@ class CliRoutingTests(unittest.TestCase):
                 patch('harvesting_tool.cli.detect_candidate_clips') as default_detect_mock:
                 text_path, json_path, debug_paths, review_result = run(args)
 
-        staged_detect_mock.assert_called_once()
+        staged_detect_mock.assert_called_once_with(
+            video_path=args.video_path,
+            chapter_range=unittest.mock.ANY,
+            settings=unittest.mock.ANY,
+            progress_callback=unittest.mock.ANY,
+            use_stage3_art_state_prototype=True,
+        )
         build_clips_mock.assert_called_once()
         write_cut_lists_mock.assert_called_once()
         write_staged_debug_mock.assert_called_once()

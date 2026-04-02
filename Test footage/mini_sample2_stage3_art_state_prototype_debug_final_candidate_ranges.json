@@ -1,0 +1,82 @@
+[
+  {
+    "range_index": 1,
+    "parent_union_index": 1,
+    "start_frame": 16,
+    "end_frame": 248,
+    "start_time": "00:00:00:16",
+    "end_time": "00:00:08:08",
+    "source_classifications": [
+      "boundary",
+      "valid"
+    ],
+    "includes_retained_undetermined": true,
+    "retained_undetermined_count": 7
+  },
+  {
+    "range_index": 2,
+    "parent_union_index": 4,
+    "start_frame": 828,
+    "end_frame": 837,
+    "start_time": "00:00:27:18",
+    "end_time": "00:00:27:27",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_retained_undetermined": false,
+    "retained_undetermined_count": 0
+  },
+  {
+    "range_index": 3,
+    "parent_union_index": 4,
+    "start_frame": 846,
+    "end_frame": 1122,
+    "start_time": "00:00:28:06",
+    "end_time": "00:00:37:12",
+    "source_classifications": [
+      "valid",
+      "boundary"
+    ],
+    "includes_retained_undetermined": true,
+    "retained_undetermined_count": 6
+  },
+  {
+    "range_index": 4,
+    "parent_union_index": 5,
+    "start_frame": 1170,
+    "end_frame": 1179,
+    "start_time": "00:00:39:00",
+    "end_time": "00:00:39:09",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_retained_undetermined": false,
+    "retained_undetermined_count": 0
+  },
+  {
+    "range_index": 5,
+    "parent_union_index": 5,
+    "start_frame": 1187,
+    "end_frame": 1196,
+    "start_time": "00:00:39:17",
+    "end_time": "00:00:39:26",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_retained_undetermined": false,
+    "retained_undetermined_count": 0
+  },
+  {
+    "range_index": 6,
+    "parent_union_index": 5,
+    "start_frame": 1229,
+    "end_frame": 1355,
+    "start_time": "00:00:40:29",
+    "end_time": "00:00:45:05",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_retained_undetermined": false,
+    "retained_undetermined_count": 0
+  }
+]

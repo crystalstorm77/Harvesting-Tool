@@ -1,0 +1,26 @@
+[
+  {
+    "clip_index": 1,
+    "clip_start": "00:00:00:14",
+    "clip_end": "00:00:08:12",
+    "activity_start": "00:00:00:16",
+    "activity_end": "00:00:08:08",
+    "duration": "00:00:07:28"
+  },
+  {
+    "clip_index": 2,
+    "clip_start": "00:00:27:16",
+    "clip_end": "00:00:37:16",
+    "activity_start": "00:00:27:18",
+    "activity_end": "00:00:37:12",
+    "duration": "00:00:10:00"
+  },
+  {
+    "clip_index": 3,
+    "clip_start": "00:00:40:27",
+    "clip_end": "00:00:45:09",
+    "activity_start": "00:00:40:29",
+    "activity_end": "00:00:45:05",
+    "duration": "00:00:04:12"
+  }
+]

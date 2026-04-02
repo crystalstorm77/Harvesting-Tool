@@ -1,0 +1,4870 @@
+[
+  {
+    "slice_index": 1,
+    "parent_union_index": 1,
+    "slice_level": 3,
+    "start_frame": 16,
+    "end_frame": 30,
+    "start_time": "00:00:00:16",
+    "end_time": "00:00:01:00",
+    "footprint": [
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        6,
+        8
+      ],
+      [
+        6,
+        9
+      ]
+    ],
+    "footprint_size": 13,
+    "within_slice_record_count": 7,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.659987,
+    "before_reference_activity": 0.103873,
+    "after_reference_activity": 0.753571,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      16,
+      45
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 1,
+    "slice_level": 3,
+    "start_frame": 30,
+    "end_frame": 45,
+    "start_time": "00:00:01:00",
+    "end_time": "00:00:01:15",
+    "footprint": [
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        5,
+        6
+      ]
+    ],
+    "footprint_size": 5,
+    "within_slice_record_count": 8,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.549514,
+    "before_reference_activity": 0.765816,
+    "after_reference_activity": 0.761224,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      16,
+      45
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 1,
+    "slice_level": 3,
+    "start_frame": 45,
+    "end_frame": 59,
+    "start_time": "00:00:01:15",
+    "end_time": "00:00:01:29",
+    "footprint": [
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        6
+      ]
+    ],
+    "footprint_size": 13,
+    "within_slice_record_count": 7,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.655663,
+    "before_reference_activity": 0.753571,
+    "after_reference_activity": 0.756633,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      45,
+      74
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 1,
+    "slice_level": 3,
+    "start_frame": 59,
+    "end_frame": 74,
+    "start_time": "00:00:01:29",
+    "end_time": "00:00:02:14",
+    "footprint": [
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        3
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        5,
+        3
+      ]
+    ],
+    "footprint_size": 9,
+    "within_slice_record_count": 7,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.614015,
+    "before_reference_activity": 0.760268,
+    "after_reference_activity": 0.754911,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      45,
+      74
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 1,
+    "slice_level": 3,
+    "start_frame": 74,
+    "end_frame": 88,
+    "start_time": "00:00:02:14",
+    "end_time": "00:00:02:28",
+    "footprint": [
+      [
+        0,
+        3
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        3
+      ],
+      [
+        1,
+        4
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ]
+    ],
+    "footprint_size": 9,
+    "within_slice_record_count": 7,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.610367,
+    "before_reference_activity": 0.756633,
+    "after_reference_activity": 0.766964,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      74,
+      103
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 1,
+    "slice_level": 3,
+    "start_frame": 88,
+    "end_frame": 103,
+    "start_time": "00:00:02:28",
+    "end_time": "00:00:03:13",
+    "footprint": [
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        3
+      ],
+      [
+        1,
+        4
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        5,
+        2
+      ],
+      [
+        5,
+        3
+      ]
+    ],
+    "footprint_size": 14,
+    "within_slice_record_count": 8,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.657854,
+    "before_reference_activity": 0.755102,
+    "after_reference_activity": 0.768878,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      74,
+      103
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 1,
+    "slice_level": 3,
+    "start_frame": 103,
+    "end_frame": 117,
+    "start_time": "00:00:03:13",
+    "end_time": "00:00:03:27",
+    "footprint": [
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        5,
+        2
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        6,
+        3
+      ],
+      [
+        6,
+        4
+      ]
+    ],
+    "footprint_size": 14,
+    "within_slice_record_count": 7,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.661237,
+    "before_reference_activity": 0.766964,
+    "after_reference_activity": 0.759694,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      103,
+      132
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 1,
+    "slice_level": 3,
+    "start_frame": 117,
+    "end_frame": 132,
+    "start_time": "00:00:03:27",
+    "end_time": "00:00:04:12",
+    "footprint": [
+      [
+        2,
+        4
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        6,
+        3
+      ],
+      [
+        6,
+        4
+      ],
+      [
+        7,
+        3
+      ],
+      [
+        7,
+        4
+      ]
+    ],
+    "footprint_size": 15,
+    "within_slice_record_count": 7,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.652092,
+    "before_reference_activity": 0.768304,
+    "after_reference_activity": 0.768304,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      103,
+      132
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 1,
+    "slice_level": 0,
+    "start_frame": 132,
+    "end_frame": 248,
+    "start_time": "00:00:04:12",
+    "end_time": "00:00:08:08",
+    "footprint": [
+      [
+        1,
+        5
+      ],
+      [
+        1,
+        6
+      ],
+      [
+        1,
+        7
+      ],
+      [
+        1,
+        8
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        2,
+        6
+      ],
+      [
+        2,
+        7
+      ],
+      [
+        2,
+        8
+      ],
+      [
+        2,
+        9
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        6,
+        4
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        6,
+        8
+      ],
+      [
+        6,
+        9
+      ],
+      [
+        7,
+        3
+      ],
+      [
+        7,
+        4
+      ],
+      [
+        7,
+        5
+      ],
+      [
+        7,
+        6
+      ],
+      [
+        7,
+        7
+      ],
+      [
+        7,
+        8
+      ],
+      [
+        8,
+        3
+      ],
+      [
+        8,
+        4
+      ],
+      [
+        8,
+        5
+      ],
+      [
+        8,
+        6
+      ],
+      [
+        8,
+        7
+      ],
+      [
+        8,
+        8
+      ],
+      [
+        9,
+        4
+      ],
+      [
+        9,
+        5
+      ],
+      [
+        9,
+        6
+      ],
+      [
+        9,
+        7
+      ],
+      [
+        10,
+        4
+      ],
+      [
+        10,
+        5
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        10,
+        7
+      ],
+      [
+        11,
+        5
+      ],
+      [
+        11,
+        6
+      ],
+      [
+        11,
+        7
+      ]
+    ],
+    "footprint_size": 55,
+    "within_slice_record_count": 58,
+    "classification": "valid",
+    "reason": "slice_activity_supported",
+    "lasting_change_evidence_score": 0.803653,
+    "before_reference_activity": 0.762143,
+    "after_reference_activity": 0.002801,
+    "reference_windows_reliable": true,
+    "parent_range": null
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 828,
+    "end_frame": 837,
+    "start_time": "00:00:27:18",
+    "end_time": "00:00:27:27",
+    "footprint": [
+      [
+        1,
+        11
+      ],
+      [
+        2,
+        10
+      ],
+      [
+        2,
+        11
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        10
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        7,
+        0
+      ],
+      [
+        7,
+        1
+      ],
+      [
+        8,
+        0
+      ],
+      [
+        8,
+        1
+      ]
+    ],
+    "footprint_size": 16,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.641041,
+    "before_reference_activity": 0.436906,
+    "after_reference_activity": 0.721164,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      828,
+      846
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 837,
+    "end_frame": 846,
+    "start_time": "00:00:27:27",
+    "end_time": "00:00:28:06",
+    "footprint": [
+      [
+        0,
+        11
+      ],
+      [
+        1,
+        11
+      ],
+      [
+        2,
+        11
+      ]
+    ],
+    "footprint_size": 3,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.486764,
+    "before_reference_activity": 0.450928,
+    "after_reference_activity": 0.764286,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      828,
+      846
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 846,
+    "end_frame": 855,
+    "start_time": "00:00:28:06",
+    "end_time": "00:00:28:15",
+    "footprint": [
+      [
+        1,
+        7
+      ],
+      [
+        1,
+        8
+      ],
+      [
+        1,
+        10
+      ],
+      [
+        1,
+        11
+      ],
+      [
+        2,
+        7
+      ],
+      [
+        2,
+        8
+      ],
+      [
+        2,
+        9
+      ],
+      [
+        2,
+        10
+      ],
+      [
+        2,
+        11
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        3,
+        10
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        9
+      ]
+    ],
+    "footprint_size": 14,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.656301,
+    "before_reference_activity": 0.68736,
+    "after_reference_activity": 0.765816,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      846,
+      864
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 855,
+    "end_frame": 864,
+    "start_time": "00:00:28:15",
+    "end_time": "00:00:28:24",
+    "footprint": [
+      [
+        1,
+        7
+      ],
+      [
+        1,
+        8
+      ],
+      [
+        2,
+        7
+      ],
+      [
+        2,
+        8
+      ],
+      [
+        2,
+        9
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        4,
+        8
+      ]
+    ],
+    "footprint_size": 8,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "active_reference_minimum_size_reached",
+    "lasting_change_evidence_score": 0.599921,
+    "before_reference_activity": 0.749554,
+    "after_reference_activity": 0.780357,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      846,
+      864
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 864,
+    "end_frame": 873,
+    "start_time": "00:00:28:24",
+    "end_time": "00:00:29:03",
+    "footprint": [
+      [
+        2,
+        6
+      ],
+      [
+        2,
+        7
+      ],
+      [
+        2,
+        8
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        6,
+        8
+      ],
+      [
+        7,
+        3
+      ],
+      [
+        7,
+        6
+      ],
+      [
+        7,
+        7
+      ],
+      [
+        7,
+        8
+      ],
+      [
+        8,
+        5
+      ],
+      [
+        9,
+        5
+      ],
+      [
+        10,
+        5
+      ],
+      [
+        10,
+        6
+      ]
+    ],
+    "footprint_size": 25,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.68412,
+    "before_reference_activity": 0.764286,
+    "after_reference_activity": 0.756633,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      864,
+      882
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 873,
+    "end_frame": 882,
+    "start_time": "00:00:29:03",
+    "end_time": "00:00:29:12",
+    "footprint": [
+      [
+        6,
+        7
+      ],
+      [
+        6,
+        8
+      ],
+      [
+        7,
+        7
+      ],
+      [
+        7,
+        8
+      ],
+      [
+        8,
+        7
+      ],
+      [
+        8,
+        8
+      ]
+    ],
+    "footprint_size": 6,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "active_reference_minimum_size_reached",
+    "lasting_change_evidence_score": 0.567329,
+    "before_reference_activity": 0.784375,
+    "after_reference_activity": 0.758929,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      864,
+      882
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 882,
+    "end_frame": 891,
+    "start_time": "00:00:29:12",
+    "end_time": "00:00:29:21",
+    "footprint": [
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        6,
+        8
+      ],
+      [
+        7,
+        7
+      ],
+      [
+        7,
+        8
+      ],
+      [
+        8,
+        7
+      ],
+      [
+        8,
+        8
+      ]
+    ],
+    "footprint_size": 8,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "active_reference_minimum_size_reached",
+    "lasting_change_evidence_score": 0.59478,
+    "before_reference_activity": 0.782653,
+    "after_reference_activity": 0.762755,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      882,
+      901
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 891,
+    "end_frame": 901,
+    "start_time": "00:00:29:21",
+    "end_time": "00:00:30:01",
+    "footprint": [
+      [
+        6,
+        7
+      ],
+      [
+        6,
+        8
+      ],
+      [
+        7,
+        6
+      ],
+      [
+        7,
+        7
+      ],
+      [
+        7,
+        8
+      ],
+      [
+        8,
+        6
+      ],
+      [
+        8,
+        7
+      ],
+      [
+        8,
+        8
+      ],
+      [
+        9,
+        6
+      ],
+      [
+        9,
+        7
+      ],
+      [
+        9,
+        8
+      ],
+      [
+        10,
+        7
+      ]
+    ],
+    "footprint_size": 12,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.657219,
+    "before_reference_activity": 0.754911,
+    "after_reference_activity": 0.761224,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      882,
+      901
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 901,
+    "end_frame": 910,
+    "start_time": "00:00:30:01",
+    "end_time": "00:00:30:10",
+    "footprint": [
+      [
+        8,
+        6
+      ],
+      [
+        8,
+        7
+      ],
+      [
+        9,
+        6
+      ],
+      [
+        9,
+        7
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        10,
+        7
+      ],
+      [
+        11,
+        6
+      ],
+      [
+        11,
+        7
+      ]
+    ],
+    "footprint_size": 8,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.60068,
+    "before_reference_activity": 0.760268,
+    "after_reference_activity": 0.754911,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      901,
+      919
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 910,
+    "end_frame": 919,
+    "start_time": "00:00:30:10",
+    "end_time": "00:00:30:19",
+    "footprint": [
+      [
+        9,
+        6
+      ],
+      [
+        9,
+        7
+      ],
+      [
+        10,
+        5
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        10,
+        7
+      ],
+      [
+        11,
+        5
+      ],
+      [
+        11,
+        6
+      ],
+      [
+        11,
+        7
+      ]
+    ],
+    "footprint_size": 8,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.60477,
+    "before_reference_activity": 0.761224,
+    "after_reference_activity": 0.747449,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      901,
+      919
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 919,
+    "end_frame": 928,
+    "start_time": "00:00:30:19",
+    "end_time": "00:00:30:28",
+    "footprint": [
+      [
+        10,
+        5
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        11,
+        5
+      ],
+      [
+        11,
+        6
+      ]
+    ],
+    "footprint_size": 4,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.526657,
+    "before_reference_activity": 0.761607,
+    "after_reference_activity": 0.75625,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      919,
+      938
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 928,
+    "end_frame": 938,
+    "start_time": "00:00:30:28",
+    "end_time": "00:00:31:08",
+    "footprint": [
+      [
+        10,
+        4
+      ],
+      [
+        10,
+        5
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        11,
+        4
+      ],
+      [
+        11,
+        5
+      ],
+      [
+        11,
+        6
+      ]
+    ],
+    "footprint_size": 6,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "active_reference_minimum_size_reached",
+    "lasting_change_evidence_score": 0.56236,
+    "before_reference_activity": 0.75051,
+    "after_reference_activity": 0.764286,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      919,
+      938
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 938,
+    "end_frame": 947,
+    "start_time": "00:00:31:08",
+    "end_time": "00:00:31:17",
+    "footprint": [
+      [
+        8,
+        5
+      ],
+      [
+        8,
+        6
+      ],
+      [
+        9,
+        4
+      ],
+      [
+        9,
+        5
+      ],
+      [
+        9,
+        6
+      ],
+      [
+        10,
+        4
+      ],
+      [
+        10,
+        5
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        11,
+        4
+      ],
+      [
+        11,
+        5
+      ]
+    ],
+    "footprint_size": 10,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.63678,
+    "before_reference_activity": 0.74898,
+    "after_reference_activity": 0.756633,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      938,
+      956
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 947,
+    "end_frame": 956,
+    "start_time": "00:00:31:17",
+    "end_time": "00:00:31:26",
+    "footprint": [
+      [
+        8,
+        5
+      ],
+      [
+        8,
+        6
+      ],
+      [
+        8,
+        7
+      ],
+      [
+        9,
+        5
+      ],
+      [
+        9,
+        6
+      ],
+      [
+        9,
+        7
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        10,
+        7
+      ]
+    ],
+    "footprint_size": 8,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.603648,
+    "before_reference_activity": 0.760268,
+    "after_reference_activity": 0.750893,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      938,
+      956
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 956,
+    "end_frame": 965,
+    "start_time": "00:00:31:26",
+    "end_time": "00:00:32:05",
+    "footprint": [
+      [
+        7,
+        6
+      ],
+      [
+        7,
+        7
+      ],
+      [
+        8,
+        6
+      ],
+      [
+        8,
+        7
+      ],
+      [
+        9,
+        6
+      ],
+      [
+        9,
+        7
+      ]
+    ],
+    "footprint_size": 6,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "active_reference_minimum_size_reached",
+    "lasting_change_evidence_score": 0.564809,
+    "before_reference_activity": 0.764286,
+    "after_reference_activity": 0.752041,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      956,
+      975
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 4,
+    "slice_level": 4,
+    "start_frame": 965,
+    "end_frame": 975,
+    "start_time": "00:00:32:05",
+    "end_time": "00:00:32:15",
+    "footprint": [
+      [
+        7,
+        5
+      ],
+      [
+        7,
+        6
+      ],
+      [
+        7,
+        7
+      ],
+      [
+        8,
+        6
+      ],
+      [
+        8,
+        7
+      ],
+      [
+        9,
+        7
+      ]
+    ],
+    "footprint_size": 6,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "active_reference_minimum_size_reached",
+    "lasting_change_evidence_score": 0.562159,
+    "before_reference_activity": 0.75625,
+    "after_reference_activity": 0.756633,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      956,
+      975
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 4,
+    "slice_level": 0,
+    "start_frame": 975,
+    "end_frame": 1122,
+    "start_time": "00:00:32:15",
+    "end_time": "00:00:37:12",
+    "footprint": [
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        5,
+        10
+      ],
+      [
+        5,
+        11
+      ],
+      [
+        6,
+        4
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        6,
+        8
+      ],
+      [
+        6,
+        9
+      ],
+      [
+        6,
+        10
+      ],
+      [
+        6,
+        11
+      ],
+      [
+        7,
+        3
+      ],
+      [
+        7,
+        4
+      ],
+      [
+        7,
+        5
+      ],
+      [
+        7,
+        6
+      ],
+      [
+        7,
+        7
+      ],
+      [
+        7,
+        8
+      ],
+      [
+        7,
+        11
+      ],
+      [
+        8,
+        3
+      ],
+      [
+        8,
+        4
+      ],
+      [
+        8,
+        5
+      ],
+      [
+        8,
+        6
+      ],
+      [
+        8,
+        7
+      ],
+      [
+        8,
+        11
+      ],
+      [
+        9,
+        4
+      ],
+      [
+        9,
+        5
+      ],
+      [
+        9,
+        6
+      ]
+    ],
+    "footprint_size": 38,
+    "within_slice_record_count": 73,
+    "classification": "valid",
+    "reason": "slice_activity_supported",
+    "lasting_change_evidence_score": 0.795602,
+    "before_reference_activity": 0.749286,
+    "after_reference_activity": 0.020571,
+    "reference_windows_reliable": true,
+    "parent_range": null
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1146,
+    "end_frame": 1154,
+    "start_time": "00:00:38:06",
+    "end_time": "00:00:38:14",
+    "footprint": [
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        11
+      ]
+    ],
+    "footprint_size": 2,
+    "within_slice_record_count": 4,
+    "classification": "undetermined",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.459657,
+    "before_reference_activity": 0.11566,
+    "after_reference_activity": 0.668525,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1146,
+      1162
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1154,
+    "end_frame": 1162,
+    "start_time": "00:00:38:14",
+    "end_time": "00:00:38:22",
+    "footprint": [
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        11
+      ]
+    ],
+    "footprint_size": 2,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.467488,
+    "before_reference_activity": 0.465972,
+    "after_reference_activity": 0.726885,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1146,
+      1162
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1162,
+    "end_frame": 1170,
+    "start_time": "00:00:38:22",
+    "end_time": "00:00:39:00",
+    "footprint": [
+      [
+        3,
+        10
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        5,
+        11
+      ]
+    ],
+    "footprint_size": 5,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.509786,
+    "before_reference_activity": 0.631149,
+    "after_reference_activity": 0.768304,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1162,
+      1179
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1170,
+    "end_frame": 1179,
+    "start_time": "00:00:39:00",
+    "end_time": "00:00:39:09",
+    "footprint": [
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        6
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        3,
+        10
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        5,
+        10
+      ],
+      [
+        5,
+        11
+      ],
+      [
+        10,
+        4
+      ]
+    ],
+    "footprint_size": 13,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.666186,
+    "before_reference_activity": 0.660967,
+    "after_reference_activity": 0.759694,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1162,
+      1179
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1179,
+    "end_frame": 1187,
+    "start_time": "00:00:39:09",
+    "end_time": "00:00:39:17",
+    "footprint": [
+      [
+        2,
+        9
+      ],
+      [
+        2,
+        10
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        3,
+        10
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        10
+      ]
+    ],
+    "footprint_size": 6,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.570872,
+    "before_reference_activity": 0.758929,
+    "after_reference_activity": 0.752041,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1179,
+      1196
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1187,
+    "end_frame": 1196,
+    "start_time": "00:00:39:17",
+    "end_time": "00:00:39:26",
+    "footprint": [
+      [
+        2,
+        8
+      ],
+      [
+        2,
+        9
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        3,
+        10
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        10
+      ]
+    ],
+    "footprint_size": 8,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.60309,
+    "before_reference_activity": 0.761607,
+    "after_reference_activity": 0.742857,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1179,
+      1196
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1196,
+    "end_frame": 1204,
+    "start_time": "00:00:39:26",
+    "end_time": "00:00:40:04",
+    "footprint": [
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ]
+    ],
+    "footprint_size": 4,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.5288,
+    "before_reference_activity": 0.761224,
+    "after_reference_activity": 0.745536,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1196,
+      1213
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1204,
+    "end_frame": 1213,
+    "start_time": "00:00:40:04",
+    "end_time": "00:00:40:13",
+    "footprint": [
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ]
+    ],
+    "footprint_size": 4,
+    "within_slice_record_count": 5,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.527499,
+    "before_reference_activity": 0.74898,
+    "after_reference_activity": 0.752041,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1196,
+      1213
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1213,
+    "end_frame": 1221,
+    "start_time": "00:00:40:13",
+    "end_time": "00:00:40:21",
+    "footprint": [
+      [
+        2,
+        8
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ]
+    ],
+    "footprint_size": 5,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.541838,
+    "before_reference_activity": 0.742857,
+    "after_reference_activity": 0.788776,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1213,
+      1229
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1221,
+    "end_frame": 1229,
+    "start_time": "00:00:40:21",
+    "end_time": "00:00:40:29",
+    "footprint": [
+      [
+        2,
+        8
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ]
+    ],
+    "footprint_size": 5,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.517065,
+    "before_reference_activity": 0.746875,
+    "after_reference_activity": 0.923469,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1213,
+      1229
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1229,
+    "end_frame": 1237,
+    "start_time": "00:00:40:29",
+    "end_time": "00:00:41:07",
+    "footprint": [
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        5
+      ],
+      [
+        1,
+        6
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        2,
+        6
+      ],
+      [
+        2,
+        8
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        6,
+        3
+      ],
+      [
+        8,
+        5
+      ],
+      [
+        9,
+        5
+      ],
+      [
+        10,
+        4
+      ],
+      [
+        10,
+        5
+      ]
+    ],
+    "footprint_size": 29,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.701932,
+    "before_reference_activity": 0.752232,
+    "after_reference_activity": 0.992347,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1229,
+      1246
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1237,
+    "end_frame": 1246,
+    "start_time": "00:00:41:07",
+    "end_time": "00:00:41:16",
+    "footprint": [
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        3
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        2,
+        6
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        5,
+        2
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        6,
+        3
+      ],
+      [
+        9,
+        5
+      ],
+      [
+        10,
+        4
+      ],
+      [
+        10,
+        5
+      ],
+      [
+        11,
+        4
+      ],
+      [
+        11,
+        5
+      ]
+    ],
+    "footprint_size": 34,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.78971,
+    "before_reference_activity": 0.815179,
+    "after_reference_activity": 0.997321,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1229,
+      1246
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1246,
+    "end_frame": 1254,
+    "start_time": "00:00:41:16",
+    "end_time": "00:00:41:24",
+    "footprint": [
+      [
+        2,
+        2
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        2,
+        6
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        5,
+        2
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        6,
+        3
+      ],
+      [
+        6,
+        4
+      ],
+      [
+        7,
+        3
+      ],
+      [
+        9,
+        5
+      ],
+      [
+        10,
+        5
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        11,
+        4
+      ],
+      [
+        11,
+        5
+      ]
+    ],
+    "footprint_size": 33,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.800536,
+    "before_reference_activity": 0.957143,
+    "after_reference_activity": 0.997321,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1246,
+      1263
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1254,
+    "end_frame": 1263,
+    "start_time": "00:00:41:24",
+    "end_time": "00:00:42:03",
+    "footprint": [
+      [
+        2,
+        2
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        5,
+        2
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        6,
+        2
+      ],
+      [
+        6,
+        3
+      ],
+      [
+        6,
+        4
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        9
+      ],
+      [
+        7,
+        3
+      ],
+      [
+        10,
+        5
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        11,
+        5
+      ]
+    ],
+    "footprint_size": 32,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.798372,
+    "before_reference_activity": 0.996939,
+    "after_reference_activity": 0.990816,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1246,
+      1263
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1263,
+    "end_frame": 1271,
+    "start_time": "00:00:42:03",
+    "end_time": "00:00:42:11",
+    "footprint": [
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        3
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        4,
+        2
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        5,
+        2
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        5,
+        10
+      ],
+      [
+        6,
+        2
+      ],
+      [
+        6,
+        3
+      ],
+      [
+        6,
+        4
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        6,
+        9
+      ],
+      [
+        6,
+        10
+      ],
+      [
+        7,
+        3
+      ],
+      [
+        8,
+        3
+      ],
+      [
+        10,
+        5
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        11,
+        6
+      ]
+    ],
+    "footprint_size": 34,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.803061,
+    "before_reference_activity": 0.997321,
+    "after_reference_activity": 0.984694,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1263,
+      1280
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1271,
+    "end_frame": 1280,
+    "start_time": "00:00:42:11",
+    "end_time": "00:00:42:20",
+    "footprint": [
+      [
+        3,
+        3
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        5,
+        2
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        5,
+        10
+      ],
+      [
+        6,
+        2
+      ],
+      [
+        6,
+        3
+      ],
+      [
+        6,
+        4
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        6,
+        9
+      ],
+      [
+        6,
+        10
+      ],
+      [
+        7,
+        3
+      ],
+      [
+        7,
+        4
+      ],
+      [
+        7,
+        5
+      ],
+      [
+        8,
+        3
+      ],
+      [
+        8,
+        4
+      ],
+      [
+        10,
+        6
+      ],
+      [
+        11,
+        6
+      ],
+      [
+        11,
+        7
+      ]
+    ],
+    "footprint_size": 35,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.785647,
+    "before_reference_activity": 1.0,
+    "after_reference_activity": 0.995982,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1263,
+      1280
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1280,
+    "end_frame": 1288,
+    "start_time": "00:00:42:20",
+    "end_time": "00:00:42:28",
+    "footprint": [
+      [
+        3,
+        3
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        5,
+        10
+      ],
+      [
+        5,
+        11
+      ],
+      [
+        6,
+        3
+      ],
+      [
+        6,
+        4
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        6,
+        9
+      ],
+      [
+        6,
+        10
+      ],
+      [
+        7,
+        4
+      ],
+      [
+        7,
+        5
+      ],
+      [
+        7,
+        6
+      ],
+      [
+        8,
+        4
+      ],
+      [
+        10,
+        7
+      ],
+      [
+        11,
+        6
+      ],
+      [
+        11,
+        7
+      ]
+    ],
+    "footprint_size": 33,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.795647,
+    "before_reference_activity": 0.989286,
+    "after_reference_activity": 0.989286,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1280,
+      1296
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1288,
+    "end_frame": 1296,
+    "start_time": "00:00:42:28",
+    "end_time": "00:00:43:06",
+    "footprint": [
+      [
+        2,
+        4
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        4,
+        3
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        5,
+        10
+      ],
+      [
+        5,
+        11
+      ],
+      [
+        6,
+        3
+      ],
+      [
+        6,
+        4
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        6,
+        10
+      ],
+      [
+        6,
+        11
+      ],
+      [
+        7,
+        4
+      ],
+      [
+        7,
+        5
+      ],
+      [
+        8,
+        4
+      ],
+      [
+        10,
+        7
+      ],
+      [
+        11,
+        6
+      ],
+      [
+        11,
+        7
+      ]
+    ],
+    "footprint_size": 37,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.802143,
+    "before_reference_activity": 0.984694,
+    "after_reference_activity": 0.989286,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1280,
+      1296
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1296,
+    "end_frame": 1304,
+    "start_time": "00:00:43:06",
+    "end_time": "00:00:43:14",
+    "footprint": [
+      [
+        2,
+        4
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        10
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        10
+      ],
+      [
+        5,
+        11
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        7,
+        5
+      ],
+      [
+        10,
+        7
+      ],
+      [
+        11,
+        6
+      ],
+      [
+        11,
+        7
+      ]
+    ],
+    "footprint_size": 29,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.782679,
+    "before_reference_activity": 0.998469,
+    "after_reference_activity": 1.0,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1296,
+      1313
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1304,
+    "end_frame": 1313,
+    "start_time": "00:00:43:14",
+    "end_time": "00:00:43:23",
+    "footprint": [
+      [
+        2,
+        4
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        2,
+        7
+      ],
+      [
+        2,
+        8
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        3,
+        10
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        10
+      ],
+      [
+        5,
+        11
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        7,
+        5
+      ],
+      [
+        9,
+        7
+      ],
+      [
+        9,
+        8
+      ],
+      [
+        10,
+        7
+      ],
+      [
+        10,
+        8
+      ],
+      [
+        11,
+        7
+      ]
+    ],
+    "footprint_size": 35,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.800306,
+    "before_reference_activity": 0.987755,
+    "after_reference_activity": 0.998469,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1296,
+      1313
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1313,
+    "end_frame": 1321,
+    "start_time": "00:00:43:23",
+    "end_time": "00:00:44:01",
+    "footprint": [
+      [
+        2,
+        5
+      ],
+      [
+        2,
+        7
+      ],
+      [
+        2,
+        8
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        3,
+        10
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        11
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        7,
+        5
+      ],
+      [
+        9,
+        7
+      ],
+      [
+        9,
+        8
+      ],
+      [
+        10,
+        7
+      ],
+      [
+        10,
+        8
+      ],
+      [
+        11,
+        7
+      ],
+      [
+        11,
+        8
+      ]
+    ],
+    "footprint_size": 33,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.803367,
+    "before_reference_activity": 0.993304,
+    "after_reference_activity": 0.983163,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1313,
+      1330
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1321,
+    "end_frame": 1330,
+    "start_time": "00:00:44:01",
+    "end_time": "00:00:44:10",
+    "footprint": [
+      [
+        2,
+        5
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        11
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        7,
+        5
+      ],
+      [
+        10,
+        8
+      ],
+      [
+        11,
+        7
+      ],
+      [
+        11,
+        8
+      ]
+    ],
+    "footprint_size": 28,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.800223,
+    "before_reference_activity": 1.0,
+    "after_reference_activity": 0.977232,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1313,
+      1330
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1330,
+    "end_frame": 1338,
+    "start_time": "00:00:44:10",
+    "end_time": "00:00:44:18",
+    "footprint": [
+      [
+        2,
+        5
+      ],
+      [
+        2,
+        6
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        8
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        5,
+        4
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        5,
+        11
+      ],
+      [
+        6,
+        5
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        7,
+        5
+      ],
+      [
+        7,
+        6
+      ],
+      [
+        10,
+        8
+      ],
+      [
+        10,
+        9
+      ],
+      [
+        11,
+        7
+      ],
+      [
+        11,
+        8
+      ]
+    ],
+    "footprint_size": 31,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.801161,
+    "before_reference_activity": 0.996939,
+    "after_reference_activity": 0.864286,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1330,
+      1347
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1338,
+    "end_frame": 1347,
+    "start_time": "00:00:44:18",
+    "end_time": "00:00:44:27",
+    "footprint": [
+      [
+        2,
+        6
+      ],
+      [
+        2,
+        9
+      ],
+      [
+        2,
+        10
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        3,
+        10
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        5,
+        11
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        6,
+        8
+      ],
+      [
+        7,
+        6
+      ],
+      [
+        9,
+        9
+      ],
+      [
+        10,
+        8
+      ],
+      [
+        10,
+        9
+      ],
+      [
+        11,
+        8
+      ],
+      [
+        11,
+        9
+      ]
+    ],
+    "footprint_size": 31,
+    "within_slice_record_count": 5,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.842362,
+    "before_reference_activity": 0.980102,
+    "after_reference_activity": 0.736224,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1330,
+      1347
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1347,
+    "end_frame": 1355,
+    "start_time": "00:00:44:27",
+    "end_time": "00:00:45:05",
+    "footprint": [
+      [
+        2,
+        6
+      ],
+      [
+        2,
+        9
+      ],
+      [
+        2,
+        10
+      ],
+      [
+        3,
+        5
+      ],
+      [
+        3,
+        6
+      ],
+      [
+        3,
+        7
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        3,
+        9
+      ],
+      [
+        3,
+        10
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        4,
+        10
+      ],
+      [
+        4,
+        11
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        5,
+        9
+      ],
+      [
+        6,
+        6
+      ],
+      [
+        7,
+        6
+      ],
+      [
+        9,
+        9
+      ],
+      [
+        10,
+        9
+      ],
+      [
+        11,
+        8
+      ],
+      [
+        11,
+        9
+      ]
+    ],
+    "footprint_size": 27,
+    "within_slice_record_count": 4,
+    "classification": "rocky",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.693946,
+    "before_reference_activity": 0.977232,
+    "after_reference_activity": 0.716544,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1347,
+      1363
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1355,
+    "end_frame": 1363,
+    "start_time": "00:00:45:05",
+    "end_time": "00:00:45:13",
+    "footprint": [
+      [
+        1,
+        11
+      ],
+      [
+        2,
+        11
+      ],
+      [
+        3,
+        11
+      ],
+      [
+        4,
+        11
+      ]
+    ],
+    "footprint_size": 4,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.565182,
+    "before_reference_activity": 0.865625,
+    "after_reference_activity": 0.483027,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1347,
+      1363
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1363,
+    "end_frame": 1371,
+    "start_time": "00:00:45:13",
+    "end_time": "00:00:45:21",
+    "footprint": [
+      [
+        0,
+        11
+      ],
+      [
+        1,
+        11
+      ],
+      [
+        2,
+        11
+      ]
+    ],
+    "footprint_size": 3,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.557311,
+    "before_reference_activity": 0.727422,
+    "after_reference_activity": 0.368357,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1363,
+      1380
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1371,
+    "end_frame": 1380,
+    "start_time": "00:00:45:21",
+    "end_time": "00:00:46:00",
+    "footprint": [
+      [
+        0,
+        11
+      ]
+    ],
+    "footprint_size": 1,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "weak_slice_activity",
+    "lasting_change_evidence_score": 0.261953,
+    "before_reference_activity": 0.691686,
+    "after_reference_activity": 0.593337,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1363,
+      1380
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1380,
+    "end_frame": 1388,
+    "start_time": "00:00:46:00",
+    "end_time": "00:00:46:08",
+    "footprint": [
+      [
+        0,
+        11
+      ],
+      [
+        2,
+        11
+      ],
+      [
+        3,
+        11
+      ]
+    ],
+    "footprint_size": 3,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.470583,
+    "before_reference_activity": 0.422172,
+    "after_reference_activity": 0.583059,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1380,
+      1397
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1388,
+    "end_frame": 1397,
+    "start_time": "00:00:46:08",
+    "end_time": "00:00:46:17",
+    "footprint": [
+      [
+        0,
+        11
+      ],
+      [
+        1,
+        11
+      ]
+    ],
+    "footprint_size": 2,
+    "within_slice_record_count": 5,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.490291,
+    "before_reference_activity": 0.405738,
+    "after_reference_activity": 0.551601,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1380,
+      1397
+    ]
+  },
+  {
+    "slice_index": 1,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1397,
+    "end_frame": 1405,
+    "start_time": "00:00:46:17",
+    "end_time": "00:00:46:25",
+    "footprint": [
+      [
+        0,
+        11
+      ],
+      [
+        1,
+        11
+      ]
+    ],
+    "footprint_size": 2,
+    "within_slice_record_count": 4,
+    "classification": "invalid",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.535005,
+    "before_reference_activity": 0.578277,
+    "after_reference_activity": 0.285379,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1397,
+      1414
+    ]
+  },
+  {
+    "slice_index": 2,
+    "parent_union_index": 5,
+    "slice_level": 4,
+    "start_frame": 1405,
+    "end_frame": 1414,
+    "start_time": "00:00:46:25",
+    "end_time": "00:00:47:04",
+    "footprint": [
+      [
+        0,
+        11
+      ],
+      [
+        1,
+        11
+      ]
+    ],
+    "footprint_size": 2,
+    "within_slice_record_count": 4,
+    "classification": "undetermined",
+    "reason": "minimum_subdivision_size_reached",
+    "lasting_change_evidence_score": 0.472247,
+    "before_reference_activity": 0.583337,
+    "after_reference_activity": 0.121835,
+    "reference_windows_reliable": true,
+    "parent_range": [
+      1397,
+      1414
+    ]
+  }
+]
