@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--staged-stage3-art-state-prototype",
         action="store_true",
-        help="When used with --use-staged-detector, switch Stage 3 union screening to the experimental before/after art-state prototype path instead of the legacy movement-record score.",
+        help="Backward-compatibility flag retained during the staged-detector transition. Stage 3 now always uses the art-state screening path in the staged detector.",
     )
     parser.add_argument(
         "--resolve-review-timeline-name",
@@ -70,6 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
 # ============================================================
 
 def build_settings(args: argparse.Namespace) -> DetectorSettings:
+    # The staged detector now defaults to per-frame evaluation when the user leaves
+    # the legacy sample-stride default in place.
+    effective_sample_stride = 1 if args.use_staged_detector and args.sample_stride == 3 else args.sample_stride
     return DetectorSettings(
         lead_in=Timecode.from_seconds_and_frames(args.lead_in_seconds, args.lead_in_frames),
         tail_after=Timecode.from_seconds_and_frames(args.tail_after_seconds, args.tail_after_frames),
@@ -78,7 +81,7 @@ def build_settings(args: argparse.Namespace) -> DetectorSettings:
         min_clip_length=Timecode.from_hhmmssff(args.min_clip_length),
         max_clip_length=Timecode.from_hhmmssff(args.max_clip_length),
         pause_threshold=Timecode.from_hhmmssff(args.pause_threshold),
-        sample_stride=args.sample_stride,
+        sample_stride=effective_sample_stride,
         activity_threshold=args.activity_threshold,
         active_pixel_ratio=args.active_pixel_ratio,
         min_burst_length=Timecode.from_hhmmssff(args.min_burst),

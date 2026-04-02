@@ -1,11 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 # ============================================================
 # SECTION A - Imports And Helpers
 # ============================================================
 
+import tempfile
 import unittest
 from collections import deque
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -23,13 +25,14 @@ from harvesting_tool.staged_detection import (
     build_movement_evidence_record,
     build_stage1_movement_spans,
     build_stage2_candidate_unions,
+    build_staged_debug_summary_lines,
     classify_stage4_time_slices,
     classify_stage5_minimum_size_leaf,
     refine_stage5_sub_slices,
     screen_stage3_candidate_unions,
     select_stage3_art_state_reference_window,
+    write_staged_debug_artifacts,
 )
-
 
 def make_stage3_art_state_sample(
     frame_index: int,
@@ -169,15 +172,16 @@ class MovementEvidenceRecordTests(unittest.TestCase):
 
 
 class MovementSpanConstructionTests(unittest.TestCase):
-    def test_stage1_movement_spans_backtrack_and_union_footprints(self) -> None:
+    def test_stage1_movement_spans_open_when_two_of_last_three_records_are_active(self) -> None:
         settings = make_settings()
         records = [
-            make_record(1, 100, movement_present=True, weak_signal=True, touched_grid_coordinates=((0, 0),)),
-            make_record(2, 102, movement_present=True, weak_signal=True, touched_grid_coordinates=((0, 1),)),
-            make_record(3, 104, movement_present=True, opening_signal=True, touched_grid_coordinates=((1, 1),)),
-            make_record(4, 106, movement_present=True, continuation_signal=True, touched_grid_coordinates=((1, 2),)),
+            make_record(1, 100, movement_present=True, touched_grid_coordinates=((0, 0),)),
+            make_record(2, 102, movement_present=False),
+            make_record(3, 104, movement_present=True, touched_grid_coordinates=((1, 1),)),
+            make_record(4, 106, movement_present=True, touched_grid_coordinates=((1, 2),)),
             make_record(5, 108, movement_present=False),
             make_record(6, 110, movement_present=False),
+            make_record(7, 112, movement_present=False),
         ]
 
         spans = build_stage1_movement_spans(records, settings)
@@ -185,25 +189,58 @@ class MovementSpanConstructionTests(unittest.TestCase):
         self.assertEqual(len(spans), 1)
         span = spans[0]
         self.assertEqual(span.start_frame, 100)
-        self.assertEqual(span.record_indices, (1, 2, 3, 4))
-        self.assertEqual(span.footprint_size, 4)
+        self.assertEqual(span.end_frame, 108)
+        self.assertEqual(span.record_indices, (1, 3, 4))
         self.assertEqual(
             span.footprint,
-            frozenset({(0, 0), (0, 1), (1, 1), (1, 2)}),
+            frozenset({(0, 0), (1, 1), (1, 2)}),
         )
 
-    def test_stage1_movement_spans_discard_short_runs_below_minimum_length(self) -> None:
+    def test_stage1_movement_spans_allow_brief_inactive_dips_without_closing(self) -> None:
         settings = make_settings()
         records = [
-            make_record(1, 200, movement_present=True, opening_signal=True, touched_grid_coordinates=((3, 3),)),
+            make_record(1, 200, movement_present=True, touched_grid_coordinates=((2, 2),)),
             make_record(2, 202, movement_present=False),
-            make_record(3, 204, movement_present=False),
+            make_record(3, 204, movement_present=True, touched_grid_coordinates=((2, 3),)),
+            make_record(4, 206, movement_present=False),
+            make_record(5, 208, movement_present=True, touched_grid_coordinates=((3, 3),)),
+            make_record(6, 210, movement_present=False),
+            make_record(7, 212, movement_present=False),
+            make_record(8, 214, movement_present=False),
+        ]
+
+        spans = build_stage1_movement_spans(records, settings)
+
+        self.assertEqual(len(spans), 1)
+        span = spans[0]
+        self.assertEqual(span.start_frame, 200)
+        self.assertEqual(span.end_frame, 210)
+        self.assertEqual(span.record_indices, (1, 3, 5))
+
+    def test_stage1_movement_spans_do_not_open_on_single_isolated_active_record(self) -> None:
+        settings = make_settings()
+        records = [
+            make_record(1, 300, movement_present=False),
+            make_record(2, 302, movement_present=True, touched_grid_coordinates=((4, 4),)),
+            make_record(3, 304, movement_present=False),
+            make_record(4, 306, movement_present=False),
         ]
 
         spans = build_stage1_movement_spans(records, settings)
         self.assertEqual(spans, [])
 
+    def test_stage1_movement_spans_discard_short_runs_below_minimum_length(self) -> None:
+        settings = make_settings()
+        records = [
+            make_record(1, 400, movement_present=True, touched_grid_coordinates=((3, 3),)),
+            make_record(2, 402, movement_present=True, touched_grid_coordinates=((3, 4),)),
+            make_record(3, 404, movement_present=False),
+            make_record(4, 406, movement_present=False),
+            make_record(5, 408, movement_present=False),
+        ]
 
+        spans = build_stage1_movement_spans(records, settings)
+        self.assertEqual(spans, [])
 # ============================================================
 # SECTION D - Stage 2 Candidate Union Tests
 # ============================================================
@@ -512,7 +549,7 @@ class CandidateUnionScreeningTests(unittest.TestCase):
         self.assertEqual(screened[0].reason, "reference_windows_too_active")
 
 
-    def test_stage3_art_state_prototype_survives_real_before_after_change(self) -> None:
+    def test_stage3_art_state_screening_survives_real_before_after_change(self) -> None:
         candidate_union = CandidateUnion(
             union_index=1,
             start_frame=300,
@@ -546,13 +583,12 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             sampled_frames=sampled_frames,
             chapter_range=chapter_range,
             settings=make_settings(),
-            use_art_state_prototype=True,
         )
 
         self.assertEqual(len(screened), 1)
         self.assertEqual(screened[0].screening_result, 'surviving', msg=repr(screened[0]))
         self.assertEqual(screened[0].reason, 'art_state_change_supported')
-        self.assertEqual(screened[0].stage3_mode, 'art_state_prototype')
+        self.assertEqual(screened[0].stage3_mode, 'art_state')
         self.assertGreater(screened[0].stage3_persistent_difference_score, 0.0)
         self.assertGreater(screened[0].stage3_footprint_support_score, 0.0)
         self.assertGreater(screened[0].stage3_after_window_persistence_score, 0.0)
@@ -587,7 +623,7 @@ class CandidateUnionScreeningTests(unittest.TestCase):
         self.assertEqual(selected_window['window_start'], 339)
         self.assertEqual(selected_window['tier'], 'local')
 
-    def test_stage3_art_state_prototype_rejects_when_before_after_state_is_unchanged(self) -> None:
+    def test_stage3_art_state_screening_rejects_when_before_after_state_is_unchanged(self) -> None:
         candidate_union = CandidateUnion(
             union_index=1,
             start_frame=300,
@@ -621,14 +657,13 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             sampled_frames=sampled_frames,
             chapter_range=chapter_range,
             settings=make_settings(),
-            use_art_state_prototype=True,
         )
 
         self.assertEqual(screened[0].screening_result, 'rejected')
         self.assertEqual(screened[0].reason, 'weak_union_activity')
-        self.assertEqual(screened[0].stage3_mode, 'art_state_prototype')
+        self.assertEqual(screened[0].stage3_mode, 'art_state')
 
-    def test_stage3_art_state_prototype_rejects_when_reveal_window_loses_post_state(self) -> None:
+    def test_stage3_art_state_screening_rejects_when_reveal_window_loses_post_state(self) -> None:
         candidate_union = CandidateUnion(
             union_index=1,
             start_frame=300,
@@ -662,15 +697,14 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             sampled_frames=sampled_frames,
             chapter_range=chapter_range,
             settings=make_settings(),
-            use_art_state_prototype=True,
         )
 
         self.assertEqual(screened[0].screening_result, 'surviving')
         self.assertEqual(screened[0].reason, 'art_state_change_supported')
-        self.assertEqual(screened[0].stage3_mode, 'art_state_prototype')
+        self.assertEqual(screened[0].stage3_mode, 'art_state')
         self.assertLess(screened[0].stage3_reveal_window_hold_score, 0.45)
 
-    def test_stage3_art_state_prototype_rejects_when_footprint_support_is_too_small(self) -> None:
+    def test_stage3_art_state_screening_rejects_when_footprint_support_is_too_small(self) -> None:
         candidate_union = CandidateUnion(
             union_index=1,
             start_frame=300,
@@ -713,14 +747,13 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             sampled_frames=sampled_frames,
             chapter_range=chapter_range,
             settings=make_settings(),
-            use_art_state_prototype=True,
         )
 
         self.assertEqual(screened[0].screening_result, 'rejected')
         self.assertEqual(screened[0].reason, 'weak_union_activity')
         self.assertLess(screened[0].stage3_footprint_support_score, 0.10)
 
-    def test_stage3_art_state_prototype_rejects_small_fallback_post_reference_without_reveal(self) -> None:
+    def test_stage3_art_state_screening_rejects_small_fallback_post_reference_without_reveal(self) -> None:
         candidate_union = CandidateUnion(
             union_index=1,
             start_frame=300,
@@ -752,7 +785,6 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             sampled_frames=sampled_frames,
             chapter_range=chapter_range,
             settings=make_settings(),
-            use_art_state_prototype=True,
         )
 
         self.assertEqual(screened[0].screening_result, 'rejected')
@@ -982,172 +1014,35 @@ class SubSliceRefinementTests(unittest.TestCase):
         self.assertEqual(len(refined), 2)
         self.assertEqual(refined[0].classification, "valid")
         self.assertEqual(refined[0].reason, "slice_activity_supported")
-    def test_stage5_refines_strong_active_reference_slice_instead_of_invalidating_it(self) -> None:
-        screened_union = make_screened_union(start_frame=300, end_frame=420)
-        undetermined_slice = ClassifiedTimeSlice(
+
+    def test_stage5_marks_terminal_undetermined_leaf_as_boundary_when_adjacent_to_valid(self) -> None:
+        terminal_leaf = ClassifiedTimeSlice(
             slice_index=1,
-            parent_union_index=screened_union.candidate_union.union_index,
-            slice_level=0,
+            parent_union_index=1,
+            slice_level=3,
             start_frame=300,
-            end_frame=360,
+            end_frame=315,
             start_time="00:00:10:00",
-            end_time="00:00:12:00",
-            footprint=frozenset({(2, 2), (2, 3), (3, 2), (3, 3)}),
-            footprint_size=4,
+            end_time="00:00:10:15",
+            footprint=frozenset({(2, 2), (2, 3)}),
+            footprint_size=8,
             within_slice_record_count=2,
             classification="undetermined",
-            reason="reference_windows_too_active",
-            lasting_change_evidence_score=0.72,
-            before_reference_activity=0.72,
-            after_reference_activity=0.70,
+            reason="minimum_subdivision_size_reached",
+            lasting_change_evidence_score=0.60,
+            before_reference_activity=0.10,
+            after_reference_activity=0.10,
             reference_windows_reliable=True,
         )
-        records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.84, temporal_persistence_score=0.82, spatial_extent_score=0.92, touched_grid_coordinates=((2, 2), (2, 3), (3, 2), (3, 3), (4, 2), (4, 3))),
-            make_record(2, 318, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.94, touched_grid_coordinates=((3, 2), (3, 3), (4, 2), (4, 3), (5, 2), (5, 3))),
-            make_record(3, 334, movement_present=True, movement_strength_score=0.74, temporal_persistence_score=0.72, spatial_extent_score=0.68),
-            make_record(4, 346, movement_present=True, movement_strength_score=0.73, temporal_persistence_score=0.71, spatial_extent_score=0.67),
-            make_record(5, 288, movement_present=True, movement_strength_score=0.70, temporal_persistence_score=0.68, spatial_extent_score=0.62),
-            make_record(6, 296, movement_present=True, movement_strength_score=0.71, temporal_persistence_score=0.69, spatial_extent_score=0.63),
-            make_record(7, 364, movement_present=False, movement_strength_score=0.02, temporal_persistence_score=0.02),
-            make_record(8, 372, movement_present=False, movement_strength_score=0.02, temporal_persistence_score=0.02),
-        ]
-
-        refined = refine_stage5_sub_slices([screened_union], [undetermined_slice], records, minimum_subdivision_frames=15)
-
-        self.assertTrue(any(slice_info.classification == "boundary" and slice_info.reason == "minimum_subdivision_size_reached" for slice_info in refined))
-    def test_stage5_rescues_active_reference_minimum_size_leaf_when_union_has_valid_support(self) -> None:
-        rescued = classify_stage5_minimum_size_leaf(
-            ClassifiedTimeSlice(
-                slice_index=1,
-                parent_union_index=1,
-                slice_level=3,
-                start_frame=300,
-                end_frame=315,
-                start_time="00:00:10:00",
-                end_time="00:00:10:15",
-                footprint=frozenset({(2, 2), (2, 3)}),
-                footprint_size=8,
-                within_slice_record_count=2,
-                classification="invalid",
-                reason="reference_windows_too_active",
-                lasting_change_evidence_score=0.58,
-                before_reference_activity=0.76,
-                after_reference_activity=0.75,
-                reference_windows_reliable=True,
-            ),
-            allow_active_reference_rescue=True,
-        )
-
-        self.assertEqual(rescued.classification, "boundary")
-        self.assertEqual(rescued.reason, "active_reference_minimum_size_reached")
-
-    def test_stage5_rescues_art_state_supported_minimum_size_leaf(self) -> None:
-        rescued = classify_stage5_minimum_size_leaf(
-            ClassifiedTimeSlice(
-                slice_index=1,
-                parent_union_index=1,
-                slice_level=3,
-                start_frame=300,
-                end_frame=315,
-                start_time="00:00:10:00",
-                end_time="00:00:10:15",
-                footprint=frozenset({(2, 2), (2, 3)}),
-                footprint_size=9,
-                within_slice_record_count=2,
-                classification="invalid",
-                reason="reference_windows_too_active",
-                lasting_change_evidence_score=0.59,
-                before_reference_activity=0.76,
-                after_reference_activity=0.75,
-                reference_windows_reliable=True,
-            ),
-            allow_art_state_supported_rescue=True,
-        )
-
-        self.assertEqual(rescued.classification, "boundary")
-        self.assertEqual(rescued.reason, "art_state_supported_minimum_size_reached")
-
-    def test_stage5_promotes_strong_minimum_size_leaf_to_valid_anchor(self) -> None:
-        promoted = classify_stage5_minimum_size_leaf(
-            ClassifiedTimeSlice(
-                slice_index=1,
-                parent_union_index=1,
-                slice_level=3,
-                start_frame=300,
-                end_frame=315,
-                start_time="00:00:10:00",
-                end_time="00:00:10:15",
-                footprint=frozenset({(2, 2), (2, 3)}),
-                footprint_size=8,
-                within_slice_record_count=2,
-                classification="undetermined",
-                reason="mixed_slice_evidence",
-                lasting_change_evidence_score=0.60,
-                before_reference_activity=0.76,
-                after_reference_activity=0.75,
-                reference_windows_reliable=True,
-            ),
-            allow_valid_anchor_promotion=True,
-        )
-
-        self.assertEqual(promoted.classification, "valid")
-        self.assertEqual(promoted.reason, "slice_activity_supported")
-
-    def test_stage5_does_not_promote_small_minimum_size_leaf_to_valid_anchor(self) -> None:
-        retained = classify_stage5_minimum_size_leaf(
-            ClassifiedTimeSlice(
-                slice_index=1,
-                parent_union_index=1,
-                slice_level=3,
-                start_frame=300,
-                end_frame=315,
-                start_time="00:00:10:00",
-                end_time="00:00:10:15",
-                footprint=frozenset({(2, 2), (2, 3)}),
-                footprint_size=7,
-                within_slice_record_count=2,
-                classification="undetermined",
-                reason="mixed_slice_evidence",
-                lasting_change_evidence_score=0.60,
-                before_reference_activity=0.76,
-                after_reference_activity=0.75,
-                reference_windows_reliable=True,
-            ),
-            allow_valid_anchor_promotion=True,
-        )
-
-        self.assertEqual(retained.classification, "boundary")
-        self.assertEqual(retained.reason, "minimum_subdivision_size_reached")
-
-    def test_stage5_does_not_promote_local_strong_leaf_without_coherent_sibling_support(self) -> None:
-        screened_union = make_screened_union(start_frame=300, end_frame=960)
-        screened_union = screened_union.__class__(
-            candidate_union=screened_union.candidate_union,
-            screening_result=screened_union.screening_result,
-            surviving=screened_union.surviving,
-            provisional_survival=screened_union.provisional_survival,
-            reason=screened_union.reason,
-            within_union_record_count=screened_union.within_union_record_count,
-            before_record_count=screened_union.before_record_count,
-            after_record_count=screened_union.after_record_count,
-            mean_movement_strength=screened_union.mean_movement_strength,
-            mean_temporal_persistence=screened_union.mean_temporal_persistence,
-            mean_spatial_extent=screened_union.mean_spatial_extent,
-            lasting_change_evidence_score=0.73,
-            before_reference_activity=screened_union.before_reference_activity,
-            after_reference_activity=screened_union.after_reference_activity,
-            reference_windows_reliable=screened_union.reference_windows_reliable,
-        )
-        existing_valid_slice = ClassifiedTimeSlice(
-            slice_index=1,
-            parent_union_index=screened_union.candidate_union.union_index,
-            slice_level=0,
-            start_frame=900,
-            end_frame=930,
-            start_time="00:00:30:00",
-            end_time="00:00:31:00",
-            footprint=frozenset({(5, 5), (5, 6), (6, 5), (6, 6)}),
+        valid_leaf = ClassifiedTimeSlice(
+            slice_index=2,
+            parent_union_index=1,
+            slice_level=3,
+            start_frame=315,
+            end_frame=330,
+            start_time="00:00:10:15",
+            end_time="00:00:11:00",
+            footprint=frozenset({(2, 3), (3, 3)}),
             footprint_size=8,
             within_slice_record_count=2,
             classification="valid",
@@ -1157,10 +1052,18 @@ class SubSliceRefinementTests(unittest.TestCase):
             after_reference_activity=0.02,
             reference_windows_reliable=True,
         )
-        local_undetermined_slice = ClassifiedTimeSlice(
-            slice_index=2,
-            parent_union_index=screened_union.candidate_union.union_index,
-            slice_level=0,
+
+        refined = refine_stage5_sub_slices([], [terminal_leaf, valid_leaf], [], minimum_subdivision_frames=15)
+        resolved_leaf = next(slice_info for slice_info in refined if slice_info.start_frame == 300)
+
+        self.assertEqual(resolved_leaf.classification, "boundary")
+        self.assertEqual(resolved_leaf.reason, "minimum_subdivision_size_reached")
+
+    def test_stage5_marks_terminal_undetermined_leaf_as_invalid_when_isolated(self) -> None:
+        terminal_leaf = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=3,
             start_frame=300,
             end_frame=315,
             start_time="00:00:10:00",
@@ -1169,132 +1072,18 @@ class SubSliceRefinementTests(unittest.TestCase):
             footprint_size=8,
             within_slice_record_count=2,
             classification="undetermined",
-            reason="mixed_reference_activity",
+            reason="minimum_subdivision_size_reached",
             lasting_change_evidence_score=0.60,
-            before_reference_activity=0.22,
-            after_reference_activity=0.30,
+            before_reference_activity=0.10,
+            after_reference_activity=0.10,
             reference_windows_reliable=True,
         )
 
-        refined = refine_stage5_sub_slices(
-            [screened_union],
-            [existing_valid_slice, local_undetermined_slice],
-            [],
-            minimum_subdivision_frames=15,
-        )
+        refined = refine_stage5_sub_slices([], [terminal_leaf], [], minimum_subdivision_frames=15)
 
-        promoted = next(
-            slice_info
-            for slice_info in refined
-            if slice_info.start_frame == 300 and slice_info.end_frame == 315
-        )
-        self.assertEqual(promoted.classification, "boundary")
-        self.assertEqual(promoted.reason, "minimum_subdivision_size_reached")
-
-    def test_stage5_rescues_moderate_undetermined_leaf_in_long_strong_union(self) -> None:
-        rescued = classify_stage5_minimum_size_leaf(
-            ClassifiedTimeSlice(
-                slice_index=1,
-                parent_union_index=1,
-                slice_level=3,
-                start_frame=300,
-                end_frame=315,
-                start_time="00:00:10:00",
-                end_time="00:00:10:15",
-                footprint=frozenset({(2, 2), (2, 3)}),
-                footprint_size=8,
-                within_slice_record_count=2,
-                classification="undetermined",
-                reason="reference_windows_too_active",
-                lasting_change_evidence_score=0.59,
-                before_reference_activity=0.76,
-                after_reference_activity=0.75,
-                reference_windows_reliable=True,
-            ),
-            allow_long_strong_union_rocky_rescue=True,
-        )
-
-        self.assertEqual(rescued.classification, "boundary")
-        self.assertEqual(rescued.reason, "long_strong_union_minimum_size_reached")
-
-
-    def test_stage5_rescues_invalid_leaf_when_parent_activity_is_strong(self) -> None:
-        rescued = classify_stage5_minimum_size_leaf(
-            ClassifiedTimeSlice(
-                slice_index=1,
-                parent_union_index=1,
-                slice_level=3,
-                start_frame=300,
-                end_frame=315,
-                start_time="00:00:10:00",
-                end_time="00:00:10:15",
-                footprint=frozenset({(2, 2), (2, 3)}),
-                footprint_size=8,
-                within_slice_record_count=2,
-                classification="invalid",
-                reason="reference_windows_too_active",
-                lasting_change_evidence_score=0.59,
-                before_reference_activity=0.76,
-                after_reference_activity=0.75,
-                reference_windows_reliable=True,
-            ),
-            allow_high_parent_activity_rescue=True,
-        )
-
-        self.assertEqual(rescued.classification, "boundary")
-        self.assertEqual(rescued.reason, "high_parent_activity_minimum_size_reached")
-
-    def test_stage5_rescues_reference_unreliable_undetermined_leaf(self) -> None:
-        rescued = classify_stage5_minimum_size_leaf(
-            ClassifiedTimeSlice(
-                slice_index=1,
-                parent_union_index=1,
-                slice_level=3,
-                start_frame=300,
-                end_frame=315,
-                start_time="00:00:10:00",
-                end_time="00:00:10:15",
-                footprint=frozenset({(2, 2), (2, 3)}),
-                footprint_size=8,
-                within_slice_record_count=2,
-                classification="undetermined",
-                reason="minimum_subdivision_size_reached",
-                lasting_change_evidence_score=0.61,
-                before_reference_activity=0.76,
-                after_reference_activity=0.75,
-                reference_windows_reliable=False,
-            ),
-            allow_reference_unreliable_rescue=True,
-        )
-
-        self.assertEqual(rescued.classification, "boundary")
-        self.assertEqual(rescued.reason, "reference_unreliable_minimum_size_reached")
-
-    def test_stage5_rescues_structural_gap_invalid_leaf(self) -> None:
-        rescued = classify_stage5_minimum_size_leaf(
-            ClassifiedTimeSlice(
-                slice_index=1,
-                parent_union_index=1,
-                slice_level=3,
-                start_frame=300,
-                end_frame=315,
-                start_time="00:00:10:00",
-                end_time="00:00:10:15",
-                footprint=frozenset({(2, 2), (2, 3)}),
-                footprint_size=8,
-                within_slice_record_count=2,
-                classification="invalid",
-                reason="reference_windows_too_active",
-                lasting_change_evidence_score=0.58,
-                before_reference_activity=0.76,
-                after_reference_activity=0.75,
-                reference_windows_reliable=True,
-            ),
-            allow_structural_gap_rescue=True,
-        )
-
-        self.assertEqual(rescued.classification, "boundary")
-        self.assertEqual(rescued.reason, "structural_gap_minimum_size_reached")
+        self.assertEqual(len(refined), 1)
+        self.assertEqual(refined[0].classification, "invalid")
+        self.assertEqual(refined[0].reason, "minimum_subdivision_size_reached")
 
     def test_stage5_stops_at_minimum_subdivision_size(self) -> None:
         screened_union = make_screened_union(start_frame=300, end_frame=312)
@@ -1320,10 +1109,8 @@ class SubSliceRefinementTests(unittest.TestCase):
         refined = refine_stage5_sub_slices([screened_union], [undetermined_slice], [], minimum_subdivision_frames=15)
 
         self.assertEqual(len(refined), 1)
-        self.assertEqual(refined[0].classification, "undetermined")
+        self.assertEqual(refined[0].classification, "invalid")
         self.assertEqual(refined[0].reason, "minimum_subdivision_size_reached")
-
-
 # ============================================================
 # SECTION H - Stage 6 Final Candidate Range Assembly Tests
 # ============================================================
@@ -1375,8 +1162,8 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         self.assertEqual(len(final_ranges), 1)
         self.assertEqual(final_ranges[0].start_frame, 300)
         self.assertEqual(final_ranges[0].end_frame, 330)
-        self.assertTrue(final_ranges[0].includes_retained_undetermined)
-        self.assertEqual(final_ranges[0].retained_undetermined_count, 1)
+        self.assertTrue(final_ranges[0].includes_boundary)
+        self.assertEqual(final_ranges[0].boundary_count, 1)
         self.assertEqual(final_ranges[0].source_classifications, ("boundary", "valid"))
 
     def test_stage6_merges_valid_and_boundary_across_short_internal_gap(self) -> None:
@@ -1393,7 +1180,7 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
                 footprint_size=3,
                 within_slice_record_count=1,
                 classification="boundary",
-                reason="reference_unreliable_minimum_size_reached",
+                reason="minimum_subdivision_size_reached",
                 lasting_change_evidence_score=0.69,
                 before_reference_activity=0.72,
                 after_reference_activity=0.68,
@@ -1403,10 +1190,10 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
                 slice_index=2,
                 parent_union_index=1,
                 slice_level=1,
-                start_frame=338,
-                end_frame=353,
-                start_time="00:00:11:08",
-                end_time="00:00:11:23",
+                start_frame=328,
+                end_frame=343,
+                start_time="00:00:10:28",
+                end_time="00:00:11:13",
                 footprint=frozenset({(2, 2), (2, 3), (3, 2), (3, 3)}),
                 footprint_size=4,
                 within_slice_record_count=1,
@@ -1423,7 +1210,7 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
 
         self.assertEqual(len(final_ranges), 1)
         self.assertEqual(final_ranges[0].start_frame, 300)
-        self.assertEqual(final_ranges[0].end_frame, 353)
+        self.assertEqual(final_ranges[0].end_frame, 343)
         self.assertEqual(final_ranges[0].source_classifications, ("boundary", "valid"))
 
     def test_stage6_drops_isolated_boundary_minimum_size_slice(self) -> None:
@@ -1530,7 +1317,7 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         final_ranges = assemble_stage6_candidate_ranges(refined_slices)
         self.assertEqual(final_ranges, [])
 
-    def test_stage6_keeps_short_abrupt_canvas_change_boundary_cluster(self) -> None:
+    def test_stage6_drops_short_boundary_only_cluster_even_with_large_footprint(self) -> None:
         refined_slices = [
             ClassifiedTimeSlice(
                 slice_index=1,
@@ -1571,11 +1358,7 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         ]
 
         final_ranges = assemble_stage6_candidate_ranges(refined_slices)
-
-        self.assertEqual(len(final_ranges), 1)
-        self.assertEqual(final_ranges[0].start_frame, 900)
-        self.assertEqual(final_ranges[0].end_frame, 916)
-        self.assertEqual(final_ranges[0].source_classifications, ("boundary",))
+        self.assertEqual(final_ranges, [])
 
     def test_stage6_does_not_merge_low_overlap_boundary_slice_into_valid_boundary(self) -> None:
         refined_slices = [
@@ -1623,7 +1406,7 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         self.assertEqual(final_ranges[0].start_frame, 1024)
         self.assertEqual(final_ranges[0].source_classifications, ("valid",))
 
-    def test_stage6_merges_contiguous_valid_ranges_within_same_union(self) -> None:
+    def test_stage6_merges_contiguous_valid_ranges_across_union_boundaries(self) -> None:
         refined_slices = [
             ClassifiedTimeSlice(
                 slice_index=1,
@@ -1645,7 +1428,7 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
             ),
             ClassifiedTimeSlice(
                 slice_index=2,
-                parent_union_index=2,
+                parent_union_index=8,
                 slice_level=1,
                 start_frame=415,
                 end_frame=430,
@@ -1668,14 +1451,117 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         self.assertEqual(len(final_ranges), 1)
         self.assertEqual(final_ranges[0].start_frame, 400)
         self.assertEqual(final_ranges[0].end_frame, 430)
-        self.assertFalse(final_ranges[0].includes_retained_undetermined)
+        self.assertFalse(final_ranges[0].includes_boundary)
         self.assertEqual(final_ranges[0].source_classifications, ("valid",))
+
+
+# ============================================================
+# SECTION I - Staged Debug Artifact Output Tests
+# ============================================================
+
+
+class StagedDebugArtifactOutputTests(unittest.TestCase):
+    def test_build_staged_debug_summary_lines_reports_stage_counts_and_ranges(self) -> None:
+        debug_payload = {
+            'movement_evidence_records': [{'record_index': 1}, {'record_index': 2}],
+            'movement_spans': [
+                {'span_index': 1, 'start_time': '00:00:01:00', 'end_time': '00:00:02:00'},
+            ],
+            'candidate_unions': [
+                {'union_index': 1, 'start_time': '00:00:01:00', 'end_time': '00:00:02:15'},
+                {'union_index': 2, 'start_time': '00:00:03:00', 'end_time': '00:00:03:20'},
+            ],
+            'screened_candidate_unions': [
+                {'candidate_union_index': 1, 'surviving': True, 'provisional_survival': False},
+                {'candidate_union_index': 2, 'surviving': False, 'provisional_survival': True},
+            ],
+            'classified_time_slices': [
+                {'classification': 'valid'},
+                {'classification': 'invalid'},
+                {'classification': 'undetermined'},
+            ],
+            'refined_sub_slices': [
+                {'classification': 'valid'},
+                {'classification': 'boundary'},
+                {'classification': 'invalid'},
+            ],
+            'final_candidate_ranges': [
+                {
+                    'range_index': 1,
+                    'start_time': '00:00:10:00',
+                    'end_time': '00:00:11:00',
+                    'source_classifications': ['valid', 'boundary'],
+                    'includes_boundary': True,
+                    'boundary_count': 1,
+                }
+            ],
+            'candidate_clips': [
+                {
+                    'clip_index': 1,
+                    'clip_start': '00:00:09:28',
+                    'clip_end': '00:00:11:04',
+                    'activity_start': '00:00:10:00',
+                    'activity_end': '00:00:11:00',
+                }
+            ],
+        }
+
+        summary_lines = build_staged_debug_summary_lines(debug_payload)
+        summary_text = '\n'.join(summary_lines)
+
+        self.assertIn('Movement evidence', summary_text)
+        self.assertIn('- Movement evidence records created: 2', summary_text)
+        self.assertIn('Stage 1 - Movement spans', summary_text)
+        self.assertIn('- Movement spans created: 1', summary_text)
+        self.assertIn('- Span 1: 00:00:01:00 to 00:00:02:00', summary_text)
+        self.assertIn('Stage 2 - Candidate unions', summary_text)
+        self.assertIn('- Candidate unions created: 2', summary_text)
+        self.assertIn('- Union 2: 00:00:03:00 to 00:00:03:20', summary_text)
+        self.assertIn('Stage 3 - Union screening', summary_text)
+        self.assertIn('- Survived: 1', summary_text)
+        self.assertIn('- Rejected: 1', summary_text)
+        self.assertIn('- Provisional survivals: 1', summary_text)
+        self.assertIn('Stage 4 - Top-level time slices', summary_text)
+        self.assertIn('- Top-level slices created: 3', summary_text)
+        self.assertIn('- Valid: 1', summary_text)
+        self.assertIn('- Invalid: 1', summary_text)
+        self.assertIn('- Undetermined: 1', summary_text)
+        self.assertIn('Stage 5 - Recursive refinement', summary_text)
+        self.assertIn('- Refined slices produced: 3', summary_text)
+        self.assertIn('- Boundary: 1', summary_text)
+        self.assertIn('- Undetermined remaining after refinement: 0', summary_text)
+        self.assertIn('Stage 6 - Final retained ranges', summary_text)
+        self.assertIn('- Final retained ranges built from valid material: 1', summary_text)
+        self.assertIn('- Ranges that include boundary support: 1', summary_text)
+        self.assertIn('- Candidate clips produced: 1', summary_text)
+        self.assertIn('Final retained ranges', summary_text)
+        self.assertIn('  Built from: valid + boundary support', summary_text)
+        self.assertIn('  Boundary slices attached: 1', summary_text)
+        self.assertIn('Candidate clips', summary_text)
+        self.assertIn('  Activity inside clip: 00:00:10:00 to 00:00:11:00', summary_text)
+
+    def test_write_staged_debug_artifacts_creates_summary_text_file(self) -> None:
+        debug_payload = {
+            'movement_evidence_records': [],
+            'movement_spans': [],
+            'candidate_unions': [],
+            'screened_candidate_unions': [],
+            'classified_time_slices': [],
+            'refined_sub_slices': [],
+            'final_candidate_ranges': [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            debug_stem = Path(tmpdir) / 'debug_run'
+            output_paths = write_staged_debug_artifacts(debug_stem, debug_payload)
+            summary_path = output_paths['summary']
+
+            self.assertTrue(summary_path.exists())
+            summary_text = summary_path.read_text(encoding='utf-8')
+            self.assertIn('Staged detector summary', summary_text)
+            self.assertIn('Stage 6 - Final retained ranges', summary_text)
+            self.assertIn('- Final retained ranges built from valid material: 0', summary_text)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
-
-

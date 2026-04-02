@@ -20,7 +20,9 @@ param(
     [int]$SampleStride = 2,
     [double]$ActivityThreshold = 8.0,
     [double]$ActivePixelRatio = 0.0015,
-    [string]$MinBurst = "00:00:00:06"
+    [string]$MinBurst = "00:00:00:06",
+    [switch]$UseStagedDetector,
+    [switch]$StagedStage3ArtStatePrototype
 )
 
 
@@ -37,6 +39,7 @@ Write-Host "Video: $VideoPath"
 Write-Host "Chapter: $ChapterStart -> $ChapterEnd"
 Write-Host "Output: $OutputStem.txt and $OutputStem.json"
 Write-Host "Debug: $DebugStem"
+Write-Host "Use staged detector: $UseStagedDetector"
 Write-Host ""
 
 
@@ -44,24 +47,36 @@ Write-Host ""
 # SECTION C - Smoke Test Execution
 # ============================================================
 
-py -m harvesting_tool.cli $VideoPath `
-    --chapter-start $ChapterStart `
-    --chapter-end $ChapterEnd `
-    --min-harvest $MinHarvest `
-    --max-harvest $MaxHarvest `
-    --min-clip-length $MinClipLength `
-    --max-clip-length $MaxClipLength `
-    --pause-threshold $PauseThreshold `
-    --lead-in-seconds $LeadInSeconds `
-    --lead-in-frames $LeadInFrames `
-    --tail-after-seconds $TailAfterSeconds `
-    --tail-after-frames $TailAfterFrames `
-    --output-stem $OutputStem `
-    --debug-stem $DebugStem `
-    --sample-stride $SampleStride `
-    --activity-threshold $ActivityThreshold `
-    --active-pixel-ratio $ActivePixelRatio `
-    --min-burst $MinBurst
+$cliArgs = @(
+    '-m', 'harvesting_tool.cli',
+    $VideoPath,
+    '--chapter-start', $ChapterStart,
+    '--chapter-end', $ChapterEnd,
+    '--min-harvest', $MinHarvest,
+    '--max-harvest', $MaxHarvest,
+    '--min-clip-length', $MinClipLength,
+    '--max-clip-length', $MaxClipLength,
+    '--pause-threshold', $PauseThreshold,
+    '--lead-in-seconds', $LeadInSeconds,
+    '--lead-in-frames', $LeadInFrames,
+    '--tail-after-seconds', $TailAfterSeconds,
+    '--tail-after-frames', $TailAfterFrames,
+    '--output-stem', $OutputStem,
+    '--debug-stem', $DebugStem,
+    '--sample-stride', $SampleStride,
+    '--activity-threshold', $ActivityThreshold,
+    '--active-pixel-ratio', $ActivePixelRatio,
+    '--min-burst', $MinBurst
+)
+
+if ($UseStagedDetector) {
+    $cliArgs += '--use-staged-detector'
+}
+if ($StagedStage3ArtStatePrototype) {
+    $cliArgs += '--staged-stage3-art-state-prototype'
+}
+
+py @cliArgs
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""

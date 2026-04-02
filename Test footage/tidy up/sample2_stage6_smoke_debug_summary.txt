@@ -1,0 +1,25 @@
+Staged detector summary
+
+Stage 1 found 6568 movement evidence records and 37 movement spans.
+Stage 2 built 20 candidate unions.
+Stage 3 kept 18 of 20 candidate unions, with 0 provisional survivals.
+Stage 4 classified top-level slices as 3 valid, 0 invalid, and 33 undetermined.
+Stage 5 resolved refined slices as 6 valid, 405 invalid, 0 undetermined, and 7 boundary.
+Stage 6 produced 6 final candidate ranges, with 6 range(s) using boundary support.
+Clip building produced 6 candidate clips.
+
+Final candidate ranges:
+- Range 1: 00:01:06:25 to 00:01:07:29 from boundary, valid with 2 boundary slice(s).
+- Range 2: 00:01:09:04 to 00:01:09:27 from boundary, valid with 1 boundary slice(s).
+- Range 3: 00:01:26:15 to 00:01:27:12 from boundary, valid with 1 boundary slice(s).
+- Range 4: 00:02:03:21 to 00:02:05:08 from boundary, valid with 1 boundary slice(s).
+- Range 5: 00:02:15:19 to 00:02:19:06 from boundary, valid with 1 boundary slice(s).
+- Range 6: 00:02:33:14 to 00:02:34:26 from boundary, valid with 1 boundary slice(s).
+
+Candidate clips:
+- Clip 1: 00:01:06:23 to 00:01:08:03 (activity 00:01:06:25 to 00:01:07:29).
+- Clip 2: 00:01:09:02 to 00:01:10:01 (activity 00:01:09:04 to 00:01:09:27).
+- Clip 3: 00:01:26:13 to 00:01:27:16 (activity 00:01:26:15 to 00:01:27:12).
+- Clip 4: 00:02:03:19 to 00:02:05:12 (activity 00:02:03:21 to 00:02:05:08).
+- Clip 5: 00:02:15:17 to 00:02:19:10 (activity 00:02:15:19 to 00:02:19:06).
+- Clip 6: 00:02:33:12 to 00:02:35:00 (activity 00:02:33:14 to 00:02:34:26).

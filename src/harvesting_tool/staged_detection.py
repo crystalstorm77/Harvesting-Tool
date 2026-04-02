@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 # ============================================================
 # SECTION A - Imports And Reused Detection Primitives
@@ -50,6 +50,9 @@ from harvesting_tool.detection import (
 # ============================================================
 
 GridCoordinate = tuple[int, int]
+STAGE1_OPEN_WINDOW_RECORDS = 3
+STAGE1_OPEN_MIN_ACTIVE_RECORDS = 2
+STAGE1_CLOSE_INACTIVE_RECORDS = 3
 STRONG_CONTINUITY_GAP_FRAMES = 10
 MAX_UNION_GAP_FRAMES = FRAME_RATE
 MAX_SPATIAL_DISTANCE_CELLS = 2
@@ -185,7 +188,7 @@ class ScreenedCandidateUnion:
     before_reference_activity: float
     after_reference_activity: float
     reference_windows_reliable: bool
-    stage3_mode: str = 'movement_records'
+    stage3_mode: str = 'art_state'
     stage3_alignment_mode: str = 'none'
     stage3_persistent_difference_score: float = 0.0
     stage3_footprint_support_score: float = 0.0
@@ -240,8 +243,8 @@ class FinalCandidateRange:
     start_time: str
     end_time: str
     source_classifications: tuple[str, ...]
-    includes_retained_undetermined: bool
-    retained_undetermined_count: int
+    includes_boundary: bool
+    boundary_count: int
 
 
 
@@ -453,25 +456,55 @@ def detect_movement_evidence_records(
 
 
 
+def infer_stage1_record_frame_step(
+    records: list[MovementEvidenceRecord],
+    fallback_step: int,
+) -> int:
+    frame_gaps = [
+        current_record.frame_index - previous_record.frame_index
+        for previous_record, current_record in zip(records, records[1:])
+        if current_record.frame_index > previous_record.frame_index
+    ]
+    if not frame_gaps:
+        return max(1, fallback_step)
+    return min(frame_gaps)
+
+
+
+def stage1_opening_window(
+    records: list[MovementEvidenceRecord],
+    current_index: int,
+) -> list[MovementEvidenceRecord]:
+    window_start = max(0, current_index - (STAGE1_OPEN_WINDOW_RECORDS - 1))
+    return records[window_start: current_index + 1]
+
+
+
 def build_stage1_movement_spans(
     records: Iterable[MovementEvidenceRecord],
     settings: DetectorSettings,
 ) -> list[MovementSpan]:
     ordered_records = list(records)
+    if not ordered_records:
+        return []
+
+    inferred_frame_step = infer_stage1_record_frame_step(ordered_records, settings.sample_stride)
     spans: list[MovementSpan] = []
     active_start_frame: int | None = None
     active_record_indices: list[int] = []
     active_footprint: set[GridCoordinate] = set()
     inactive_streak = 0
-    recent_signals: list[tuple[int, bool]] = []
-    recent_records: list[MovementEvidenceRecord] = []
+    inactive_streak_start_frame: int | None = None
+    last_active_frame: int | None = None
 
-    def close_span(end_frame: int, span_index: int) -> None:
+    def close_span(end_frame: int) -> None:
+        nonlocal active_start_frame, active_record_indices, active_footprint, inactive_streak
+        nonlocal inactive_streak_start_frame, last_active_frame
         if active_start_frame is None or not active_record_indices:
             return
         spans.append(
             MovementSpan(
-                span_index=span_index,
+                span_index=len(spans) + 1,
                 start_frame=active_start_frame,
                 end_frame=end_frame,
                 start_time=Timecode(total_frames=active_start_frame).to_hhmmssff(),
@@ -481,54 +514,52 @@ def build_stage1_movement_spans(
                 record_indices=tuple(active_record_indices),
             )
         )
+        active_start_frame = None
+        active_record_indices = []
+        active_footprint = set()
+        inactive_streak = 0
+        inactive_streak_start_frame = None
+        last_active_frame = None
 
-    for record in ordered_records:
-        prior_signals = recent_signals.copy()
-        prior_records = recent_records.copy()
-        opening_support = [recent_record for recent_record in prior_records if recent_record.movement_present]
-
+    for current_index, record in enumerate(ordered_records):
         if active_start_frame is None:
-            if record.movement_present and opening_support:
-                backtracked_start = backtrack_event_start(prior_signals, record.frame_index)
-                active_start_frame = backtracked_start
+            opening_window = stage1_opening_window(ordered_records, current_index)
+            active_window_records = [
+                window_record for window_record in opening_window if window_record.movement_present
+            ]
+            if len(active_window_records) >= STAGE1_OPEN_MIN_ACTIVE_RECORDS:
+                active_start_frame = active_window_records[0].frame_index
                 active_record_indices = []
                 active_footprint = set()
-                for recent_record in prior_records:
-                    if recent_record.frame_index < backtracked_start:
-                        continue
-                    if recent_record.movement_present:
-                        active_record_indices.append(recent_record.record_index)
-                        active_footprint.update(recent_record.touched_grid_coordinates)
-                if record.record_index not in active_record_indices:
-                    active_record_indices.append(record.record_index)
-                active_footprint.update(record.touched_grid_coordinates)
+                for window_record in active_window_records:
+                    if window_record.record_index not in active_record_indices:
+                        active_record_indices.append(window_record.record_index)
+                    active_footprint.update(window_record.touched_grid_coordinates)
+                last_active_frame = active_window_records[-1].frame_index
                 inactive_streak = 0
-        else:
-            if record.movement_present:
-                inactive_streak = 0
-                if record.record_index not in active_record_indices:
-                    active_record_indices.append(record.record_index)
-                active_footprint.update(record.touched_grid_coordinates)
+                inactive_streak_start_frame = None
             else:
-                inactive_streak += 1
-                if inactive_streak >= END_INACTIVE_SAMPLES:
-                    close_span(record.frame_index, len(spans) + 1)
-                    active_start_frame = None
-                    active_record_indices = []
-                    active_footprint = set()
-                    inactive_streak = 0
+                continue
 
-        recent_signals.append((record.frame_index, bool(record.movement_present)))
-        recent_signals[:] = recent_signals[-BACKTRACK_BUFFER_SAMPLES:]
-        recent_records.append(record)
-        recent_records[:] = recent_records[-BACKTRACK_BUFFER_SAMPLES:]
+        if record.movement_present:
+            inactive_streak = 0
+            inactive_streak_start_frame = None
+            last_active_frame = record.frame_index
+            if record.record_index not in active_record_indices:
+                active_record_indices.append(record.record_index)
+            active_footprint.update(record.touched_grid_coordinates)
+        else:
+            inactive_streak += 1
+            if inactive_streak_start_frame is None:
+                inactive_streak_start_frame = record.frame_index
+            if inactive_streak >= STAGE1_CLOSE_INACTIVE_RECORDS:
+                close_span(inactive_streak_start_frame)
 
-    if active_start_frame is not None and active_record_indices:
-        close_span(ordered_records[-1].frame_index + settings.sample_stride, len(spans) + 1)
+    if active_start_frame is not None and active_record_indices and last_active_frame is not None:
+        close_span(last_active_frame + inferred_frame_step)
 
     minimum_frames = settings.min_burst_length.total_frames
     return [span for span in spans if (span.end_frame - span.start_frame) >= minimum_frames]
-
 # ============================================================
 # SECTION E - Stage 2 Candidate Union Construction
 # ============================================================
@@ -1389,7 +1420,7 @@ def screen_candidate_union_with_art_state_prototype(
         before_reference_activity=before_reference_activity,
         after_reference_activity=after_reference_activity,
         reference_windows_reliable=reference_windows_reliable,
-        stage3_mode='art_state_prototype',
+        stage3_mode='art_state',
         stage3_alignment_mode='none',
         stage3_persistent_difference_score=persistent_difference_score,
         stage3_footprint_support_score=footprint_support_score,
@@ -1425,11 +1456,8 @@ def screen_stage3_candidate_unions(
     use_art_state_prototype: bool = False,
 ) -> list[ScreenedCandidateUnion]:
     ordered_candidate_unions = list(candidate_unions)
-    if not use_art_state_prototype:
-        return [screen_candidate_union(candidate_union, records) for candidate_union in ordered_candidate_unions]
-
     if sampled_frames is None or chapter_range is None or settings is None:
-        raise ValueError('Stage 3 art-state prototype requires sampled_frames, chapter_range, and settings.')
+        return [screen_candidate_union(candidate_union, records) for candidate_union in ordered_candidate_unions]
 
     try:
         import cv2  # type: ignore
@@ -1473,6 +1501,28 @@ def build_stage4_time_slice_ranges(
 
 
 
+def count_active_records(records: Iterable[MovementEvidenceRecord]) -> int:
+    return sum(1 for record in records if record.movement_present)
+
+
+
+def has_stage4_settled_support(
+    footprint_size: int,
+    lasting_change_evidence_score: float,
+    before_reference_activity: float,
+    after_reference_activity: float,
+) -> bool:
+    if footprint_size <= 0 or lasting_change_evidence_score < STAGE4_VALID_EVIDENCE_SCORE:
+        return False
+    if after_reference_activity > STAGE4_MAX_REFERENCE_ACTIVITY:
+        return False
+
+    quiet_before_reference = before_reference_activity <= STAGE4_MAX_REFERENCE_ACTIVITY
+    contrast_score = lasting_change_evidence_score - max(before_reference_activity, after_reference_activity)
+    return quiet_before_reference or contrast_score >= STAGE4_MIN_CONTRAST_SCORE
+
+
+
 def classify_time_slice(
     screened_candidate_union: ScreenedCandidateUnion,
     slice_index: int,
@@ -1496,6 +1546,7 @@ def classify_time_slice(
     )
     footprint = build_footprint_from_records(slice_records)
     footprint_size = len(footprint)
+    active_slice_record_count = count_active_records(slice_records)
     before_reference_activity = average_record_score(before_records, 'movement_strength_score')
     after_reference_activity = average_record_score(after_records, 'movement_strength_score')
     lasting_change_evidence_score = compute_slice_lasting_change_evidence_score(
@@ -1508,55 +1559,40 @@ def classify_time_slice(
         and len(after_records) >= STAGE3_MIN_REFERENCE_RECORDS
     )
     reference_activity_ceiling = max(before_reference_activity, after_reference_activity)
-    reference_activity_floor = min(before_reference_activity, after_reference_activity)
-    contrast_score = lasting_change_evidence_score - reference_activity_ceiling
-    quiet_reference_available = reference_activity_floor <= STAGE4_MAX_REFERENCE_ACTIVITY
-    both_references_active = (
-        before_reference_activity > STAGE4_MAX_REFERENCE_ACTIVITY
-        and after_reference_activity > STAGE4_MAX_REFERENCE_ACTIVITY
+    quiet_before_reference = before_reference_activity <= STAGE4_MAX_REFERENCE_ACTIVITY
+    quiet_after_reference = after_reference_activity <= STAGE4_MAX_REFERENCE_ACTIVITY
+    strong_settled_support = has_stage4_settled_support(
+        footprint_size=footprint_size,
+        lasting_change_evidence_score=lasting_change_evidence_score,
+        before_reference_activity=before_reference_activity,
+        after_reference_activity=after_reference_activity,
     )
-    relaxed_boundary_contrast_score = STAGE4_MIN_CONTRAST_SCORE * 0.8
-    long_strong_union_supports_refinement = (
-        (screened_candidate_union.candidate_union.end_frame - screened_candidate_union.candidate_union.start_frame)
-        >= LONG_STRONG_UNION_MIN_FRAMES
-        and screened_candidate_union.lasting_change_evidence_score >= LONG_STRONG_UNION_STAGE3_SCORE_FLOOR
+    has_meaningful_unsettled_activity = (
+        active_slice_record_count > 0
+        or reference_activity_ceiling > STAGE4_MAX_REFERENCE_ACTIVITY
     )
-    if not slice_records or footprint_size == 0 or lasting_change_evidence_score <= STAGE4_INVALID_EVIDENCE_SCORE:
+
+    if not slice_records or footprint_size == 0:
         classification = 'invalid'
         reason = 'weak_slice_activity'
     elif not reference_windows_reliable:
         classification = 'undetermined'
         reason = 'reference_windows_unreliable'
-    elif (
-        lasting_change_evidence_score >= STAGE4_VALID_EVIDENCE_SCORE
-        and (
-            (contrast_score >= STAGE4_MIN_CONTRAST_SCORE
-             and (
-                 not both_references_active
-                 or screened_candidate_union.lasting_change_evidence_score >= LONG_STRONG_UNION_STAGE3_SCORE_FLOOR
-             ))
-            or (quiet_reference_available and contrast_score >= relaxed_boundary_contrast_score)
-            or (quiet_reference_available and reference_activity_ceiling <= STAGE4_MAX_REFERENCE_ACTIVITY)
-        )
-    ):
+    elif strong_settled_support:
         classification = 'valid'
         reason = 'slice_activity_supported'
-    elif quiet_reference_available and reference_activity_ceiling > STAGE4_MAX_REFERENCE_ACTIVITY:
+    elif lasting_change_evidence_score <= STAGE4_INVALID_EVIDENCE_SCORE and not has_meaningful_unsettled_activity:
+        classification = 'invalid'
+        reason = 'weak_slice_activity'
+    elif quiet_before_reference and not quiet_after_reference:
         classification = 'undetermined'
         reason = 'mixed_reference_activity'
-    elif contrast_score < 0 and both_references_active:
-        if (
-            lasting_change_evidence_score >= STRONG_ACTIVE_REFERENCE_UNDETERMINED_FLOOR
-            or (
-                long_strong_union_supports_refinement
-                and lasting_change_evidence_score >= LONG_STRONG_UNION_ACTIVE_REFERENCE_UNDETERMINED_FLOOR
-            )
-        ):
-            classification = 'undetermined'
-            reason = 'reference_windows_too_active'
-        else:
-            classification = 'invalid'
-            reason = 'reference_windows_too_active'
+    elif not quiet_before_reference or not quiet_after_reference:
+        classification = 'undetermined'
+        reason = 'reference_windows_too_active'
+    elif lasting_change_evidence_score <= STAGE4_INVALID_EVIDENCE_SCORE:
+        classification = 'invalid'
+        reason = 'weak_slice_activity'
     else:
         classification = 'undetermined'
         reason = 'mixed_slice_evidence'
@@ -1606,8 +1642,6 @@ def classify_stage4_time_slices(
             )
 
     return classified_slices
-
-
 # ============================================================
 # SECTION H - Stage 5 Recursive Sub-Slice Refinement
 # ============================================================
@@ -1635,67 +1669,51 @@ def classify_stage5_minimum_size_leaf(
     allow_structural_gap_rescue: bool = False,
     allow_art_state_supported_rescue: bool = False,
     allow_valid_anchor_promotion: bool = False,
+    has_adjacent_valid_support: bool = False,
 ) -> ClassifiedTimeSlice:
-    if (
-        allow_valid_anchor_promotion
-        and time_slice.classification == 'undetermined'
-        and time_slice.footprint_size >= STAGE5_VALID_ANCHOR_PROMOTION_MIN_FOOTPRINT
-        and time_slice.lasting_change_evidence_score >= STAGE5_VALID_ANCHOR_PROMOTION_MIN_EVIDENCE
-    ):
-        return replace(time_slice, classification='valid', reason='slice_activity_supported')
-    if (
-        allow_reference_unreliable_rescue
-        and time_slice.classification == 'undetermined'
-        and time_slice.footprint_size > 0
-        and time_slice.lasting_change_evidence_score >= REFERENCE_UNRELIABLE_RESCUE_FLOOR
-    ):
-        return replace(time_slice, classification='boundary', reason='reference_unreliable_minimum_size_reached')
-    if (
-        time_slice.classification == 'undetermined'
-        and time_slice.footprint_size > 0
-        and time_slice.lasting_change_evidence_score >= ROCKY_MINIMUM_SIZE_EVIDENCE_FLOOR
-    ):
+    if time_slice.classification == 'valid':
+        return time_slice
+    if time_slice.classification == 'invalid':
+        return time_slice
+    if time_slice.footprint_size <= 0:
+        return replace(time_slice, classification='invalid', reason='minimum_subdivision_size_reached')
+    if has_adjacent_valid_support:
         return replace(time_slice, classification='boundary', reason='minimum_subdivision_size_reached')
-    if (
-        allow_long_strong_union_rocky_rescue
-        and time_slice.classification == 'undetermined'
-        and time_slice.footprint_size > 0
-        and time_slice.lasting_change_evidence_score >= LONG_STRONG_UNION_ACTIVE_REFERENCE_UNDETERMINED_FLOOR
-    ):
-        return replace(time_slice, classification='boundary', reason='long_strong_union_minimum_size_reached')
-    if (
-        allow_structural_gap_rescue
-        and time_slice.classification == 'invalid'
-        and time_slice.reason == 'reference_windows_too_active'
-        and time_slice.footprint_size > 0
-        and time_slice.lasting_change_evidence_score >= STRUCTURAL_GAP_RESCUE_FLOOR
-    ):
-        return replace(time_slice, classification='boundary', reason='structural_gap_minimum_size_reached')
-    if (
-        allow_art_state_supported_rescue
-        and time_slice.classification == 'invalid'
-        and time_slice.reason == 'reference_windows_too_active'
-        and time_slice.footprint_size >= ART_STATE_SUPPORTED_MINIMUM_RESCUE_FOOTPRINT
-        and time_slice.lasting_change_evidence_score >= ART_STATE_SUPPORTED_RESCUE_FLOOR
-    ):
-        return replace(time_slice, classification='boundary', reason='art_state_supported_minimum_size_reached')
-    if (
-        allow_high_parent_activity_rescue
-        and time_slice.classification == 'invalid'
-        and time_slice.reason == 'reference_windows_too_active'
-        and time_slice.footprint_size > 0
-        and time_slice.lasting_change_evidence_score >= HIGH_PARENT_ACTIVITY_RESCUE_FLOOR
-    ):
-        return replace(time_slice, classification='boundary', reason='high_parent_activity_minimum_size_reached')
-    if (
-        allow_active_reference_rescue
-        and time_slice.classification == 'invalid'
-        and time_slice.reason == 'reference_windows_too_active'
-        and time_slice.footprint_size > 0
-        and time_slice.lasting_change_evidence_score >= ACTIVE_REFERENCE_ROCKY_RESCUE_FLOOR
-    ):
-        return replace(time_slice, classification='boundary', reason='active_reference_minimum_size_reached')
-    return replace(time_slice, reason='minimum_subdivision_size_reached')
+    return replace(time_slice, classification='invalid', reason='minimum_subdivision_size_reached')
+
+
+
+def stage5_slices_are_directly_adjacent(first_slice: ClassifiedTimeSlice, second_slice: ClassifiedTimeSlice) -> bool:
+    return first_slice.end_frame == second_slice.start_frame or second_slice.end_frame == first_slice.start_frame
+
+
+
+def resolve_stage5_terminal_slices(
+    refined_slices: list[ClassifiedTimeSlice],
+) -> list[ClassifiedTimeSlice]:
+    valid_slices_by_union: dict[int, list[ClassifiedTimeSlice]] = {}
+    for refined_slice in refined_slices:
+        if refined_slice.classification == 'valid':
+            valid_slices_by_union.setdefault(refined_slice.parent_union_index, []).append(refined_slice)
+
+    resolved_slices: list[ClassifiedTimeSlice] = []
+    for refined_slice in refined_slices:
+        if refined_slice.classification != 'undetermined':
+            resolved_slices.append(refined_slice)
+            continue
+
+        adjacent_valid_support = any(
+            stage5_slices_are_directly_adjacent(refined_slice, valid_slice)
+            for valid_slice in valid_slices_by_union.get(refined_slice.parent_union_index, [])
+        )
+        resolved_slices.append(
+            classify_stage5_minimum_size_leaf(
+                refined_slice,
+                has_adjacent_valid_support=adjacent_valid_support,
+            )
+        )
+    return resolved_slices
+
 
 
 def refine_stage5_sub_slices(
@@ -1709,234 +1727,64 @@ def refine_stage5_sub_slices(
         for screened_candidate_union in screened_candidate_unions
     }
     ordered_records = sorted(records, key=lambda record: record.frame_index)
-    unions_with_valid_slice = {
-        time_slice.parent_union_index
-        for time_slice in classified_time_slices
-        if time_slice.classification == 'valid'
-    }
-    long_strong_unions = {
-        screened_candidate_union.candidate_union.union_index
-        for screened_candidate_union in screened_candidate_unions
-        if (
-            not screened_candidate_union.provisional_survival
-            and (screened_candidate_union.candidate_union.end_frame - screened_candidate_union.candidate_union.start_frame)
-            >= LONG_STRONG_UNION_MIN_FRAMES
-            and screened_candidate_union.lasting_change_evidence_score >= LONG_STRONG_UNION_STAGE3_SCORE_FLOOR
-        )
-    }
-    art_state_supported_unions = {
-        screened_candidate_union.candidate_union.union_index
-        for screened_candidate_union in screened_candidate_unions
-        if (
-            screened_candidate_union.stage3_mode == 'art_state_prototype'
-            and screened_candidate_union.surviving
-            and not screened_candidate_union.provisional_survival
-            and screened_candidate_union.lasting_change_evidence_score >= ART_STATE_SUPPORTED_UNION_STAGE3_SCORE_FLOOR
-            and screened_candidate_union.stage3_footprint_support_score >= ART_STATE_SUPPORTED_UNION_FOOTPRINT_SUPPORT_FLOOR
-            and screened_candidate_union.stage3_footprint_support_score < ART_STATE_SUPPORTED_UNION_MAX_FOOTPRINT_SUPPORT
-        )
-    }
-    def refine_slice(
-        time_slice: ClassifiedTimeSlice,
-        allow_high_parent_activity_rescue: bool = False,
-        allow_reference_unreliable_rescue: bool = False,
-        allow_structural_gap_rescue: bool = False,
-        allow_valid_anchor_promotion: bool = False,
-    ) -> list[ClassifiedTimeSlice]:
-        allow_active_reference_rescue = time_slice.parent_union_index in unions_with_valid_slice
-        allow_long_strong_union_rocky_rescue = time_slice.parent_union_index in long_strong_unions
-        allow_art_state_supported_rescue = time_slice.parent_union_index in art_state_supported_unions
-        current_slice_supports_high_parent_activity_rescue = (
-            time_slice.classification == 'undetermined'
-            and time_slice.reason in {'mixed_reference_activity', 'reference_windows_too_active'}
-            and time_slice.lasting_change_evidence_score >= HIGH_PARENT_ACTIVITY_PARENT_SCORE_FLOOR
-        )
-        current_slice_supports_reference_unreliable_rescue = (
-            time_slice.classification == 'undetermined'
-            and time_slice.reason == 'reference_windows_unreliable'
-            and time_slice.lasting_change_evidence_score >= REFERENCE_UNRELIABLE_PARENT_SCORE_FLOOR
-        )
-        current_slice_supports_structural_gap_rescue = (
-            time_slice.classification == 'undetermined'
-            and time_slice.lasting_change_evidence_score >= STRUCTURAL_GAP_PARENT_SCORE_FLOOR
-            and (
-                (time_slice.reason == 'reference_windows_too_active'
-                 and time_slice.parent_union_index in long_strong_unions)
-                or (
-                    time_slice.reason == 'mixed_reference_activity'
-                    and time_slice.before_reference_activity <= STAGE4_MAX_REFERENCE_ACTIVITY
-                    and time_slice.after_reference_activity > STAGE4_MAX_REFERENCE_ACTIVITY
-                )
-            )
-        )
-        slice_duration = time_slice.end_frame - time_slice.start_frame
 
-        if time_slice.classification == 'invalid':
-            if (
-                (allow_active_reference_rescue or allow_high_parent_activity_rescue or allow_structural_gap_rescue or allow_art_state_supported_rescue)
-                and time_slice.reason == 'reference_windows_too_active'
-                and slice_duration <= minimum_subdivision_frames
-            ):
-                return [
-                    classify_stage5_minimum_size_leaf(
-                        time_slice,
-                        allow_active_reference_rescue=allow_active_reference_rescue,
-                        allow_long_strong_union_rocky_rescue=allow_long_strong_union_rocky_rescue,
-                        allow_high_parent_activity_rescue=allow_high_parent_activity_rescue,
-                        allow_reference_unreliable_rescue=allow_reference_unreliable_rescue,
-                        allow_structural_gap_rescue=allow_structural_gap_rescue,
-                        allow_art_state_supported_rescue=allow_art_state_supported_rescue,
-                        allow_valid_anchor_promotion=allow_valid_anchor_promotion,
-                    )
-                ]
-            if not (
-                (allow_active_reference_rescue or allow_high_parent_activity_rescue or allow_structural_gap_rescue or allow_art_state_supported_rescue)
-                and time_slice.reason == 'reference_windows_too_active'
-                and slice_duration > minimum_subdivision_frames
-            ):
-                return [time_slice]
-
-        elif time_slice.classification != 'undetermined':
+    def refine_slice(time_slice: ClassifiedTimeSlice) -> list[ClassifiedTimeSlice]:
+        if time_slice.classification in {'valid', 'invalid'}:
+            return [time_slice]
+        if time_slice.classification != 'undetermined':
             return [time_slice]
 
-        if slice_duration <= 1:
-            return [
-                classify_stage5_minimum_size_leaf(
-                    time_slice,
-                    allow_active_reference_rescue=allow_active_reference_rescue,
-                    allow_long_strong_union_rocky_rescue=allow_long_strong_union_rocky_rescue,
-                    allow_high_parent_activity_rescue=allow_high_parent_activity_rescue,
-                    allow_reference_unreliable_rescue=allow_reference_unreliable_rescue,
-                    allow_structural_gap_rescue=allow_structural_gap_rescue,
-                    allow_art_state_supported_rescue=allow_art_state_supported_rescue,
-                    allow_valid_anchor_promotion=allow_valid_anchor_promotion,
-                )
-            ]
-
+        slice_duration = time_slice.end_frame - time_slice.start_frame
         if slice_duration <= minimum_subdivision_frames:
-            return [
-                classify_stage5_minimum_size_leaf(
-                    time_slice,
-                    allow_active_reference_rescue=allow_active_reference_rescue,
-                    allow_long_strong_union_rocky_rescue=allow_long_strong_union_rocky_rescue,
-                    allow_high_parent_activity_rescue=allow_high_parent_activity_rescue,
-                    allow_reference_unreliable_rescue=allow_reference_unreliable_rescue,
-                    allow_structural_gap_rescue=allow_structural_gap_rescue,
-                    allow_art_state_supported_rescue=allow_art_state_supported_rescue,
-                    allow_valid_anchor_promotion=allow_valid_anchor_promotion,
-                )
-            ]
+            return [replace(time_slice, reason='minimum_subdivision_size_reached')]
 
         screened_candidate_union = union_lookup.get(time_slice.parent_union_index)
         if screened_candidate_union is None:
-            return [replace(time_slice, reason='missing_parent_union')]
+            return [replace(time_slice, classification='invalid', reason='missing_parent_union')]
 
         sub_slice_ranges = build_stage5_sub_slice_ranges(time_slice)
         if len(sub_slice_ranges) <= 1:
-            return [
-                classify_stage5_minimum_size_leaf(
-                    time_slice,
-                    allow_active_reference_rescue=time_slice.parent_union_index in unions_with_valid_slice,
-                    allow_long_strong_union_rocky_rescue=time_slice.parent_union_index in long_strong_unions,
-                    allow_high_parent_activity_rescue=allow_high_parent_activity_rescue,
-                    allow_reference_unreliable_rescue=allow_reference_unreliable_rescue,
-                    allow_structural_gap_rescue=allow_structural_gap_rescue,
-                    allow_art_state_supported_rescue=allow_art_state_supported_rescue,
-                    allow_valid_anchor_promotion=allow_valid_anchor_promotion,
-                )
-            ]
+            return [replace(time_slice, reason='minimum_subdivision_size_reached')]
 
-        classified_sub_slices: list[ClassifiedTimeSlice] = []
+        refined_leaves: list[ClassifiedTimeSlice] = []
         for slice_index, (slice_start, slice_end) in enumerate(sub_slice_ranges, start=1):
             sub_slice_duration = slice_end - slice_start
             sub_slice_reference_window = max(
                 minimum_subdivision_frames,
                 min(STAGE3_REFERENCE_WINDOW_FRAMES, sub_slice_duration),
             )
-            classified_sub_slices.append(
-                replace(
-                    classify_time_slice(
-                        screened_candidate_union,
-                        slice_index=slice_index,
-                        slice_level=time_slice.slice_level + 1,
-                        slice_start=slice_start,
-                        slice_end=slice_end,
-                        records=ordered_records,
-                        reference_window_frames=sub_slice_reference_window,
-                    ),
-                    parent_range=(time_slice.start_frame, time_slice.end_frame),
-                )
+            classified_sub_slice = replace(
+                classify_time_slice(
+                    screened_candidate_union,
+                    slice_index=slice_index,
+                    slice_level=time_slice.slice_level + 1,
+                    slice_start=slice_start,
+                    slice_end=slice_end,
+                    records=ordered_records,
+                    reference_window_frames=sub_slice_reference_window,
+                ),
+                parent_range=(time_slice.start_frame, time_slice.end_frame),
             )
-
-        refined_leaves: list[ClassifiedTimeSlice] = []
-        for classified_sub_slice in classified_sub_slices:
-            coherent_sibling_support = any(
-                sibling_slice is not classified_sub_slice
-                and sibling_slice.classification in {'valid', 'undetermined'}
-                and sibling_slice.lasting_change_evidence_score >= STAGE5_VALID_ANCHOR_PROMOTION_MIN_SIBLING_EVIDENCE
-                and compute_stage6_footprint_overlap(classified_sub_slice, sibling_slice) >= STAGE5_VALID_ANCHOR_PROMOTION_MIN_SIBLING_OVERLAP
-                for sibling_slice in classified_sub_slices
-            )
-            local_valid_anchor_promotion = (
-                allow_valid_anchor_promotion
-                or (
-                    coherent_sibling_support
-                    and classified_sub_slice.classification == 'undetermined'
-                    and classified_sub_slice.reason in {'mixed_reference_activity', 'reference_windows_too_active', 'reference_windows_unreliable', 'mixed_slice_evidence'}
-                    and classified_sub_slice.footprint_size >= STAGE5_VALID_ANCHOR_PROMOTION_MIN_FOOTPRINT
-                    and classified_sub_slice.lasting_change_evidence_score >= STAGE5_VALID_ANCHOR_PROMOTION_MIN_EVIDENCE
-                    and (
-                        classified_sub_slice.parent_union_index in long_strong_unions
-                        or classified_sub_slice.parent_union_index in art_state_supported_unions
-                    )
-                )
-            )
-            refined_leaves.extend(
-                refine_slice(
-                    classified_sub_slice,
-                    allow_high_parent_activity_rescue=(
-                        allow_high_parent_activity_rescue
-                        or current_slice_supports_high_parent_activity_rescue
-                    ),
-                    allow_reference_unreliable_rescue=(
-                        allow_reference_unreliable_rescue
-                        or current_slice_supports_reference_unreliable_rescue
-                    ),
-                    allow_structural_gap_rescue=(
-                        allow_structural_gap_rescue
-                        or current_slice_supports_structural_gap_rescue
-                    ),
-                    allow_valid_anchor_promotion=local_valid_anchor_promotion,
-                )
-            )
+            refined_leaves.extend(refine_slice(classified_sub_slice))
         return refined_leaves
 
     refined_slices: list[ClassifiedTimeSlice] = []
     for time_slice in classified_time_slices:
         refined_slices.extend(refine_slice(time_slice))
-    return refined_slices
 
+    return resolve_stage5_terminal_slices(refined_slices)
 
 def is_stage6_candidate_slice(
     time_slice: ClassifiedTimeSlice,
-    maximum_retained_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
+    maximum_boundary_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
 ) -> bool:
     if time_slice.classification == 'valid':
         return True
     if time_slice.classification != 'boundary':
         return False
-    if time_slice.reason not in {'minimum_subdivision_size_reached', 'active_reference_minimum_size_reached', 'long_strong_union_minimum_size_reached', 'high_parent_activity_minimum_size_reached', 'reference_unreliable_minimum_size_reached', 'structural_gap_minimum_size_reached', 'art_state_supported_minimum_size_reached'}:
+    if time_slice.reason != 'minimum_subdivision_size_reached':
         return False
-    return (time_slice.end_frame - time_slice.start_frame) <= maximum_retained_frames
-
-
-
-def supports_extended_stage6_gap(slice_info: ClassifiedTimeSlice) -> bool:
-    return slice_info.reason in {
-        'long_strong_union_minimum_size_reached',
-        'structural_gap_minimum_size_reached',
-        'reference_unreliable_minimum_size_reached',
-    }
+    return (time_slice.end_frame - time_slice.start_frame) <= maximum_boundary_frames
 
 
 def compute_stage6_footprint_overlap(first_slice: ClassifiedTimeSlice, second_slice: ClassifiedTimeSlice) -> float:
@@ -1951,27 +1799,24 @@ def compute_stage6_footprint_overlap(first_slice: ClassifiedTimeSlice, second_sl
 
 def build_stage6_candidate_groups(
     refined_slices: Iterable[ClassifiedTimeSlice],
-    maximum_retained_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
+    maximum_boundary_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
     merge_gap_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
 ) -> list[list[ClassifiedTimeSlice]]:
     ordered_slices = [
         slice_info
         for slice_info in sorted(
             refined_slices,
-            key=lambda slice_info: (slice_info.parent_union_index, slice_info.start_frame, slice_info.end_frame),
+            key=lambda slice_info: (slice_info.start_frame, slice_info.end_frame, slice_info.parent_union_index),
         )
-        if is_stage6_candidate_slice(slice_info, maximum_retained_frames=maximum_retained_frames)
+        if is_stage6_candidate_slice(slice_info, maximum_boundary_frames=maximum_boundary_frames)
     ]
     if not ordered_slices:
         return []
 
     candidate_groups: list[list[ClassifiedTimeSlice]] = []
     current_group: list[ClassifiedTimeSlice] = [ordered_slices[0]]
-    current_group_supports_extended_gap = supports_extended_stage6_gap(ordered_slices[0])
-    current_group_extended_gap_frames = 0
     for next_slice in ordered_slices[1:]:
         previous_slice = current_group[-1]
-        same_union = next_slice.parent_union_index == previous_slice.parent_union_index
         gap_frames = next_slice.start_frame - previous_slice.end_frame
         close_enough = gap_frames <= merge_gap_frames
         footprint_overlap = compute_stage6_footprint_overlap(previous_slice, next_slice)
@@ -1980,58 +1825,29 @@ def build_stage6_candidate_groups(
             and ('valid' in {previous_slice.classification, next_slice.classification})
             and footprint_overlap < STAGE6_VALID_MERGE_MIN_FOOTPRINT_OVERLAP
         )
-        next_slice_supports_extended_gap = supports_extended_stage6_gap(next_slice)
-        extended_gap_allowed = (
-            same_union
-            and not close_enough
-            and gap_frames <= STAGE6_SAME_UNION_MERGE_GAP_FRAMES
-            and (current_group_supports_extended_gap or next_slice_supports_extended_gap)
-            and (current_group_extended_gap_frames + gap_frames) <= STAGE6_EXTENDED_GAP_BUDGET_FRAMES
-        )
-        if same_union and not low_overlap_valid_boundary and (close_enough or extended_gap_allowed):
+        if close_enough and not low_overlap_valid_boundary:
             current_group.append(next_slice)
-            current_group_supports_extended_gap = (
-                current_group_supports_extended_gap or next_slice_supports_extended_gap
-            )
-            if extended_gap_allowed:
-                current_group_extended_gap_frames += gap_frames
         else:
             candidate_groups.append(current_group)
             current_group = [next_slice]
-            current_group_supports_extended_gap = next_slice_supports_extended_gap
-            current_group_extended_gap_frames = 0
     candidate_groups.append(current_group)
     return candidate_groups
+
 
 def should_keep_stage6_group(candidate_group: list[ClassifiedTimeSlice]) -> bool:
     if not candidate_group:
         return False
-    if any(slice_info.classification == 'valid' for slice_info in candidate_group):
-        return True
+    return any(slice_info.classification == 'valid' for slice_info in candidate_group)
 
-    boundary_slice_count = len(candidate_group)
-    average_boundary_evidence = sum(slice_info.lasting_change_evidence_score for slice_info in candidate_group) / boundary_slice_count
-    contains_abrupt_canvas_change = any(
-        slice_info.footprint_size >= STAGE6_ABRUPT_CANVAS_CHANGE_MIN_FOOTPRINT
-        for slice_info in candidate_group
-    )
-    total_duration = candidate_group[-1].end_frame - candidate_group[0].start_frame
-    abrupt_canvas_change_survival = (
-        contains_abrupt_canvas_change
-        and total_duration <= STAGE6_ABRUPT_CANVAS_CHANGE_MAX_FRAMES
-        and boundary_slice_count <= STAGE6_ABRUPT_CANVAS_CHANGE_MAX_SLICE_COUNT
-        and average_boundary_evidence >= STAGE6_ABRUPT_CANVAS_CHANGE_MIN_EVIDENCE
-    )
-    return abrupt_canvas_change_survival
 
 def assemble_stage6_candidate_ranges(
     refined_slices: Iterable[ClassifiedTimeSlice],
-    retained_undetermined_max_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
+    boundary_max_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
     merge_gap_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
 ) -> list[FinalCandidateRange]:
     candidate_groups = build_stage6_candidate_groups(
         refined_slices,
-        maximum_retained_frames=retained_undetermined_max_frames,
+        maximum_boundary_frames=boundary_max_frames,
         merge_gap_frames=merge_gap_frames,
     )
     kept_groups = [candidate_group for candidate_group in candidate_groups if should_keep_stage6_group(candidate_group)]
@@ -2043,7 +1859,7 @@ def assemble_stage6_candidate_ranges(
         start_frame = candidate_group[0].start_frame
         end_frame = candidate_group[-1].end_frame
         source_classifications = tuple(dict.fromkeys(slice_info.classification for slice_info in candidate_group))
-        retained_undetermined_count = sum(1 for slice_info in candidate_group if slice_info.classification == 'boundary')
+        boundary_count = sum(1 for slice_info in candidate_group if slice_info.classification == 'boundary')
         final_ranges.append(
             FinalCandidateRange(
                 range_index=range_index,
@@ -2053,12 +1869,11 @@ def assemble_stage6_candidate_ranges(
                 start_time=Timecode(total_frames=start_frame).to_hhmmssff(),
                 end_time=Timecode(total_frames=end_frame).to_hhmmssff(),
                 source_classifications=source_classifications,
-                includes_retained_undetermined=retained_undetermined_count > 0,
-                retained_undetermined_count=retained_undetermined_count,
+                includes_boundary=boundary_count > 0,
+                boundary_count=boundary_count,
             )
         )
-    return final_ranges
-# ============================================================
+    return final_ranges# ============================================================
 # SECTION J - Staged Pipeline Execution And Debug Output
 # ============================================================
 
@@ -2189,9 +2004,154 @@ def serialize_final_candidate_range(final_range: FinalCandidateRange) -> dict[st
         'start_time': final_range.start_time,
         'end_time': final_range.end_time,
         'source_classifications': list(final_range.source_classifications),
-        'includes_retained_undetermined': final_range.includes_retained_undetermined,
-        'retained_undetermined_count': final_range.retained_undetermined_count,
+        'includes_boundary': final_range.includes_boundary,
+        'boundary_count': final_range.boundary_count,
     }
+
+
+
+def summarize_slice_classifications(
+    slices: Iterable[dict[str, object]],
+) -> dict[str, int]:
+    classification_counts = {
+        'valid': 0,
+        'invalid': 0,
+        'undetermined': 0,
+        'boundary': 0,
+    }
+    for slice_info in slices:
+        classification = slice_info.get('classification')
+        if classification in classification_counts:
+            classification_counts[classification] += 1
+    return classification_counts
+
+
+
+def format_final_range_source_description(source_classifications: Iterable[object]) -> str:
+    normalized_sources = {str(item) for item in source_classifications}
+    if 'valid' in normalized_sources and 'boundary' in normalized_sources:
+        return 'valid + boundary support'
+    if normalized_sources == {'valid'}:
+        return 'valid only'
+    if normalized_sources == {'boundary'}:
+        return 'boundary only'
+    if not normalized_sources:
+        return 'no source classifications recorded'
+    return ' + '.join(sorted(normalized_sources))
+
+
+
+def build_staged_debug_summary_lines(debug_payload: dict[str, list[dict[str, object]]]) -> list[str]:
+    records = debug_payload.get('movement_evidence_records', [])
+    spans = debug_payload.get('movement_spans', [])
+    candidate_unions = debug_payload.get('candidate_unions', [])
+    screened_candidate_unions = debug_payload.get('screened_candidate_unions', [])
+    classified_time_slices = debug_payload.get('classified_time_slices', [])
+    refined_sub_slices = debug_payload.get('refined_sub_slices', [])
+    final_candidate_ranges = debug_payload.get('final_candidate_ranges', [])
+    candidate_clips = debug_payload.get('candidate_clips', [])
+
+    surviving_union_count = sum(
+        1 for screened_union in screened_candidate_unions
+        if screened_union.get('surviving')
+    )
+    rejected_union_count = len(screened_candidate_unions) - surviving_union_count
+    provisional_survival_count = sum(
+        1 for screened_union in screened_candidate_unions
+        if screened_union.get('provisional_survival')
+    )
+    stage4_counts = summarize_slice_classifications(classified_time_slices)
+    stage5_counts = summarize_slice_classifications(refined_sub_slices)
+    boundary_supported_range_count = sum(
+        1 for final_range in final_candidate_ranges
+        if final_range.get('includes_boundary')
+    )
+
+    summary_lines = [
+        'Staged detector summary',
+        '',
+        'Movement evidence',
+        f'- Movement evidence records created: {len(records)}',
+        '',
+        'Stage 1 - Movement spans',
+        f'- Movement spans created: {len(spans)}',
+    ]
+
+    if spans:
+        summary_lines.append('')
+        summary_lines.append('Movement span ranges')
+        for span in spans:
+            summary_lines.append(
+                f"- Span {span.get('span_index', '?')}: {span.get('start_time', 'unknown')} to {span.get('end_time', 'unknown')}"
+            )
+
+    summary_lines.extend([
+        '',
+        'Stage 2 - Candidate unions',
+        f'- Candidate unions created: {len(candidate_unions)}',
+    ])
+
+    if candidate_unions:
+        summary_lines.append('')
+        summary_lines.append('Candidate union ranges')
+        for candidate_union in candidate_unions:
+            summary_lines.append(
+                f"- Union {candidate_union.get('union_index', '?')}: {candidate_union.get('start_time', 'unknown')} to {candidate_union.get('end_time', 'unknown')}"
+            )
+
+    summary_lines.extend([
+        '',
+        'Stage 3 - Union screening',
+        f'- Candidate unions screened: {len(screened_candidate_unions)}',
+        f'- Survived: {surviving_union_count}',
+        f'- Rejected: {rejected_union_count}',
+        f'- Provisional survivals: {provisional_survival_count}',
+        '',
+        'Stage 4 - Top-level time slices',
+        f'- Top-level slices created: {len(classified_time_slices)}',
+        f"- Valid: {stage4_counts['valid']}",
+        f"- Invalid: {stage4_counts['invalid']}",
+        f"- Undetermined: {stage4_counts['undetermined']}",
+        '',
+        'Stage 5 - Recursive refinement',
+        f'- Refined slices produced: {len(refined_sub_slices)}',
+        f"- Valid: {stage5_counts['valid']}",
+        f"- Invalid: {stage5_counts['invalid']}",
+        f"- Boundary: {stage5_counts['boundary']}",
+        f"- Undetermined remaining after refinement: {stage5_counts['undetermined']}",
+        '',
+        'Stage 6 - Final retained ranges',
+        f'- Final retained ranges built from valid material: {len(final_candidate_ranges)}',
+        f'- Ranges that include boundary support: {boundary_supported_range_count}',
+        f'- Candidate clips produced: {len(candidate_clips)}',
+    ])
+
+    if final_candidate_ranges:
+        summary_lines.append('')
+        summary_lines.append('Final retained ranges')
+        for final_range in final_candidate_ranges:
+            summary_lines.append(
+                f"- Range {final_range.get('range_index', '?')}: {final_range.get('start_time', 'unknown')} to {final_range.get('end_time', 'unknown')}"
+            )
+            summary_lines.append(
+                f"  Built from: {format_final_range_source_description(final_range.get('source_classifications', []))}"
+            )
+            summary_lines.append(
+                f"  Boundary slices attached: {final_range.get('boundary_count', 0)}"
+            )
+
+    if candidate_clips:
+        summary_lines.append('')
+        summary_lines.append('Candidate clips')
+        for candidate_clip in candidate_clips:
+            summary_lines.append(
+                f"- Clip {candidate_clip.get('clip_index', '?')}: {candidate_clip.get('clip_start', 'unknown')} to {candidate_clip.get('clip_end', 'unknown')}"
+            )
+            summary_lines.append(
+                f"  Activity inside clip: {candidate_clip.get('activity_start', 'unknown')} to {candidate_clip.get('activity_end', 'unknown')}"
+            )
+
+    return summary_lines
 
 
 
@@ -2210,14 +2170,10 @@ def detect_staged_activity_ranges(
     )
     movement_spans = build_stage1_movement_spans(records, settings)
     candidate_unions = build_stage2_candidate_unions(movement_spans)
-    stage3_art_state_samples = (
-        collect_stage3_art_state_samples(
-            video_path=video_path,
-            chapter_range=chapter_range,
-            settings=settings,
-        )
-        if use_stage3_art_state_prototype
-        else None
+    stage3_art_state_samples = collect_stage3_art_state_samples(
+        video_path=video_path,
+        chapter_range=chapter_range,
+        settings=settings,
     )
     screened_candidate_unions = screen_stage3_candidate_unions(
         candidate_unions,
@@ -2225,7 +2181,6 @@ def detect_staged_activity_ranges(
         sampled_frames=stage3_art_state_samples,
         chapter_range=chapter_range,
         settings=settings,
-        use_art_state_prototype=use_stage3_art_state_prototype,
     )
     classified_time_slices = classify_stage4_time_slices(screened_candidate_unions, records)
     refined_sub_slices = refine_stage5_sub_slices(screened_candidate_unions, classified_time_slices, records)
@@ -2252,86 +2207,11 @@ def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, list
         output_path = debug_stem.with_name(f"{debug_stem.name}_{section_name}.json")
         output_path.write_text(json.dumps(items, indent=2), encoding='utf-8')
         output_paths[section_name] = output_path
+    summary_output_path = debug_stem.with_name(f"{debug_stem.name}_summary.txt")
+    summary_output_path.write_text(
+        "\n".join(build_staged_debug_summary_lines(debug_payload)) + "\n",
+        encoding='utf-8',
+    )
+    output_paths['summary'] = summary_output_path
     return output_paths
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
