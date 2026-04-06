@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # SECTION A - Imports And Constants
 # ============================================================
 
@@ -210,6 +210,7 @@ def parse_chapter_range(start: str, end: str) -> ChapterRange:
     return ChapterRange(start=Timecode.from_hhmmssff(start), end=Timecode.from_hhmmssff(end))
 
 
+
 def format_cut_list_text(clips: Iterable[CandidateClip]) -> str:
     clip_list = list(clips)
     if not clip_list:
@@ -231,6 +232,7 @@ def format_cut_list_text(clips: Iterable[CandidateClip]) -> str:
             ]
         )
     return "\n".join(lines).rstrip()
+
 
 
 def build_cut_list_payload(clips: Iterable[CandidateClip], settings: DetectorSettings) -> dict[str, object]:
@@ -256,13 +258,21 @@ def build_cut_list_payload(clips: Iterable[CandidateClip], settings: DetectorSet
     }
 
 
+
+def build_cut_list_output_paths(output_stem: Path) -> tuple[Path, Path]:
+    text_path = output_stem.with_name(f"{output_stem.name} - Final Harvested Clips.txt")
+    json_path = output_stem.with_name(f"{output_stem.name} - Final Harvested Clips - Machine Readable.json")
+    return text_path, json_path
+
+
+
 def write_cut_lists(output_stem: Path, clips: Iterable[CandidateClip], settings: DetectorSettings) -> tuple[Path, Path]:
     clip_list = list(clips)
-    text_path = output_stem.with_suffix(".txt")
-    json_path = output_stem.with_suffix(".json")
+    text_path, json_path = build_cut_list_output_paths(output_stem)
     text_path.write_text(format_cut_list_text(clip_list) + "\n", encoding="utf-8")
     json_path.write_text(json.dumps(build_cut_list_payload(clip_list, settings), indent=2), encoding="utf-8")
     return text_path, json_path
+
 
 
 def write_debug_artifacts(debug_stem: Path, debug_bundle: DetectionDebugBundle) -> dict[str, Path]:
@@ -326,9 +336,6 @@ def write_debug_artifacts(debug_stem: Path, debug_bundle: DetectionDebugBundle) 
         "bursts_json": bursts_path,
         "candidate_clips_json": clips_path,
     }
-
-
-# ============================================================
 # SECTION D - Burst Normalization And Clip Construction
 # ============================================================
 
@@ -1843,6 +1850,7 @@ def detect_candidate_clips(
         debug_bundle=debug_bundle,
         trust_burst_boundaries=True,
     )
+
 
 
 

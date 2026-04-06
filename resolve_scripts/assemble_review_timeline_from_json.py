@@ -4,13 +4,23 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 import sys
+from pathlib import Path
 
 REPO_ROOT = Path(r"A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool")
-HARVEST_JSON_PATH = REPO_ROOT / "Test footage" / "sample2_staged_benchmark.json"
-REVIEW_TIMELINE_NAME = "Sample-2 Base  T13"
-INCLUDE_SOURCE_TRACK = True
+DEFAULT_HARVEST_JSON_PATH = REPO_ROOT / "Test footage" / "sample2_staged_benchmark.json"
+DEFAULT_REVIEW_TIMELINE_NAME = "Sample-2 Base  T13"
+DEFAULT_INCLUDE_SOURCE_TRACK = True
+
+HARVEST_JSON_PATH = Path(os.environ.get("HARVEST_JSON_PATH", str(DEFAULT_HARVEST_JSON_PATH)))
+REVIEW_TIMELINE_NAME = os.environ.get("REVIEW_TIMELINE_NAME", DEFAULT_REVIEW_TIMELINE_NAME)
+INCLUDE_SOURCE_TRACK = os.environ.get("INCLUDE_SOURCE_TRACK", str(DEFAULT_INCLUDE_SOURCE_TRACK)).strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 
 # ============================================================

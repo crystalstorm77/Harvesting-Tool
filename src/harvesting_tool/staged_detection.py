@@ -85,6 +85,8 @@ STAGE4_VALID_EVIDENCE_SCORE = 0.70
 STAGE4_INVALID_EVIDENCE_SCORE = 0.30
 STAGE4_MAX_REFERENCE_ACTIVITY = 0.18
 STAGE4_MIN_CONTRAST_SCORE = 0.05
+STAGE4_MIN_SUPPORTED_SUBREGION_FOOTPRINT_RATIO = 0.50
+STAGE4_MAX_UNRESOLVED_SUBREGION_FOOTPRINT_RATIO_FOR_VALID = 0.20
 STRONG_ACTIVE_REFERENCE_UNDETERMINED_FLOOR = 0.60
 ROCKY_MINIMUM_SIZE_EVIDENCE_FLOOR = 0.60
 ACTIVE_REFERENCE_ROCKY_RESCUE_FLOOR = 0.55
@@ -1506,20 +1508,499 @@ def count_active_records(records: Iterable[MovementEvidenceRecord]) -> int:
 
 
 
-def has_stage4_settled_support(
-    footprint_size: int,
-    lasting_change_evidence_score: float,
-    before_reference_activity: float,
-    after_reference_activity: float,
-) -> bool:
-    if footprint_size <= 0 or lasting_change_evidence_score < STAGE4_VALID_EVIDENCE_SCORE:
-        return False
-    if after_reference_activity > STAGE4_MAX_REFERENCE_ACTIVITY:
-        return False
+def build_canvas_footprint_mask_from_coordinates(
+    footprint: Iterable[GridCoordinate],
+    canvas_shape: tuple[int, int],
+):
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError('NumPy is required for staged local art-state slice classification.') from exc
 
-    quiet_before_reference = before_reference_activity <= STAGE4_MAX_REFERENCE_ACTIVITY
-    contrast_score = lasting_change_evidence_score - max(before_reference_activity, after_reference_activity)
-    return quiet_before_reference or contrast_score >= STAGE4_MIN_CONTRAST_SCORE
+    mask = np.zeros(canvas_shape, dtype=np.uint8)
+    canvas_height, canvas_width = canvas_shape
+    cell_height = max(1, canvas_height // GRID_ROWS)
+    cell_width = max(1, canvas_width // GRID_COLUMNS)
+
+    for row_index, column_index in footprint:
+        top = row_index * cell_height
+        left = column_index * cell_width
+        bottom = canvas_height if row_index == (GRID_ROWS - 1) else min(canvas_height, (row_index + 1) * cell_height)
+        right = canvas_width if column_index == (GRID_COLUMNS - 1) else min(canvas_width, (column_index + 1) * cell_width)
+        mask[top:bottom, left:right] = 255
+    return mask
+
+
+
+def split_footprint_into_local_subregions(
+    footprint: frozenset[GridCoordinate],
+) -> list[frozenset[GridCoordinate]]:
+    if not footprint:
+        return []
+
+    unvisited = set(footprint)
+    subregions: list[frozenset[GridCoordinate]] = []
+    while unvisited:
+        start_coordinate = min(unvisited)
+        pending = [start_coordinate]
+        cluster: set[GridCoordinate] = set()
+        unvisited.remove(start_coordinate)
+
+        while pending:
+            row_index, column_index = pending.pop()
+            cluster.add((row_index, column_index))
+            for row_offset in (-1, 0, 1):
+                for column_offset in (-1, 0, 1):
+                    if row_offset == 0 and column_offset == 0:
+                        continue
+                    neighbor = (row_index + row_offset, column_index + column_offset)
+                    if neighbor in unvisited:
+                        unvisited.remove(neighbor)
+                        pending.append(neighbor)
+
+        subregions.append(frozenset(cluster))
+
+    return sorted(subregions, key=lambda cluster: (min(cluster), len(cluster)))
+
+
+
+def filter_meaningful_subregions(
+    subregions: Iterable[frozenset[GridCoordinate]],
+    minimum_cells: int = 2,
+) -> list[frozenset[GridCoordinate]]:
+    filtered_subregions = [subregion for subregion in subregions if len(subregion) >= minimum_cells]
+    if filtered_subregions:
+        return filtered_subregions
+    return [subregion for subregion in subregions if subregion]
+
+
+
+def collect_records_overlapping_subregion(
+    records: Iterable[MovementEvidenceRecord],
+    subregion: frozenset[GridCoordinate],
+) -> list[MovementEvidenceRecord]:
+    return [
+        record
+        for record in records
+        if any(coordinate in subregion for coordinate in record.touched_grid_coordinates)
+    ]
+
+
+
+def compute_local_subregion_window_activity(
+    records: Iterable[MovementEvidenceRecord],
+    subregion: frozenset[GridCoordinate],
+) -> float:
+    return average_record_score(
+        collect_records_overlapping_subregion(records, subregion),
+        'movement_strength_score',
+    )
+
+
+
+def score_local_subregion_reference_window(
+    candidate_window: tuple[int, int],
+    records: Iterable[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    subregion: frozenset[GridCoordinate],
+    anchor_frame: int,
+    search_radius_frames: int,
+    settings: DetectorSettings,
+) -> dict[str, object] | None:
+    window_start, window_end = candidate_window
+    window_samples = collect_window_samples(sampled_frames, window_start, window_end)
+    if len(window_samples) < STAGE3_ART_STATE_MIN_SAMPLES:
+        return None
+
+    window_records = collect_records_in_frame_range(records, window_start, window_end)
+    local_window_activity = compute_local_subregion_window_activity(window_records, subregion)
+    distance_frames = min(abs(anchor_frame - window_start), abs(anchor_frame - window_end))
+    activity_score = 1.0 - clamp_score(local_window_activity / max(STAGE4_MAX_REFERENCE_ACTIVITY, 1e-6))
+    distance_score = 1.0 - clamp_score(distance_frames / max(1, search_radius_frames))
+    quality_score = clamp_score((0.75 * activity_score) + (0.25 * distance_score))
+    return {
+        'window_start': window_start,
+        'window_end': window_end,
+        'sample_count': len(window_samples),
+        'local_window_activity': local_window_activity,
+        'distance_frames': distance_frames,
+        'quality_score': quality_score,
+        'tier': 'local' if distance_frames <= STAGE3_ART_STATE_LOCAL_WINDOW_DISTANCE_FRAMES else 'fallback',
+    }
+
+
+
+def select_local_subregion_reference_window(
+    *,
+    search_ranges: Iterable[tuple[int, int]],
+    anchor_frame: int,
+    records: Iterable[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    subregion: frozenset[GridCoordinate],
+    reference_window_frames: int,
+    settings: DetectorSettings,
+) -> tuple[dict[str, object] | None, int]:
+    total_candidate_count = 0
+    best_scored_candidate: dict[str, object] | None = None
+
+    for search_start, search_end in search_ranges:
+        if search_end <= search_start:
+            continue
+        candidate_windows = build_stage3_reference_window_candidates(
+            search_start,
+            search_end,
+            max(2, reference_window_frames),
+            max(settings.sample_stride, max(1, reference_window_frames // 2)),
+        )
+        total_candidate_count += len(candidate_windows)
+        scored_candidates: list[dict[str, object]] = []
+        for candidate_window in candidate_windows:
+            scored_candidate = score_local_subregion_reference_window(
+                candidate_window,
+                records,
+                sampled_frames,
+                subregion,
+                anchor_frame,
+                max(1, search_end - search_start),
+                settings,
+            )
+            if scored_candidate is not None:
+                scored_candidates.append(scored_candidate)
+
+        acceptable_candidates = [
+            scored_candidate
+            for scored_candidate in scored_candidates
+            if scored_candidate['local_window_activity'] <= STAGE4_MAX_REFERENCE_ACTIVITY
+        ]
+        if acceptable_candidates:
+            return max(
+                acceptable_candidates,
+                key=lambda candidate: (candidate['quality_score'], -candidate['distance_frames']),
+            ), total_candidate_count
+
+        if scored_candidates:
+            strongest_candidate = max(
+                scored_candidates,
+                key=lambda candidate: (candidate['quality_score'], -candidate['distance_frames']),
+            )
+            if best_scored_candidate is None or strongest_candidate['quality_score'] > best_scored_candidate['quality_score']:
+                best_scored_candidate = strongest_candidate
+
+    if best_scored_candidate is not None and best_scored_candidate['quality_score'] >= 0.40:
+        return best_scored_candidate, total_candidate_count
+    return None, total_candidate_count
+
+
+
+def build_slice_reference_search_ranges(
+    *,
+    slice_start: int,
+    slice_end: int,
+    parent_start: int,
+    parent_end: int,
+    sampled_frames: list[dict[str, object]],
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    if not sampled_frames:
+        return [], []
+
+    sampled_frame_start = min(int(sample['frame_index']) for sample in sampled_frames)
+    sampled_frame_end = max(int(sample['frame_index']) for sample in sampled_frames) + 1
+    local_before_start = max(sampled_frame_start, slice_start - STAGE3_ART_STATE_SEARCH_FRAMES)
+    local_after_end = min(sampled_frame_end, slice_end + STAGE3_ART_STATE_SEARCH_FRAMES)
+
+    before_ranges = [(local_before_start, slice_start)]
+    after_ranges = [(slice_end, local_after_end)]
+
+    if parent_start < local_before_start:
+        before_ranges.append((parent_start, slice_start))
+    if sampled_frame_start < parent_start:
+        before_ranges.append((sampled_frame_start, slice_start))
+
+    if parent_end > local_after_end:
+        after_ranges.append((slice_end, parent_end))
+    if sampled_frame_end > parent_end:
+        after_ranges.append((slice_end, sampled_frame_end))
+
+    return before_ranges, after_ranges
+
+
+
+def evaluate_local_subregion_change(
+    *,
+    subregion: frozenset[GridCoordinate],
+    slice_start: int,
+    slice_end: int,
+    parent_start: int,
+    parent_end: int,
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    settings: DetectorSettings,
+    reference_window_frames: int,
+    cv2,
+) -> dict[str, object]:
+    before_ranges, after_ranges = build_slice_reference_search_ranges(
+        slice_start=slice_start,
+        slice_end=slice_end,
+        parent_start=parent_start,
+        parent_end=parent_end,
+        sampled_frames=sampled_frames,
+    )
+    selected_before_window, before_candidate_count = select_local_subregion_reference_window(
+        search_ranges=before_ranges,
+        anchor_frame=slice_start,
+        records=ordered_records,
+        sampled_frames=sampled_frames,
+        subregion=subregion,
+        reference_window_frames=reference_window_frames,
+        settings=settings,
+    )
+    selected_after_window, after_candidate_count = select_local_subregion_reference_window(
+        search_ranges=after_ranges,
+        anchor_frame=slice_end,
+        records=ordered_records,
+        sampled_frames=sampled_frames,
+        subregion=subregion,
+        reference_window_frames=reference_window_frames,
+        settings=settings,
+    )
+    if selected_before_window is None or selected_after_window is None:
+        return {
+            'subregion': subregion,
+            'supported': False,
+            'unresolved': True,
+            'reference_windows_reliable': False,
+            'before_reference_activity': 0.0 if selected_before_window is None else float(selected_before_window['local_window_activity']),
+            'after_reference_activity': 0.0 if selected_after_window is None else float(selected_after_window['local_window_activity']),
+            'evidence_score': 0.0,
+            'persistent_difference_score': 0.0,
+            'footprint_support_score': 0.0,
+            'after_window_persistence_score': 0.0,
+            'before_window_candidate_count': before_candidate_count,
+            'after_window_candidate_count': after_candidate_count,
+        }
+
+    before_window_start = int(selected_before_window['window_start'])
+    before_window_end = int(selected_before_window['window_end'])
+    after_window_start = int(selected_after_window['window_start'])
+    after_window_end = int(selected_after_window['window_end'])
+    before_samples, pre_baseline = build_stage3_art_state_window_baseline(sampled_frames, before_window_start, before_window_end)
+    after_samples, post_baseline = build_stage3_art_state_window_baseline(sampled_frames, after_window_start, after_window_end)
+    if pre_baseline is None or post_baseline is None or not before_samples or not after_samples:
+        return {
+            'subregion': subregion,
+            'supported': False,
+            'unresolved': True,
+            'reference_windows_reliable': False,
+            'before_reference_activity': float(selected_before_window['local_window_activity']),
+            'after_reference_activity': float(selected_after_window['local_window_activity']),
+            'evidence_score': 0.0,
+            'persistent_difference_score': 0.0,
+            'footprint_support_score': 0.0,
+            'after_window_persistence_score': 0.0,
+            'before_window_candidate_count': before_candidate_count,
+            'after_window_candidate_count': after_candidate_count,
+        }
+
+    reference_canvas_shape = before_samples[0]['canvas_gray'].shape
+    subregion_canvas_mask = build_canvas_footprint_mask_from_coordinates(subregion, reference_canvas_shape)
+    subregion_art_state_mask = crop_canvas_mask_to_art_state(subregion_canvas_mask)
+    persistent_mask = build_art_state_change_mask(pre_baseline, post_baseline, settings, cv2)
+    focused_persistent_mask = cv2.bitwise_and(persistent_mask, subregion_art_state_mask)
+    persistent_difference_score = compute_stage3_art_state_persistent_difference_score(
+        focused_persistent_mask,
+        len(subregion),
+        settings,
+    )
+    footprint_support_score = compute_stage3_art_state_footprint_support_score(
+        focused_persistent_mask,
+        len(subregion),
+    )
+    after_window_persistence_score = compute_stage3_art_state_after_window_persistence_score(
+        pre_baseline,
+        post_baseline,
+        after_samples,
+        subregion_art_state_mask,
+        len(subregion),
+        settings,
+        cv2,
+    )
+    evidence_score = compute_stage3_art_state_evidence_score(
+        persistent_difference_score,
+        footprint_support_score,
+        after_window_persistence_score,
+        0.0,
+    )
+    supported = (
+        evidence_score >= STAGE4_VALID_EVIDENCE_SCORE
+        and after_window_persistence_score >= 0.45
+        and float(selected_after_window['local_window_activity']) <= (STAGE4_MAX_REFERENCE_ACTIVITY * 1.25)
+    )
+    unresolved = not supported and (
+        evidence_score >= STAGE4_INVALID_EVIDENCE_SCORE
+        or float(selected_before_window['local_window_activity']) > STAGE4_MAX_REFERENCE_ACTIVITY
+        or float(selected_after_window['local_window_activity']) > STAGE4_MAX_REFERENCE_ACTIVITY
+    )
+    return {
+        'subregion': subregion,
+        'supported': supported,
+        'unresolved': unresolved,
+        'reference_windows_reliable': True,
+        'before_reference_activity': float(selected_before_window['local_window_activity']),
+        'after_reference_activity': float(selected_after_window['local_window_activity']),
+        'evidence_score': evidence_score,
+        'persistent_difference_score': persistent_difference_score,
+        'footprint_support_score': footprint_support_score,
+        'after_window_persistence_score': after_window_persistence_score,
+        'before_window_candidate_count': before_candidate_count,
+        'after_window_candidate_count': after_candidate_count,
+    }
+
+
+
+def evaluate_time_slice_local_subregions(
+    screened_candidate_union: ScreenedCandidateUnion,
+    slice_start: int,
+    slice_end: int,
+    records: Iterable[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]] | None,
+    settings: DetectorSettings | None,
+    reference_window_frames: int,
+) -> dict[str, object]:
+    ordered_records = sorted(records, key=lambda record: record.frame_index)
+    slice_records = collect_records_in_frame_range(ordered_records, slice_start, slice_end)
+    footprint = build_footprint_from_records(slice_records)
+    footprint_size = len(footprint)
+    active_slice_record_count = count_active_records(slice_records)
+
+    fallback_before_records = collect_records_in_frame_range(
+        ordered_records,
+        max(0, slice_start - reference_window_frames),
+        slice_start,
+    )
+    fallback_after_records = collect_records_in_frame_range(
+        ordered_records,
+        slice_end,
+        slice_end + reference_window_frames,
+    )
+    fallback_before_activity = average_record_score(fallback_before_records, 'movement_strength_score')
+    fallback_after_activity = average_record_score(fallback_after_records, 'movement_strength_score')
+    fallback_score = compute_slice_lasting_change_evidence_score(
+        slice_records=slice_records,
+        footprint_size=footprint_size,
+        after_reference_activity=fallback_after_activity,
+    )
+
+    if not slice_records or footprint_size == 0:
+        return {
+            'slice_records': slice_records,
+            'footprint': footprint,
+            'footprint_size': footprint_size,
+            'classification': 'invalid',
+            'reason': 'weak_slice_activity',
+            'lasting_change_evidence_score': 0.0,
+            'before_reference_activity': fallback_before_activity,
+            'after_reference_activity': fallback_after_activity,
+            'reference_windows_reliable': True,
+        }
+
+    if not sampled_frames or settings is None:
+        reference_windows_reliable = (
+            len(fallback_before_records) >= STAGE3_MIN_REFERENCE_RECORDS
+            and len(fallback_after_records) >= STAGE3_MIN_REFERENCE_RECORDS
+        )
+        if not reference_windows_reliable:
+            classification = 'undetermined'
+            reason = 'reference_windows_unreliable'
+        elif fallback_score >= STAGE4_VALID_EVIDENCE_SCORE and fallback_after_activity <= STAGE4_MAX_REFERENCE_ACTIVITY:
+            classification = 'valid'
+            reason = 'slice_activity_supported'
+        elif fallback_score <= STAGE4_INVALID_EVIDENCE_SCORE and active_slice_record_count == 0:
+            classification = 'invalid'
+            reason = 'weak_slice_activity'
+        else:
+            classification = 'undetermined'
+            reason = 'mixed_slice_evidence'
+        return {
+            'slice_records': slice_records,
+            'footprint': footprint,
+            'footprint_size': footprint_size,
+            'classification': classification,
+            'reason': reason,
+            'lasting_change_evidence_score': fallback_score,
+            'before_reference_activity': fallback_before_activity,
+            'after_reference_activity': fallback_after_activity,
+            'reference_windows_reliable': reference_windows_reliable,
+        }
+
+    try:
+        import cv2  # type: ignore
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError('OpenCV is required for staged local art-state slice classification.') from exc
+
+    subregions = filter_meaningful_subregions(split_footprint_into_local_subregions(footprint))
+    subregion_results = [
+        evaluate_local_subregion_change(
+            subregion=subregion,
+            slice_start=slice_start,
+            slice_end=slice_end,
+            parent_start=screened_candidate_union.candidate_union.start_frame,
+            parent_end=screened_candidate_union.candidate_union.end_frame,
+            ordered_records=ordered_records,
+            sampled_frames=sampled_frames,
+            settings=settings,
+            reference_window_frames=reference_window_frames,
+            cv2=cv2,
+        )
+        for subregion in subregions
+    ]
+    if not subregion_results:
+        return {
+            'slice_records': slice_records,
+            'footprint': footprint,
+            'footprint_size': footprint_size,
+            'classification': 'invalid',
+            'reason': 'weak_slice_activity',
+            'lasting_change_evidence_score': fallback_score,
+            'before_reference_activity': fallback_before_activity,
+            'after_reference_activity': fallback_after_activity,
+            'reference_windows_reliable': False,
+        }
+
+    supported_subregions = [result for result in subregion_results if bool(result['supported'])]
+    unresolved_subregions = [result for result in subregion_results if bool(result['unresolved'])]
+    average_before_activity = sum(float(result['before_reference_activity']) for result in subregion_results) / len(subregion_results)
+    average_after_activity = sum(float(result['after_reference_activity']) for result in subregion_results) / len(subregion_results)
+    strongest_evidence_score = max(float(result['evidence_score']) for result in subregion_results)
+    reference_windows_reliable = all(bool(result['reference_windows_reliable']) for result in subregion_results)
+    supported_footprint = sum(len(result['subregion']) for result in supported_subregions)
+    unresolved_footprint = sum(len(result['subregion']) for result in unresolved_subregions)
+    supported_footprint_ratio = supported_footprint / max(1, footprint_size)
+    unresolved_footprint_ratio = unresolved_footprint / max(1, footprint_size)
+    has_strong_supported_coverage = (
+        supported_footprint_ratio >= STAGE4_MIN_SUPPORTED_SUBREGION_FOOTPRINT_RATIO
+        and unresolved_footprint_ratio <= STAGE4_MAX_UNRESOLVED_SUBREGION_FOOTPRINT_RATIO_FOR_VALID
+    )
+
+    if supported_subregions and has_strong_supported_coverage:
+        classification = 'valid'
+        reason = 'slice_activity_supported'
+    elif supported_subregions or unresolved_subregions:
+        classification = 'undetermined'
+        reason = 'mixed_reference_activity' if average_before_activity <= STAGE4_MAX_REFERENCE_ACTIVITY else 'reference_windows_too_active'
+    else:
+        classification = 'invalid'
+        reason = 'weak_slice_activity'
+    return {
+        'slice_records': slice_records,
+        'footprint': footprint,
+        'footprint_size': footprint_size,
+        'classification': classification,
+        'reason': reason,
+        'lasting_change_evidence_score': strongest_evidence_score,
+        'before_reference_activity': average_before_activity,
+        'after_reference_activity': average_after_activity,
+        'reference_windows_reliable': reference_windows_reliable,
+    }
 
 
 
@@ -1530,73 +2011,19 @@ def classify_time_slice(
     slice_start: int,
     slice_end: int,
     records: Iterable[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]] | None = None,
+    settings: DetectorSettings | None = None,
     reference_window_frames: int = STAGE3_REFERENCE_WINDOW_FRAMES,
 ) -> ClassifiedTimeSlice:
-    ordered_records = sorted(records, key=lambda record: record.frame_index)
-    slice_records = collect_records_in_frame_range(ordered_records, slice_start, slice_end)
-    before_records = collect_records_in_frame_range(
-        ordered_records,
-        max(0, slice_start - reference_window_frames),
+    evaluation = evaluate_time_slice_local_subregions(
+        screened_candidate_union,
         slice_start,
-    )
-    after_records = collect_records_in_frame_range(
-        ordered_records,
         slice_end,
-        slice_end + reference_window_frames,
+        records,
+        sampled_frames,
+        settings,
+        reference_window_frames,
     )
-    footprint = build_footprint_from_records(slice_records)
-    footprint_size = len(footprint)
-    active_slice_record_count = count_active_records(slice_records)
-    before_reference_activity = average_record_score(before_records, 'movement_strength_score')
-    after_reference_activity = average_record_score(after_records, 'movement_strength_score')
-    lasting_change_evidence_score = compute_slice_lasting_change_evidence_score(
-        slice_records=slice_records,
-        footprint_size=footprint_size,
-        after_reference_activity=after_reference_activity,
-    )
-    reference_windows_reliable = (
-        len(before_records) >= STAGE3_MIN_REFERENCE_RECORDS
-        and len(after_records) >= STAGE3_MIN_REFERENCE_RECORDS
-    )
-    reference_activity_ceiling = max(before_reference_activity, after_reference_activity)
-    quiet_before_reference = before_reference_activity <= STAGE4_MAX_REFERENCE_ACTIVITY
-    quiet_after_reference = after_reference_activity <= STAGE4_MAX_REFERENCE_ACTIVITY
-    strong_settled_support = has_stage4_settled_support(
-        footprint_size=footprint_size,
-        lasting_change_evidence_score=lasting_change_evidence_score,
-        before_reference_activity=before_reference_activity,
-        after_reference_activity=after_reference_activity,
-    )
-    has_meaningful_unsettled_activity = (
-        active_slice_record_count > 0
-        or reference_activity_ceiling > STAGE4_MAX_REFERENCE_ACTIVITY
-    )
-
-    if not slice_records or footprint_size == 0:
-        classification = 'invalid'
-        reason = 'weak_slice_activity'
-    elif not reference_windows_reliable:
-        classification = 'undetermined'
-        reason = 'reference_windows_unreliable'
-    elif strong_settled_support:
-        classification = 'valid'
-        reason = 'slice_activity_supported'
-    elif lasting_change_evidence_score <= STAGE4_INVALID_EVIDENCE_SCORE and not has_meaningful_unsettled_activity:
-        classification = 'invalid'
-        reason = 'weak_slice_activity'
-    elif quiet_before_reference and not quiet_after_reference:
-        classification = 'undetermined'
-        reason = 'mixed_reference_activity'
-    elif not quiet_before_reference or not quiet_after_reference:
-        classification = 'undetermined'
-        reason = 'reference_windows_too_active'
-    elif lasting_change_evidence_score <= STAGE4_INVALID_EVIDENCE_SCORE:
-        classification = 'invalid'
-        reason = 'weak_slice_activity'
-    else:
-        classification = 'undetermined'
-        reason = 'mixed_slice_evidence'
-
     return ClassifiedTimeSlice(
         slice_index=slice_index,
         parent_union_index=screened_candidate_union.candidate_union.union_index,
@@ -1605,15 +2032,15 @@ def classify_time_slice(
         end_frame=slice_end,
         start_time=Timecode(total_frames=slice_start).to_hhmmssff(),
         end_time=Timecode(total_frames=slice_end).to_hhmmssff(),
-        footprint=footprint,
-        footprint_size=footprint_size,
-        within_slice_record_count=len(slice_records),
-        classification=classification,
-        reason=reason,
-        lasting_change_evidence_score=lasting_change_evidence_score,
-        before_reference_activity=before_reference_activity,
-        after_reference_activity=after_reference_activity,
-        reference_windows_reliable=reference_windows_reliable,
+        footprint=evaluation['footprint'],
+        footprint_size=int(evaluation['footprint_size']),
+        within_slice_record_count=len(evaluation['slice_records']),
+        classification=str(evaluation['classification']),
+        reason=str(evaluation['reason']),
+        lasting_change_evidence_score=float(evaluation['lasting_change_evidence_score']),
+        before_reference_activity=float(evaluation['before_reference_activity']),
+        after_reference_activity=float(evaluation['after_reference_activity']),
+        reference_windows_reliable=bool(evaluation['reference_windows_reliable']),
     )
 
 
@@ -1621,6 +2048,8 @@ def classify_time_slice(
 def classify_stage4_time_slices(
     screened_candidate_unions: Iterable[ScreenedCandidateUnion],
     records: Iterable[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]] | None = None,
+    settings: DetectorSettings | None = None,
 ) -> list[ClassifiedTimeSlice]:
     ordered_records = sorted(records, key=lambda record: record.frame_index)
     classified_slices: list[ClassifiedTimeSlice] = []
@@ -1638,10 +2067,14 @@ def classify_stage4_time_slices(
                     slice_start=slice_start,
                     slice_end=slice_end,
                     records=ordered_records,
+                    sampled_frames=sampled_frames,
+                    settings=settings,
                 )
             )
 
     return classified_slices
+
+
 # ============================================================
 # SECTION H - Stage 5 Recursive Sub-Slice Refinement
 # ============================================================
@@ -1720,6 +2153,8 @@ def refine_stage5_sub_slices(
     screened_candidate_unions: Iterable[ScreenedCandidateUnion],
     classified_time_slices: Iterable[ClassifiedTimeSlice],
     records: Iterable[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]] | None = None,
+    settings: DetectorSettings | None = None,
     minimum_subdivision_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
 ) -> list[ClassifiedTimeSlice]:
     union_lookup = {
@@ -1749,10 +2184,7 @@ def refine_stage5_sub_slices(
         refined_leaves: list[ClassifiedTimeSlice] = []
         for slice_index, (slice_start, slice_end) in enumerate(sub_slice_ranges, start=1):
             sub_slice_duration = slice_end - slice_start
-            sub_slice_reference_window = max(
-                minimum_subdivision_frames,
-                min(STAGE3_REFERENCE_WINDOW_FRAMES, sub_slice_duration),
-            )
+            sub_slice_reference_window = max(1, min(STAGE3_REFERENCE_WINDOW_FRAMES, sub_slice_duration))
             classified_sub_slice = replace(
                 classify_time_slice(
                     screened_candidate_union,
@@ -1761,6 +2193,8 @@ def refine_stage5_sub_slices(
                     slice_start=slice_start,
                     slice_end=slice_end,
                     records=ordered_records,
+                    sampled_frames=sampled_frames,
+                    settings=settings,
                     reference_window_frames=sub_slice_reference_window,
                 ),
                 parent_range=(time_slice.start_frame, time_slice.end_frame),
@@ -1773,7 +2207,6 @@ def refine_stage5_sub_slices(
         refined_slices.extend(refine_slice(time_slice))
 
     return resolve_stage5_terminal_slices(refined_slices)
-
 def is_stage6_candidate_slice(
     time_slice: ClassifiedTimeSlice,
     maximum_boundary_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
@@ -1878,6 +2311,19 @@ def assemble_stage6_candidate_ranges(
 # ============================================================
 
 import json
+
+
+DEBUG_ARTIFACT_TITLES = {
+    'movement_evidence_records': 'Stage 1A - Movement Evidence Record',
+    'movement_spans': 'Stage 1B - Movement Spans',
+    'candidate_unions': 'Stage 2A - Candidate Union Record',
+    'screened_candidate_unions': 'Stage 2B - Union Classifications',
+    'classified_time_slices': 'Stage 4 - Time Slice Classifications',
+    'refined_sub_slices': 'Stage 5 - Recursive Sub-Time Slice Classifications',
+    'final_candidate_ranges': 'Stage 6A - Candidate Ranges [Pre-Filters]',
+    'candidate_clips': 'Stage 6B - Candidate Pre-Clips [Post-Filters]',
+}
+DEBUG_SUMMARY_TITLE = 'Debug Summary'
 
 
 def serialize_movement_evidence_record(record: MovementEvidenceRecord) -> dict[str, object]:
@@ -2182,8 +2628,8 @@ def detect_staged_activity_ranges(
         chapter_range=chapter_range,
         settings=settings,
     )
-    classified_time_slices = classify_stage4_time_slices(screened_candidate_unions, records)
-    refined_sub_slices = refine_stage5_sub_slices(screened_candidate_unions, classified_time_slices, records)
+    classified_time_slices = classify_stage4_time_slices(screened_candidate_unions, records, sampled_frames=stage3_art_state_samples, settings=settings)
+    refined_sub_slices = refine_stage5_sub_slices(screened_candidate_unions, classified_time_slices, records, sampled_frames=stage3_art_state_samples, settings=settings)
     final_candidate_ranges = assemble_stage6_candidate_ranges(refined_sub_slices)
 
     debug_payload = {
@@ -2200,18 +2646,23 @@ def detect_staged_activity_ranges(
 
 
 
+def build_staged_debug_output_path(debug_stem: Path, artifact_key: str, suffix: str) -> Path:
+    artifact_title = DEBUG_SUMMARY_TITLE if artifact_key == 'summary' else DEBUG_ARTIFACT_TITLES.get(artifact_key, artifact_key)
+    return debug_stem.with_name(f'{debug_stem.name} - {artifact_title}{suffix}')
+
+
+
 def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, list[dict[str, object]]]) -> dict[str, Path]:
     debug_stem.parent.mkdir(parents=True, exist_ok=True)
     output_paths: dict[str, Path] = {}
     for section_name, items in debug_payload.items():
-        output_path = debug_stem.with_name(f"{debug_stem.name}_{section_name}.json")
+        output_path = build_staged_debug_output_path(debug_stem, section_name, '.json')
         output_path.write_text(json.dumps(items, indent=2), encoding='utf-8')
         output_paths[section_name] = output_path
-    summary_output_path = debug_stem.with_name(f"{debug_stem.name}_summary.txt")
+    summary_output_path = build_staged_debug_output_path(debug_stem, 'summary', '.txt')
     summary_output_path.write_text(
         "\n".join(build_staged_debug_summary_lines(debug_payload)) + "\n",
         encoding='utf-8',
     )
     output_paths['summary'] = summary_output_path
     return output_paths
-

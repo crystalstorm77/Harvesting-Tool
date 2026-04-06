@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # SECTION A - Imports And Helpers
 # ============================================================
 
@@ -453,36 +453,11 @@ class CutListWritingTests(unittest.TestCase):
 
             self.assertTrue(text_path.exists())
             self.assertTrue(json_path.exists())
+            self.assertEqual(text_path.name, "cut_list - Final Harvested Clips.txt")
+            self.assertEqual(json_path.name, "cut_list - Final Harvested Clips - Machine Readable.json")
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["clips"][0]["clip_end"], "00:00:16:28")
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
