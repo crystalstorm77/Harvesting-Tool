@@ -1,0 +1,1390 @@
+Harvesting Tool Outline
+Stage Overview
+Stage 1: Movement Detection — The tool scans the video and detects movement spans. At this stage, it only determines when visible movement begins, when it ends, and which grid coordinates were touched during that interval.
+Stage 2: Union Construction — The tool groups nearby movement spans into candidate unions. A candidate union is a union worth investigating, but it is not yet accepted or rejected.
+Stage 3: Union Screening — The tool evaluates each candidate union using a coarse two-step screening process. It first attempts a simple full-footprint before/after comparison using nearby trustworthy reference windows. If that is not sufficient, it falls back to composite snapshot rescue to reconstruct a trustworthy baseline for the union footprint and resolve as much of the union as possible without borrowing unrelated future evidence. Rejected unions are discarded. Surviving unions move forward for deeper refinement.
+Stage 4: Top-Level Time Slice Classification — Each surviving union is divided into time slices. Each time slice is classified as valid, invalid, or undetermined. Valid slices are kept, invalid slices are discarded, and undetermined slices move forward for further refinement.
+Stage 5: Recursive Refinement — Each undetermined slice is subdivided into sub-time slices. These are again classified as valid, invalid, or undetermined. This process repeats until the slice is resolved or the minimum allowed subdivision size is reached. Any remaining unresolved material is then forced into boundary or invalid.
+Stage 6: Final Clip Construction — The tool builds final clips from valid material and may attach adjacent boundary material as edge support. Every final clip must contain at least one valid slice.
+Definitions
+Movement SpanA contiguous interval of time during which visible movement is detected. This term says only that visible change is happening. It does not say that the change is meaningful art change.
+FootprintThe set of grid coordinates in which visible change was detected during a given interval. A footprint is a spatial record of where change happened, not a judgment about whether that change was valid.
+Footprint SizeThe size of a footprint, measured by how many grid coordinates it contains. This is just a summary measure of spatial extent.
+Candidate UnionA grouping of one or more movement spans that are close enough in time and space to be treated as one episode worth investigating. A candidate union is only a container for investigation. It is not yet accepted or rejected.
+Note: A candidate union is constructed from movement spans, not directly from footprints. Footprints are used later to evaluate whether a candidate union contains enough lasting meaningful change.
+Rejected UnionA candidate union that fails Stage 3 screening and is discarded from further refinement. This means the union’s footprint data did not show enough evidence of lasting meaningful change.
+Surviving UnionA candidate union that passes Stage 3 screening and remains plausible enough to justify finer inspection. A surviving union is still not a clip and is not yet proof of meaningful lasting change.
+Union FootprintThe set of grid coordinates touched by any movement span contained within a candidate union.
+Union Footprint SizeThe size of a union footprint, measured by how many grid coordinates it contains.
+Stopping RuleThe rule that determines what happens when an undetermined sub-time slice reaches the minimum allowed subdivision size.
+Merge RuleThe rule that determines when nearby valid material and boundary material should be merged into the same final clip.
+Time SliceA subdivision of a surviving union. A time slice is a temporary analysis unit, not a final output.
+Sub-Time SliceA deeper subdivision created from an undetermined slice during Stage 5 refinement.
+Valid SliceA time slice or sub-time slice whose evidence is strong enough to count as meaningful lasting change. This means the slice is kept for later clip construction.
+Invalid SliceA time slice or sub-time slice whose evidence is strong enough to reject it as not containing meaningful lasting change. This means the slice is discarded.
+Undetermined SliceA time slice or sub-time slice whose evidence is still too mixed or unclear to decide as valid or invalid at the current granularity. Undetermined is a temporary investigation state, not a final-output class.
+Boundary Slice
+A final edge-support slice created only after refinement is complete, when unresolved material is retained as supporting context next to valid material rather than being promoted to truth on its own.
+Subdivision Depth ConventionSub-time slices may optionally be labeled by subdivision depth for clarity. For example, a time slice may subdivide into Sub-Time Slice A, then Sub-Time Slice B, then Sub-Time Slice C, where the label indicates how many rounds of subdivision have occurred.
+Slice FootprintThe set of grid coordinates touched by movement evidence records whose evaluation points fall within a specific time slice.
+Slice Footprint SizeThe size of a slice footprint, measured by how many grid coordinates it contains.
+Sub-Time-Slice FootprintThe set of grid coordinates touched by movement evidence records whose evaluation points fall within a specific sub-time slice.
+Sub-Time-Slice Footprint SizeThe size of a sub-time-slice footprint, measured by how many grid coordinates it contains.
+Movement Evidence RecordThe smallest carried-forward unit of detected movement evidence in the pipeline. A Movement Evidence Record stores the result of one evaluation point so later stages can refine earlier evidence without recomputing movement evidence from the raw video from scratch.
+Evaluation Point Cadence
+The fixed temporal spacing used to create Movement Evidence Records across the video timeline. For the initial default design, Stage 1 should create one Movement Evidence Record for every video frame in the working timeline.
+Cadence Note: At 30 FPS, this means consecutive evaluation points are one frame apart. All short temporal rules that depend on evaluation points, including span opening, continuation, closing, temporal persistence, quiet-region detection, and minimum subdivision size, should be interpreted against that fixed per-frame cadence unless a later benchmark justifies a different sampling strategy.
+ClipA final constructed output assembled from one or more valid slices, with optional adjacent boundary support. A clip may never be formed from boundary material alone.
+Movement EventA general name for any detected visible-change occurrence before it has been formally stored as a movement span. This is useful when describing raw detection logic, because sometimes you want to talk about detected movement before it has opened or closed into a full span.
+Lasting ChangeA visible difference in the artwork that remains present after the relevant movement interval, rather than disappearing immediately.
+Evaluation PointA single moment in time at which the system measures whether visible movement evidence is present.
+Temporal GapThe amount of time between the end of one movement span and the start of the next movement span.
+Temporal ContinuityThe judgment that two spans are close enough in time to still plausibly belong to the same ongoing episode. Temporal gap is the measurement; temporal continuity is the decision.
+Spatial OverlapThe new span footprint and the comparison footprint share at least one grid coordinate.
+Spatial AdjacencyThe new span footprint touches the comparison footprint in neighboring grid coordinates, including diagonal contact.
+Spatial DistanceThe smallest grid distance between any coordinate in the new span footprint and any coordinate in the comparison footprint.
+Spatial ProximityThe judgment that two footprints are close enough in space to plausibly belong to the same movement episode.
+Boundary MaterialBoundary material is the collective term for boundary slices carried into Stage 6 as edge support. Boundary Material is material that was unresolved during refinement but was finally retained as boundary support rather than promoted to valid. Boundary material may support a clip, but may not create one on its own.
+Undetermined Classification BandThe range of evidence values that is too strong to classify as invalid, but not strong enough to classify as valid.
+Retained UnitAny individual valid slice or boundary slice that survives refinement and is allowed to participate in Stage 6 clip construction. Invalid material is never a retained unit, and undetermined material must be resolved before Stage 6 begins.
+Retained is not a classification label of its own. It is only a collective term for valid and boundary material after refinement is complete.
+Retained Material
+The full set of retained units carried into Stage 6. Retained material consists only of valid slices and boundary slices.
+Pre-ClipA merged interval of valid and boundary units before lead-in and tail-after are applied.
+Minimum Allowed Subdivision SizeThe smallest time duration a time slice or sub-time slice is allowed to reach before further splitting must stop. Initial default: 00:00:00:15
+Lasting Change Evidence ScoreA normalized score from 0.0 to 1.0 representing how strongly a candidate union, time slice, or sub-time slice appears to contain persistent art change within its relevant footprint.
+Directly Adjacent in TimeTwo time-bounded units are directly adjacent in time when one ends exactly where the other begins, with no gap between them.
+Snapshot RescueA Stage 3 fallback procedure used when a trustworthy nearby full-footprint reference comparison cannot be formed. Instead of requiring one perfect reference window, snapshot rescue is allowed to reconstruct a composite reference state for the footprint from multiple trustworthy observations of its sub-regions over time.
+Composite Snapshot
+A stitched reference state built from multiple trustworthy observations of different parts of the same footprint at different nearby times. A composite snapshot is not required to come from one single frame or one single continuous window.
+Endpoint Ambiguity
+A condition in Stage 3 where one or more cells at the end of a union remain resolved ambiguous because the cursor or ongoing motion still obscures them and no trustworthy reference is available to invalidate them confidently.
+Endpoint Ambiguity Flag
+A debug flag indicating that a union survived Stage 3 with one or more resolved ambiguous endpoint cells.
+This flag does not imply that the union is valid; it only records that Stage 3 could not confidently invalidate the remaining ambiguous endpoint area.
+Trustworthy Reference Window
+A before or after comparison window that is acceptable for Stage 3 because the footprint region being evaluated is free of meaningful movement contamination and can support a reliable coarse comparison. A trustworthy reference window may still allow unrelated movement elsewhere in the frame, provided the evaluated footprint region remains clean.
+
+Per-Point Movement Evidence ThresholdThe minimum movement strength score required for a Movement Evidence Record to set movement_present = true, provided the touched footprint is not trivially empty.
+
+
+Movement Evidence Record Structure
+Purpose
+A Movement Evidence Record is the smallest carried-forward unit of detected movement evidence in the pipeline.
+Its role is to preserve the result of one evaluation point so that later stages can:
+derive footprints
+build movement spans
+build candidate unions
+build time slices and sub-time slices
+refine earlier evidence without recomputing movement evidence from raw video from scratch
+Core rule
+Stage 1 should produce one Movement Evidence Record for each evaluation point it processes.
+These records are ordered chronologically and carried forward through later stages.
+A Movement Evidence Record may represent either:
+meaningful movement evidence being present
+or no meaningful movement evidence being present
+Both cases are important, because later stages need to reason about:
+active periods
+inactive gaps
+nearby quiet reference regions
+Mandatory fields
+Each Movement Evidence Record should store:
+record_index A sequential index identifying the record’s position in the evaluation order.
+evaluation_point_timecode The 30 FPS timecode of the evaluation point.
+frame_index The frame index associated with the evaluation point.
+movement_present A boolean indicating whether meaningful movement evidence was detected at that evaluation point.
+touched_grid_coordinates The set of grid coordinates in which movement evidence was detected at that evaluation point.
+touched_grid_coordinate_count The number of touched grid coordinates in that record.
+change_magnitude_score A normalized score representing how strongly visible change exceeds noise at that evaluation point.
+spatial_extent_score A normalized score representing how large the touched region is at that evaluation point.
+temporal_persistence_score A normalized score representing how persistent the movement evidence is across nearby evaluation points.
+movement_strength_score A normalized combined score representing the overall strength of movement evidence at that evaluation point.
+Score field operational definitions
+All Movement Evidence Record score fields are normalized to a 0.0–1.0 scale.
+change_magnitude_score Represents how strongly visible image difference exceeds the noise floor at the current evaluation point.
+A value of 0.0 means no meaningful visible difference. A value of 1.0 means very strong visible difference.
+spatial_extent_score Represents how much of the working grid is meaningfully affected at the current evaluation point.
+It is derived from the proportion of touched grid coordinates relative to the full working grid.
+A value of 0.0 means a trivial spatial footprint. A value of 1.0 means a very large spatial footprint.
+temporal_persistence_score Represents how strongly the current evaluation point is supported by nearby evaluation points in time.
+It is derived from the amount of nearby temporal support for meaningful movement evidence.
+A value of 0.0 means the evidence appears isolated or flicker-like. A value of 1.0 means the evidence is strongly supported across a short temporal neighborhood.
+movement_strength_score Represents the overall strength of movement evidence at the current evaluation point.
+For initial implementation and benchmark testing, it should be computed as:
+0.40 * change_magnitude_score
+0.30 * spatial_extent_score
+0.30 * temporal_persistence_score
+These weighted components are summed to produce the normalized movement strength score.
+movement_present rule A Movement Evidence Record should set movement_present = true only when:
+the movement strength score exceeds the Stage 1 per-point movement evidence threshold
+and the touched footprint is not trivially empty
+These score definitions are starting defaults and may be tuned later through benchmark testing.
+Per-point movement evidence threshold For initial implementation and benchmark testing, Stage 1 should use:
+Per-Point Movement Evidence Threshold = 0.50
+A Movement Evidence Record should set movement_present = true only when:
+movement_strength_score >= 0.50
+and touched_grid_coordinate_count >= 1
+Otherwise, movement_present = false.
+This threshold is a record-level evidence decision only. It does not by itself open, continue, or close a movement span.
+These are starting defaults, not final truths, and may be tuned later through benchmark testing.
+Optional fields
+The implementation may also store optional diagnostic or helper fields, such as:
+mask summaries
+active block counts
+debug threshold flags
+crop-relative statistics
+reference links to later spans or unions
+These optional fields may support debugging and tuning, but are not required by the core design.
+Footprint derivation rule
+Later stages should derive footprints from Movement Evidence Records rather than rediscovering movement from raw video.
+A footprint for any time-bounded object is formed by taking the union of all touched grid coordinates from the Movement Evidence Records whose evaluation points fall within that object’s time range.
+This applies to:
+movement span footprints
+union footprints
+slice footprints
+sub-time-slice footprints
+Inclusion rule
+A grid coordinate contributes to a derived footprint if it appears in at least one Movement Evidence Record whose evaluation point falls inside the relevant time range.
+Evidence reuse rule
+Later stages should refine the Movement Evidence Records carried forward from Stage 1 rather than recomputing movement evidence from raw video from scratch by default.
+Design principles
+The Movement Evidence Record system should follow these principles:
+one record per evaluation point
+chronological ordering is preserved
+inactive evaluation points are still recorded
+later stages derive footprints from records rather than rescanning raw video
+records provide the shared evidence base for the whole staged pipeline
+
+
+
+Lasting Change Evidence Score Structure
+Purpose
+The Lasting Change Evidence Score is a normalized 0.0–1.0 score representing how strongly persistent art change is supported within the relevant footprint.
+It is used in:
+Stage 3 as an optional supporting measurement inside candidate union screening
+Stage 4 for time-slice classification
+Stage 5 for sub-time-slice classification
+Core rule
+The Lasting Change Evidence Score should always be computed from normalized component scores.
+Each component score should be normalized to a 0.0–1.0 scale before combination.
+The final Lasting Change Evidence Score should also be normalized to a 0.0–1.0 scale.
+Stage 4 / Stage 5 local-settlement scoring rule
+For Stage 4 and Stage 5, the shared score components must be interpreted through settled sub-regions within the relevant slice footprint or sub-time-slice footprint, rather than by treating the full footprint as one uniformly settled area.
+This means the score should be driven by the local regions within the footprint that have actually settled enough to support a meaningful before/after comparison.
+Regions that are still actively changing or still obscured by ongoing motion at the end of the slice or sub-time slice must not be treated as settled support for lasting-change scoring.
+As a result:
+persistent_difference_score should reflect meaningful lasting difference in settled sub-regions
+footprint_support_score should reflect how much of the relevant settled local footprint is actually supported by lasting change
+after_window_persistence_score should reflect whether those settled local changes remain present across the after window 
+Shared component scores
+persistent_difference_score Represents how much meaningful visual difference exists between the relevant before state and after state inside the relevant footprint.
+It should be computed by:
+comparing the before state and after state inside the relevant footprint
+ignoring differences below the noise floor
+measuring the remaining normalized difference magnitude
+clamping or normalizing the result to a 0.0–1.0 scale
+A value of 0.0 means no meaningful persistent difference. A value of 1.0 means very strong persistent difference.
+footprint_support_score Represents how much of the relevant footprint is actually supported by lasting change rather than being trivial, sparse, or weakly supported.
+It should be computed by:
+identifying which grid coordinates inside the relevant footprint show lasting difference between the before state and after state
+dividing that count by the total number of grid coordinates in the relevant footprint
+normalizing the result to a 0.0–1.0 scale
+A value of 0.0 means the footprint provides little or no meaningful support. A value of 1.0 means the footprint provides strong meaningful support.
+For Stage 4 and Stage 5, footprint support should be judged from settled sub-regions within the relevant slice or sub-time-slice footprint, not from gross footprint size alone.
+after_window_persistence_score Represents how consistently the detected change remains present across the full after window rather than appearing only briefly and then disappearing.
+It should be computed by:
+comparing each sampled point in the after window against the relevant before state inside the relevant footprint
+measuring whether the detected change is still present
+averaging that persistence across the after window
+normalizing the result to a 0.0–1.0 scale
+A value of 0.0 means the change is not stable across the after window. A value of 1.0 means the change remains strongly stable across the after window.
+reveal_window_hold_score
+This score measures whether the post-union changed state remains revealed and stable in a short follow-up window after the initial after window.
+Its purpose is to reduce false survival from cases where the immediate after window appears supportive, but the supposed lasting change is not actually held once the scene continues to settle.
+A higher reveal_window_hold_score means the changed state remains visibly present and stable beyond the initial after window.
+
+Stage 3 decision model
+For the updated Stage 3 design, candidate union screening is no longer defined primarily as one weighted union-level score formula.
+Instead, Stage 3 uses a two-step decision model:
+a simple nearby whole-footprint before/after comparison
+snapshot rescue when a trustworthy full-footprint reference comparison cannot be formed
+
+In the simple path, Stage 3 attempts to decide whether the union is clearly invalid or clearly worth surviving by comparing trustworthy nearby before and after references across the union footprint.
+In the rescue path, Stage 3 is allowed to reconstruct a composite before-state snapshot for the footprint from multiple trustworthy observations over time, then compare that reconstructed baseline against the union's own later internal settled state and any trustworthy cell-specific after references that are available for unresolved leftover areas.
+
+Stage 3 support-metric rule
+Stage 3 may still compute optional supporting measurements such as persistent difference strength, footprint support, after-window persistence, or follow-up hold checks.
+However, these measurements are supporting signals inside the Stage 3 decision model, not the primary conceptual definition of Stage 3 classification.
+Stage 3 should not be defined by one single weighted score threshold.
+Instead, any Stage 3 support metrics should be used only to help determine whether the available reference comparison and resolved footprint evidence are strong enough to support reject, survive, or survive-with-bounded-ambiguity outcomes under the main Stage 3 rules.
+
+Stage 3 support-metric implementation scope
+For the first implementation, Stage 3 support metrics should be treated as optional diagnostics rather than required components of the survive or reject decision.
+
+Stage 3 correctness should come from the main Stage 3 decision structure itself, including:
+the Step 1 reference comparison rules
+the snapshot rescue rules
+the Stage 3 coverage buckets
+the Stage 3 coverage aggregation rule
+the Stage 3 placeholder thresholds
+the bounded-ambiguity rules
+the anti-borrowing rules
+the internal-settlement rule
+
+This means a first implementation may omit optional Stage 3 support metrics without violating the conceptual Stage 3 design, provided that the main Stage 3 decision rules are implemented correctly.
+If Stage 3 support metrics are implemented, they should be used only as supporting diagnostics or tuning aids.
+They may help explain why a comparison was strong enough or weak enough, but they must not replace the primary Stage 3 decision rules and must not become a hidden weighted-score survival formula.
+
+Implementation note:
+For the first implementation, it is acceptable to defer optional Stage 3 support metrics until after the core Step 1 and snapshot-rescue decision flow is working and benchmarkable.
+
+Stage 4 and Stage 5 score formula
+For initial implementation and benchmark testing, Stage 4 and Stage 5 should compute Lasting Change Evidence Score as:
+0.45 * persistent_difference_score
+0.35 * footprint_support_score
+0.20 * after_window_persistence_score
+These weighted components are summed to produce the normalized Stage 4 / Stage 5 Lasting Change Evidence Score.
+Design principle
+The Lasting Change Evidence Score uses one shared conceptual model across Stages 3, 4, and 5, but the exact weighting may differ by stage depending on whether the stage is performing:
+coarse union screening
+or finer slice-level classification
+Tuning note
+These score formulas are starting defaults, not final truths, and may be tuned later through benchmark testing.
+
+
+Stage 1: Movement Detection
+Purpose
+Stage 1 detects movement spans in the video. Its role is only to determine:
+when visible movement begins
+when visible movement ends
+which grid coordinates were touched during that interval
+Stage 1 does not decide whether the movement is meaningful art change.
+Inputs
+video frames
+grid overlay
+Outputs
+A list of movement spans. Each movement span stores:
+start_time
+end_time
+footprint
+footprint_size
+Evaluation-point cadence rule
+Stage 1 should evaluate the video at a fixed cadence rather than at irregular or event-driven points.
+For the initial default design, one Movement Evidence Record should be created for every video frame in the working timeline
+Design Note: The default Stage 1 span state machine assumes this per-frame evaluation cadence.
+If the evaluation cadence is changed in a later implementation, any rule expressed in counts of evaluation points must be re-tuned accordingly.
+Responsibilities
+scans the video in time order
+detects movement events
+opens a movement span when movement evidence becomes strong enough and sustained enough
+keeps the span open while movement continues
+closes the span when inactivity becomes sustained
+records all touched grid coordinates as the span’s footprint
+Non-responsibilities
+group spans together
+construct candidate unions
+judge validity
+compare before and after for lasting change
+classify unions as rejected or surviving
+refine slices
+construct clips
+Meaningful movement evidence
+For Stage 1, movement evidence must not be based on a single changed pixel or a single changed frame.
+
+Stage 1 should judge meaningful movement evidence from the combined contribution of:
+
+change magnitude — enough visible difference to exceed noise
+spatial extent — enough touched grid coordinates to be more than a trivial blip
+temporal persistence — evidence of change across multiple nearby evaluation points
+No single component is sufficient on its own.
+Instead, Stage 1 should combine these components into the movement strength score and use that combined evidence to decide whether movement is present, with the additional safeguard that the touched footprint must not be trivially empty.
+Stage 1 record-to-span rule
+Stage 1 uses Movement Evidence Records as its evidence base.
+At the record level, movement_present identifies whether a single evaluation point contains meaningful movement evidence.
+At the span level, opening, continuation, and closing decisions are made from sequences of records rather than from any single record alone.
+Movement span opening rule
+A movement span opens when visible change is detected strongly enough across a short temporal sequence of evaluation points to exceed the movement-opening threshold. Conceptually, this means:
+movement appears across multiple nearby evaluation points
+the detected footprint is large enough to exceed trivial noise
+the change is persistent enough to count as a real movement event rather than a one-frame flicker
+Opening should require stronger evidence than continuing.
+Movement span continuation rule
+A movement span continues while visible change remains above the continuation threshold, or while any inactivity gap is still shorter than the movement-closing threshold. Conceptually, this means:
+the movement still appears active
+or the pause is short enough that it still belongs to the same ongoing movement span
+Continuation should be more forgiving than opening, so that one real movement episode does not fragment too easily.
+Movement span closing rule
+A movement span closes when visible change remains below threshold for a sustained inactive streak long enough to count as a true stop. Conceptually, this means:
+one quiet evaluation point is not enough to close a span
+closing requires consecutive inactivity
+the span ends only when movement has clearly stopped rather than merely dipped briefly
+
+Default span state machine rule
+For initial implementation and benchmark testing, Stage 1 should use a simple record-based span state machine built from Movement Evidence Records rather than opening or closing spans from any single evaluation point alone.
+Default opening rule
+A movement span should open only when meaningful movement evidence appears in a short recent cluster of evaluation points.
+For the initial default rule, Stage 1 should open a movement span when at least 2 of the last 3 evaluation points have movement_present = true.
+Default continuation rule
+Once a movement span is open, it should remain open while movement evidence continues often enough to suggest the same movement episode is still ongoing.
+For the initial default rule, Stage 1 should keep the span open unless the closing rule has been satisfied.
+This allows brief dips in activity without fragmenting one real movement episode into many small spans.
+Default closing rule
+A movement span should close only after sustained inactivity, not after a single quiet evaluation point.
+For the initial default rule, Stage 1 should close a movement span after 3 consecutive evaluation points with movement_present = false.
+Design note
+These defaults are intended to provide a concrete operational baseline, not final tuned values.
+They may be adjusted later through benchmark testing if the tool proves too eager to fragment movement spans or too slow to close them.
+Footprint rule
+While a movement span is open, any grid coordinate in which visible change is detected is added to that span’s footprint. The footprint therefore represents the full set of grid coordinates touched by detected movement during the lifetime of that span.
+Design principles for Stage 1
+opening requires stronger evidence than continuing
+continuing allows brief dips without fragmenting the span
+closing requires sustained inactivity
+movement evidence must combine magnitude, spatial extent, and persistence
+Stage 1 detects visible movement only, not meaningful art change
+Placeholder tuning guidance
+The exact numeric thresholds for opening, continuing, and closing are still tuning parameters, not final design truths. For now, Stage 1 should assume:
+opening uses a stricter threshold than continuation
+continuation uses a slightly lower threshold than opening
+closing depends on multiple consecutive inactive evaluation points rather than a single quiet point
+The exact placeholder numbers should be defined separately as tunable parameters, not embedded into the conceptual definition itself.
+Stage 2: Union Construction
+Purpose
+Stage 2 groups nearby movement spans into candidate unions. Its role is only to determine:
+which movement spans plausibly belong to the same movement episode
+where each candidate union begins and ends
+what the combined footprint of that union is
+Stage 2 does not decide whether a candidate union contains meaningful lasting change.
+Stage 2 should prefer mild over-grouping to over-splitting, because Stage 3 is responsible for rejecting candidate unions that do not show enough lasting change.
+Inputs
+the list of movement spans from Stage 1
+Required movement span fields:
+start_time
+end_time
+footprint
+footprint_size
+Outputs
+Stage 2 outputs a list of candidate unions. Each candidate union stores:
+start_time
+end_time
+member_movement_spans
+union_footprint
+union_footprint_size
+Core idea
+Stage 2 groups movement spans into broader episodes worth investigating. Validity is not decided until later stages.
+Comparison policy
+When evaluating whether a new movement span should join the current candidate union:
+the temporal relationship is compared against the immediately previous movement span
+the spatial relationship is compared against the current candidate union footprint
+Temporal rule
+Stage 2 uses two temporal thresholds:
+Strong Continuity Gap — a very short temporal gap that strongly suggests the new span belongs to the same ongoing episode.
+Maximum Union Gap — the largest temporal gap that still allows a new span to belong to the current candidate union.
+The grouping logic is:
+if the temporal gap is greater than the Maximum Union Gap, start a new candidate union
+if the temporal gap is within the Strong Continuity Gap, join the current candidate union automatically
+if the temporal gap falls between those two thresholds, spatial evidence is used to decide whether the new span should join the current union
+Spatial rule
+A new movement span is considered spatially proximate to the current candidate union if its footprint:
+overlaps the current union footprint
+or is adjacent to it
+or lies within the allowed maximum spatial distance of it
+Spatial proximity is a supporting signal, not a hard requirement in all cases.
+
+Working-grid note:
+For the current default design, spatial distance on the working grid is measured using Chebyshev distance, so diagonal neighbors count as distance 1.
+Stage 2 intentionally allows mild over-grouping by comparing new spans against the growing union footprint, but this is constrained by conservative temporal-gap limits and by union-expansion guardrails that prevent large sudden footprint growth from being absorbed too freely.
+
+Union-expansion guardrail rule
+When a new movement span is being considered for addition to an existing candidate union through the weaker spatial-support path rather than through the Strong Continuity Gap path, Stage 2 should apply a conservative union-expansion guardrail.
+A new span should not be absorbed into the current candidate union through that weaker path if it would introduce a large sudden block of newly touched footprint cells with only weak attachment to the current growing union footprint.
+For the first implementation, this guardrail should be evaluated from two simple signals:
+new-cell growth:
+how many footprint cells in the new span were not already present in the current growing union footprint
+
+attachment strength:
+what proportion of those newly introduced cells still remain spatially attached to the current growing union footprint under the normal Stage 2 spatial-support rules
+
+The current default design should assume the following placeholder guardrail cutoffs:
+Maximum New-Cell Growth For Weak-Path Union Expansion = 4 cells
+Minimum Attachment Ratio For Weak-Path Union Expansion = 0.50
+
+If the new span exceeds the maximum new-cell-growth cutoff and also falls below the minimum attachment-ratio cutoff, Stage 2 should start a new candidate union instead of expanding the current one.
+If those cutoff conditions are not both met, Stage 2 may still expand the current union if the normal Stage 2 grouping rules otherwise support grouping.
+
+Strong-continuity exception
+If the new span falls within the Strong Continuity Gap, that strong temporal continuity may still allow grouping even when footprint growth is larger, because that path represents the more conservative continuity case.
+
+Design note:
+This rule exists to prevent mild Stage 2 over-grouping from turning into aggressive absorption of large sudden footprint jumps.
+These are placeholder implementation cutoffs for the first pass and should be treated as tunable values rather than final design truths.
+
+
+Grouping rule
+A new movement span joins the current candidate union when:
+its temporal gap is small enough to remain eligible for grouping
+and either:
+the temporal gap is within the Strong Continuity Gap
+or the spatial relationship supports grouping
+If neither condition is satisfied, a new candidate union begins.
+Responsibilities
+processes movement spans in chronological order
+compares each new movement span against the current candidate union
+groups spans into candidate unions when the grouping rule is satisfied
+updates the union footprint as new spans are added
+closes a candidate union when the next span no longer qualifies to join it
+Non-responsibilities
+judge validity
+compare before and after for lasting change
+classify unions as rejected or surviving
+refine unions into slices
+construct clips
+Open parameter questions
+The exact placeholder values still need to be chosen for:
+Strong Continuity Gap
+Maximum Union Gap
+Maximum Spatial Distance
+These are tuning parameters, not conceptual definitions. These values will need to be discovered and adjusted through testing.
+Initial default parameters
+For initial implementation and benchmark testing, Stage 2 should use:
+Strong Continuity Gap = 00:00:00:10
+Maximum Union Gap = 00:00:01:00
+Maximum Spatial Distance = 2 grid cells
+These are starting defaults, not final truths, and may be tuned later through benchmark testing.
+Stage 3: Union Screening
+Purpose
+Stage 3 evaluates each candidate union and decides whether it should be discarded or carried forward for deeper refinement. Its role is to perform coarse whole-union screening, not precise internal slicing.
+
+Stage 3 does not determine the exact valid sub-ranges inside the union. It only decides whether the union is clearly weak enough to reject, clearly strong enough to survive, or ambiguous enough that it should survive for deeper refinement.
+
+Inputs
+the list of candidate unions from Stage 2
+the video frames needed for coarse before/after comparison
+the movement evidence needed to determine which footprint regions are active or inactive during nearby comparison windows
+Outputs
+rejected unions
+surviving unions
+Responsibilities
+processes each candidate union independently
+uses the union footprint as the spatial region for initial whole-union evaluation
+attempts a simple nearby before/after comparison first
+falls back to snapshot rescue when a trustworthy full-footprint comparison cannot be formed
+rejects clearly weak unions
+keeps clearly plausible unions alive for deeper refinement
+records whether a surviving union survived with endpoint ambiguity or other Stage 3 rescue conditions
+Non-responsibilities
+split unions into time slices
+classify any internal portion of a union as valid, invalid, or undetermined at slice precision
+construct clips
+regroup unions
+borrow unrelated future activity as proof that the current union is valid
+Conceptual Rule
+Stage 3 uses a two-step screening model.
+Step 1 is a simple whole-footprint comparison. Step 2 is snapshot rescue.
+If Step 1 produces a trustworthy and clear result, that result should be used immediately.
+If Step 1 cannot produce a trustworthy or clear result, Stage 3 should move to snapshot rescue rather than forcing a decision from contaminated evidence.
+
+Step 1: simple whole-footprint comparison
+Stage 3 should first search for a nearby before reference and after reference for the union footprint.
+These references should be searched for within a short nearby window around the union. For the current default design, this nearby search window is a tunable parameter and should initially be treated as ten seconds before the union and ten seconds after the union.
+The preferred reference is the nearest trustworthy reference on each side.
+A nearby reference is trustworthy only for the footprint cells that remain free of meaningful movement contamination across that reference window. Unrelated movement elsewhere in the frame does not automatically disqualify the reference window, provided the union footprint region remains clean enough for comparison.
+The before reference should represent the visual state of the union footprint before the movement episode occurred.
+The after reference should represent the visual state of the union footprint shortly after the union, but should not borrow evidence from unrelated later movement that belongs to a different activity episode.
+If Step 1 finds a trustworthy before reference and a trustworthy after reference for the full footprint, Stage 3 should compare them coarsely across the whole union footprint.
+If the before and after states clearly show no lasting change, the union should be rejected.
+If the before and after states clearly show lasting change, the union should survive.
+
+If either reference is unavailable, contaminated, or unclear, Step 1 does not force survival or rejection. Instead, Stage 3 moves to snapshot rescue.
+
+Step 1 reference-window rule
+For Stage 3, Step 1 should search for trustworthy before and after reference windows in a deterministic order.
+Reference windows are judged locally with respect to the union footprint, not with respect to the whole frame.
+A footprint region may still be considered trustworthy for comparison if unrelated movement exists elsewhere in the frame but the union footprint itself remains clean enough for the candidate reference window to remain trustworthy.
+
+Before-reference search rule
+Stage 3 should search backward from the start of the current union for the nearest trustworthy full-footprint before reference window within the nearby simple-search range.
+A candidate before reference window is eligible only if that reference window ends at least the configured Before Reference Offset before the current union begins.
+Stage 3 should begin its before-reference search from the nearest window that satisfies that offset constraint.
+If more than one trustworthy before reference is available, Stage 3 should prefer the nearest one.
+If no trustworthy full-footprint before reference window is found within the nearby simple-search range, the before side is unavailable for Step 1.
+
+After-reference search rule
+Stage 3 should search for a trustworthy full-footprint after reference window only in intervals that begin at least the configured After Reference Delay after the current union ends.
+Stage 3 should first search for a trustworthy full-footprint after reference window in the earliest eligible interval after the union ends.
+If a clean idle gap exists between the end of the current union and the start of the next union, Stage 3 should search that gap first and should prefer the nearest trustworthy after reference found there, provided that reference window also satisfies the After Reference Delay constraint.
+If no trustworthy full-footprint after reference exists in that immediate eligible post-union idle gap, Stage 3 may continue searching outward within the nearby simple-search range.
+If more than one trustworthy after reference is available, Stage 3 should prefer the nearest one that still reflects the current union's own immediate post-union state.
+If no trustworthy full-footprint after reference window is found before later unrelated activity begins affecting the evaluated footprint cells, the after side is unavailable for Step 1.
+
+Reference-boundary rule
+A Step 1 reference window must satisfy both its normal trustworthiness requirements and its offset or delay boundary requirement before it may be considered eligible for comparison.
+A reference window should not be treated as eligible merely because it is nearby if it overlaps the forbidden offset or delay zone around the union boundary.
+
+Step 1 sufficiency rule
+Step 1 is sufficient only when both a trustworthy full-footprint before reference window and a trustworthy full-footprint after reference window are available, and the resulting comparison is clear enough to support immediate union-level classification.
+If both sides are available and the comparison satisfies the Step 1 clear-rejection rule, the union should be rejected.
+If both sides are available and the comparison satisfies the Step 1 clear-survival rule, the union should survive.
+If either side is unavailable, contaminated, or unclear, Step 1 is insufficient and Stage 3 should move to snapshot rescue.
+
+Step 1 clarity rule
+Step 1 should classify a union immediately only when the full-footprint comparison is clear enough to satisfy the Stage 3 placeholder threshold rule without needing snapshot rescue.
+
+Step 1 clear survival rule
+Step 1 is clear enough for immediate survival when:
+resolved changed coverage reaches at least the minimum resolved-changed coverage threshold
+resolved ambiguous coverage does not exceed the maximum bounded-ambiguity threshold
+the changed evidence includes at least one connected resolved-changed cluster that satisfies the minimum changed-cluster size under the Stage 3 changed-cluster rule
+the resolved-unchanged rejection-priority threshold is not simultaneously satisfied
+
+Step 1 clear rejection rule
+Step 1 is clear enough for immediate rejection when:
+resolved unchanged coverage reaches at least the resolved-unchanged rejection-priority threshold
+resolved ambiguous coverage does not exceed the maximum bounded-ambiguity threshold
+the remaining resolved ambiguous cells are not strong enough to block rejection under the normal Stage 3 bounded-ambiguity rules
+
+Step 1 unclear rule
+If the full-footprint comparison does not satisfy either the clear-survival rule or the clear-rejection rule, Step 1 must be treated as unclear.
+In that case, Stage 3 should not force an immediate survive or reject decision from Step 1 alone and should move to snapshot rescue.
+
+Design note:
+This search order exists to keep Step 1 simple, local, and conservative.
+Step 1 should prefer the nearest trustworthy comparison material and should prefer immediate post-union idle material before looking deeper into later timeline activity.
+
+
+
+Anti-borrowing rule
+Stage 3 must not justify the current union by borrowing evidence from a different later activity episode.
+A reference window may only be used as positive support for the current union when that reference window reflects the current union's own lasting result rather than a later unrelated change.
+
+Step 1 anti-borrowing rule
+For the simple full-footprint comparison path, Stage 3 should prefer the nearest trustworthy after reference for which no later movement evidence has yet affected the evaluated footprint cells since the current union ended.
+If a clean idle gap exists between the current union and the next union and that gap provides a trustworthy after reference, Stage 3 should prefer that gap rather than looking into later activity.
+If no trustworthy full-footprint after reference exists before later unrelated activity begins to affect the evaluated footprint cells, Step 1 should be treated as insufficient and should hand off to snapshot rescue.
+
+Post-union-state guardrail
+For Stage 3, later material may count as the current union's own post-union state only while no later movement evidence has affected the evaluated footprint cells since the current union ended.
+If later movement evidence touches the evaluated cells after the current union has ended, later material must no longer be used as positive support for those cells.
+At that point, later material may still be used only under the stricter invalidation rules that already apply to Stage 3 cell-specific after-reference use.
+
+Design note:
+This rule gives Stage 3 a concrete cutoff for when later reference material stops belonging to the current union's own post-union state and starts belonging to a different later activity episode.
+
+Snapshot rescue anti-borrowing rule
+Snapshot rescue may search backward in time to reconstruct the before state of the footprint.
+
+However, snapshot rescue should not freely reconstruct a positive after state from later unrelated activity, because that risks validating the current union with evidence that belongs to a different later event.
+Later material may be used conservatively for invalidation, but not freely for positive validation.
+
+Cell-specific after-reference anti-borrowing rule
+A later cell-specific after reference may be used to invalidate leftover ambiguous cells when that later reference shows that those cells return to or match the before state, or otherwise clearly fail to show lasting change attributable to the current union.
+A later cell-specific after reference should not be used as standalone positive proof that the current union caused a lasting change if that supposed support may instead come from a different later activity episode.
+
+Future-activity guardrail
+If later movement evidence affects the evaluated cells after the current union has ended, any later meaningful canvas change in those cells must not be counted as positive Stage 3 support for the current union.
+In those cases, Stage 3 should either rely on earlier trustworthy comparison material, rely on the union's own internally settled state where allowed, use the later material only for conservative invalidation where appropriate, or leave the affected cells resolved ambiguous.
+
+Design note:
+This rule exists to prevent false survival from borrowed future evidence.
+Stage 3 may use later material cautiously to rule out supposed lasting change, but it must not use later unrelated change as proof that the current union itself was valid.
+
+Trustworthy reference-window rule
+For Stage 3, trustworthiness should be judged at the level of the footprint cells being evaluated, not at the level of the whole frame.
+A reference window is trustworthy only when the specific footprint cells being evaluated are free of meaningful movement contamination and stable enough to support a coarse before/after comparison.
+
+Cell-level trust rule
+A footprint cell is trustworthy within a candidate reference window when:
+no meaningful movement evidence is present in that cell during the reference window
+the cell is not still being actively contaminated by cursor movement, tool-overlay movement, or other ongoing activity recorded by the movement evidence
+the cell remains visually stable enough across the reference window to act as a coarse comparison state
+A footprint cell is not trustworthy within a candidate reference window when:
+meaningful movement evidence remains present in that cell during the window
+the cell is still being actively obscured or contaminated by ongoing motion
+the observed state of the cell is too unstable to support a reliable coarse comparison
+
+Reference-window-level trust rule
+A reference window is trustworthy for a full-footprint Stage 3 comparison only when every footprint cell needed for that full-footprint comparison is trustworthy within that reference window.
+If only part of the footprint is trustworthy within the candidate reference window, then that reference window is not trustworthy for the full footprint.
+However, that same reference window may still be used for snapshot rescue or for cell-specific after-reference invalidation for the subset of footprint cells that are trustworthy within it.
+
+Trust source rule
+For the current Stage 3 design, trustworthiness should be judged primarily from footprint-local movement evidence and footprint-local activity state, not from a full semantic interpretation of the frame.
+This keeps Stage 3 grounded in the same movement-evidence model established by Stage 1 and Stage 2.
+
+Stage 3 trust and stability mechanics rule
+For the first implementation, Stage 3 should use short fixed placeholder check windows when deciding whether a footprint cell is trustworthy in a reference window or internally settled within the union.
+The current default design should assume:
+Stage 3 Reference Stability Check Length = 3 frames
+Stage 3 Internal Settlement Check Length = 3 frames
+
+Reference-window trust mechanics
+A footprint cell should be treated as trustworthy within a candidate reference window only when all of the following are true across the full reference stability check length:
+no meaningful movement evidence is present in that cell
+the cell is not actively obscured by cursor movement, tool-overlay movement, or other ongoing local contamination
+the observed cell state remains materially stable enough across the check to support coarse comparison
+If any frame within that check length violates one of those conditions, the cell should be treated as untrustworthy for that reference window.
+
+Internal-settlement mechanics
+A footprint cell or sub-region should be treated as internally settled for Stage 3 only when all of the following are true across the full internal settlement check length:
+no meaningful movement evidence remains present in that cell or sub-region
+the cell or sub-region is not actively obscured by cursor movement, tool-overlay movement, or other ongoing local contamination
+the observed state remains materially stable enough across the check to support coarse comparison against the reconstructed before state
+If any frame within that check length violates one of those conditions, the cell or sub-region should remain unsettled.
+
+Design note:
+These are placeholder mechanics for the first implementation.
+The exact frame counts and exact stability-comparison method are tuning parameters, but Stage 3 should not leave trust or settlement entirely to ad hoc judgment in code.
+
+
+Contaminated-frame rule
+If a footprint cell is meaningfully contaminated during any part of the candidate reference window in a way that affects the coarse comparison state, that cell should be treated as untrustworthy for that reference window.
+A reference window should not be treated as trustworthy for a cell merely because contamination is brief, unless later tuning explicitly defines a more permissive rule.
+
+Reference-use rule
+A trustworthy reference window may be used only when it reflects the state of the evaluated footprint cells themselves and does not borrow unrelated future activity as proof for the current union.
+This means a reference window may be trustworthy for invalidating a cell or union only when the evaluated cells remain trustworthy within that window.
+This also means a later window should not be used to validate the current union if the supposed support comes from a different later activity episode rather than from the current union's own lasting result.
+
+Snapshot rescue
+Snapshot rescue is the Stage 3 fallback path for troublesome unions.
+Instead of requiring one single perfect before window and one single perfect after window, snapshot rescue is allowed to reconstruct the relevant footprint state from multiple trustworthy observations of different footprint sub-regions over time.
+The strongest use of snapshot rescue is reconstruction of the before state.
+In practice, Stage 3 should begin with the footprint cells that can already be trusted in the nearest nearby reference window, then expand outward in time to fill in any missing or contaminated cells until a sufficiently complete before snapshot has been constructed.
+This means the reconstructed before state does not need to come from one single frame or one single continuous reference window.
+It may be stitched together from multiple nearby trustworthy observations of different parts of the footprint.
+
+Snapshot rescue stitching rule
+When snapshot rescue reconstructs a composite before snapshot, it should do so with a deterministic per-cell stitching order.
+For each missing footprint cell that still needs a trustworthy before-state observation, Stage 3 should prefer the temporally nearest trustworthy pre-union observation for that cell within the allowed rescue-search range.
+If more than one trustworthy candidate observation exists for the same cell, Stage 3 should choose the temporally nearest one.
+If two candidate observations are equally near, Stage 3 should break the tie in favor of the earlier observation.
+Stage 3 should not choose among multiple trustworthy candidate observations arbitrarily.
+
+Design note:
+This rule exists to keep snapshot rescue reproducible and auditable.
+It does not change the conceptual purpose of snapshot rescue. It only ensures that composite before-state reconstruction follows one stable stitching order rather than ad hoc selection.
+
+Comparison target during snapshot rescue
+Once a trustworthy before snapshot has been reconstructed, Stage 3 should compare that baseline against the union's own later internal state only where the relevant footprint cells or sub-regions satisfy the Stage 3 internal-settlement rule strongly enough to support a coarse judgment.
+This allows Stage 3 to resolve large portions of the footprint without needing to borrow unrelated future activity as proof.
+Stage 3 should be cautious about reconstructing an after state from later unrelated footage, because that risks validating a union with evidence that belongs to a different later event.
+
+Stage 3 internal-settlement rule
+When Stage 3 uses the union's own later internal state as comparison evidence during snapshot rescue, it may do so only for footprint cells or sub-regions that are internally settled.
+A footprint cell or sub-region is internally settled for Stage 3 only when all of the following are true:
+meaningful movement evidence is no longer present in that cell or sub-region
+the cell or sub-region is no longer actively obscured by cursor movement, tool-overlay movement, or other ongoing local contamination
+the observed state of that cell or sub-region remains stable across a short nearby check window that is sufficient for coarse comparison
+A footprint cell or sub-region must not be treated as internally settled merely because the main movement episode has advanced elsewhere.
+If the cell itself is still active, still obscured, or still visually unstable, it remains unsettled and cannot support resolved changed or resolved unchanged classification at Stage 3.
+
+Stage 3 settlement note
+This is a coarse settlement rule, not a fine slice-level rule.
+Its purpose is only to determine whether Stage 3 may use a local internal area as support for union-level survival or rejection.
+It must not be used to assign exact valid temporal sub-ranges within the union.
+
+Cell-specific after-reference use
+If a small leftover part of the footprint remains unresolved at the end of the union, Stage 3 may still use a cell-specific or sub-region-specific after reference for that leftover area, provided that after reference is trustworthy and does not borrow unrelated future activity.
+This is primarily for invalidation, not for positive validation.
+If the leftover cells can be shown by a trustworthy after reference to match the before state, those cells may be invalidated.
+If the leftover cells cannot be confidently invalidated because no trustworthy after reference exists for them, those cells remain ambiguous.
+
+Snapshot rescue outcome rule
+Snapshot rescue should be evaluated through one fixed decision order and should end in one of four final outcome categories:
+rescue-supported survival
+rescue-supported rejection
+survival with bounded ambiguity
+rescue failure
+Rescue-supported survival is the final outcome category used when snapshot rescue provides enough trustworthy evidence for Stage 3 to keep the union alive by positive resolved evidence and the reconstructed before-state coverage also satisfies the minimum reconstructed-before coverage threshold.
+This may occur through full-resolution rescue or through partial-resolution changed-evidence survival, depending on how much of the footprint snapshot rescue was able to resolve.
+A candidate union reaches rescue-supported rejection only when snapshot rescue reconstructs enough trustworthy before-state coverage to fully account for the footprint, and the fully resolved footprint evidence shows no meaningful lasting change.
+Survival with bounded ambiguity does not require the minimum reconstructed-before coverage threshold in the same way that rescue-supported survival does, because this category exists specifically for bounded unresolved remainder cases.
+A candidate union reaches rescue failure when snapshot rescue cannot reconstruct enough trustworthy before-state coverage to support a meaningful coarse judgment.
+
+Snapshot rescue decision-order rule
+Stage 3 should evaluate snapshot rescue outcomes in a fixed order.
+First, Stage 3 should attempt Step 1.
+If Step 1 is sufficient and clear, Stage 3 should classify the union immediately and should not enter snapshot rescue.
+If Step 1 is insufficient or unclear, Stage 3 should enter snapshot rescue.
+Once snapshot rescue begins, Stage 3 should evaluate rescue outcomes in the following order:
+full-resolution rescue outcome
+partial-resolution rescue outcome
+rescue failure outcome
+Full-resolution rescue outcome
+If snapshot rescue reconstructs enough trustworthy before-state coverage to fully account for the footprint, Stage 3 should decide between rescue-supported survival and rescue-supported rejection from that fully resolved footprint evidence.
+
+Partial-resolution rescue outcome
+If snapshot rescue does not fully account for the footprint but still reconstructs enough coverage to support a meaningful coarse judgment, Stage 3 should decide in the following order:
+reach rescue-supported survival if the resolved changed coverage is already strong enough to support changed-evidence survival under the Stage 3 threshold and rescue rules, and the reconstructed before-state coverage also satisfies the minimum reconstructed-before coverage threshold
+otherwise reach survival with bounded ambiguity if the remaining resolved ambiguous coverage still satisfies the bounded-ambiguity rules
+otherwise reject by resolved evidence if the resolved unchanged evidence is strong enough and the remaining ambiguity is not sufficient to block rejection
+
+Rescue failure outcome
+If snapshot rescue cannot reconstruct enough trustworthy before-state coverage to support even a meaningful coarse judgment, Stage 3 should treat that state as rescue failure and apply the rescue-failure rule.
+
+Design note:
+This decision order exists to keep Stage 3 behavior deterministic.
+It ensures that full-resolution rescue decisions, partial-resolution rescue decisions, and true rescue-failure cases are not mixed together or labeled inconsistently.
+
+Rescue failure rule
+Rescue failure does not automatically allow a candidate union to survive.
+If rescue fails, Stage 3 should still decide the union from the resolved changed, resolved unchanged, and resolved ambiguous footprint coverage that is available.
+However, rescue failure must not produce rescue-supported survival by changed evidence, because rescue-supported survival requires the minimum reconstructed-before coverage threshold to be satisfied.
+If the remaining ambiguity is still bounded, localized, and cannot be confidently invalidated, the union may survive with ambiguity.
+Otherwise, the union should be rejected.
+Stage 3 must not treat rescue failure itself as positive evidence.
+
+Design note:
+This rule prevents snapshot rescue from becoming a backdoor provisional-survival rule.
+Snapshot rescue exists to improve reference quality and resolve troublesome unions more honestly. If it fails to reach the minimum reconstructed-before threshold, Stage 3 may still preserve the union only through bounded ambiguity, not through positive rescue-supported survival.
+
+Additional rejection note:
+Stage 3 should not reject a union merely because most of the footprint has been resolved unchanged.
+If any remaining cells are still genuinely unresolved and cannot be confidently invalidated by trustworthy after-reference checks, those cells must be treated as resolved ambiguous rather than being ignored, and the union should be handled under survival with bounded ambiguity rather than rescue-supported rejection.
+
+
+Endpoint ambiguity rule
+Stage 3 does not need to resolve every endpoint-obscured cell perfectly.
+If most of the footprint can be resolved but a small bounded endpoint area remains ambiguous because the cursor or ongoing motion still obscures it, Stage 3 may allow the union to survive rather than forcing a false rejection.
+This is acceptable because Stage 3 is a coarse screening stage and later stages are responsible for finer local temporal analysis.
+However, Stage 3 should still reject clearly weak unions whenever the available evidence is sufficient to invalidate the footprint, including any leftover ambiguous cells that can be invalidated by trustworthy after-reference checks.
+
+Endpoint ambiguity cap rule
+Endpoint ambiguity is allowed only when the remaining resolved ambiguous area is small, localized, and not already contradicted by the resolved evidence.
+A candidate union must not survive on endpoint ambiguity if the resolved ambiguous cells are too numerous, too spatially diffuse, or too disconnected from the endpoint-style obscuration that created the ambiguity.
+
+For Stage 3, endpoint ambiguity should be treated as bounded only when all of the following are true:
+the resolved ambiguous cells occupy no more than a small minority of the full union footprint
+the resolved ambiguous cells remain spatially localized as one connected ambiguous cluster rather than being scattered broadly across the footprint
+the resolved ambiguous cells are plausibly explained by endpoint-style obscuration, lingering cursor coverage, or similarly localized unresolved contamination
+the resolved changed and resolved unchanged evidence outside that ambiguous remainder does not already justify clear rejection
+If the resolved ambiguous area grows too large, too diffuse, or too weakly tied to endpoint-style obscuration, it should no longer qualify as bounded ambiguity.
+In those cases, Stage 3 should decide the union from the resolved evidence that is available, rather than allowing ambiguity itself to keep the union alive.
+
+Bounded-ambiguity spatial rule
+For the first implementation, bounded ambiguity should satisfy a simple connected-cluster rule in addition to the existing size and endpoint-style rules.
+A resolved ambiguous remainder should count as spatially bounded only when it forms one connected ambiguous cluster within the footprint.
+For the current default design, ambiguous cells belong to the same ambiguous cluster only when they are orthogonally adjacent to one another within the footprint.
+Diagonal-only contact does not count as belonging to the same ambiguous cluster for this bounded-ambiguity rule.
+If the remaining resolved ambiguous cells are split into multiple separated clusters, Stage 3 should not treat that remainder as bounded ambiguity unless a later tuning revision explicitly allows a more permissive rule.
+
+Design note:
+This rule exists to make the bounded-ambiguity shape constraint operational for implementation.
+For the first implementation, Stage 3 should treat one small connected ambiguous cluster as eligible for bounded-ambiguity survival, but should not treat multiple separated ambiguous islands as equivalent to one localized endpoint remainder.
+
+
+Rejection-priority rule
+Endpoint ambiguity must not override strong resolved-unchanged evidence.
+If the resolved footprint evidence already shows that the union has no meaningful lasting change and the remaining ambiguous cells are too limited, too weak, or too unsupported to plausibly change that conclusion, the union should be rejected.
+
+Tuning note
+The exact numeric cap for maximum allowed resolved ambiguous cells, and the exact spatial rule for how localized they must remain, are tuning parameters rather than conceptual truths.
+These values should be defined separately as Stage 3 tuning parameters.
+
+Design note:
+This rule keeps endpoint ambiguity narrow.
+Endpoint ambiguity exists to prevent false rejection when a small leftover area cannot be confidently invalidated at Stage 3's coarse level.
+It does not exist to let large or diffuse unresolved regions survive merely because Stage 3 could not finish resolving them.
+
+Comparison region rule
+Stage 3 should compare reference material using the union footprint or the relevant unresolved sub-region of that footprint. It should not compare the whole frame, and it should not yet use Stage 4 or Stage 5 time-slice logic.
+
+Lasting change rule
+For Stage 3, enough lasting change means that the union footprint or a meaningful portion of it shows a visible difference from the reconstructed before state, and that this difference remains present after the movement has passed through that region strongly enough to count as a persistent result rather than a transient cursor or overlay artifact.
+Stage 3 should not require precision about exactly where within the union the final valid change occurred. It only needs enough evidence to decide whether the union is worth refining further.
+
+Stage 3 classification rule
+A candidate union should be rejected when Stage 3 can confidently determine that the union footprint shows no meaningful lasting change.
+A candidate union should survive when Stage 3 can confidently determine that meaningful lasting change is present, or when a bounded resolved ambiguous portion of the footprint cannot be confidently invalidated at Stage 3's coarse level.
+A candidate union should not survive merely because the comparison is weak, noisy, or inconvenient. Survival should remain tied to either positive evidence of lasting change or unresolved ambiguity that cannot be confidently invalidated.
+
+Debug output rule
+Stage 3 should record enough debug output to make the union-screening decision auditable.
+At minimum, Stage 3 debug output should record:
+
+which Stage 3 path was used for the union
+whether the simple nearby comparison path was sufficient
+whether snapshot rescue was used
+whether the union survived with endpoint ambiguity
+whether a trustworthy whole-footprint before reference was found for Step 1
+whether a trustworthy whole-footprint after reference was found for Step 1
+whether any cell-specific after-reference invalidation was used
+whether later material was considered and rejected under the anti-borrowing rule
+
+Stage 3 should also record footprint-resolution coverage values that are sufficient to explain the final decision.
+At minimum, this should include values equivalent to:
+
+resolved_changed_coverage
+resolved_unchanged_coverage
+resolved_ambiguous_coverage
+
+If useful for tuning and investigation, Stage 3 may also record:
+
+step1_before_reference_available
+step1_after_reference_available
+snapshot_rescue_used
+surviving_with_endpoint_ambiguity
+cell_specific_after_invalidation_used
+anti_borrowing_guardrail_triggered
+final_stage3_outcome_reason
+
+Example outcome reasons may include:
+
+survived_by_changed_evidence
+survived_by_bounded_ambiguity
+rejected_by_resolved_unchanged_evidence
+rejected_after_rescue_failure
+step1_clear_survival
+step1_clear_rejection
+
+Design note:
+These debug outputs are not part of the conceptual validity decision itself.
+Their purpose is to make Stage 3 behavior inspectable during implementation, tuning, and benchmark review, especially in cases involving snapshot rescue, endpoint ambiguity, or possible borrowed-future contamination.
+
+Stage 3 terminology rule
+For Stage 3, the following terms should be used consistently:
+
+clean / contaminated
+These terms describe whether a footprint cell or reference window is free of meaningful movement contamination.
+A clean cell or clean reference window is one that is usable for coarse comparison.
+A contaminated cell or contaminated reference window is one that is still affected by meaningful movement, obscuration, or unstable comparison state.
+
+trustworthy
+This term describes whether a reference window is acceptable for Stage 3 use.
+A reference window is trustworthy only when the evaluated footprint cells within it are clean enough and stable enough to support the intended comparison.
+
+settled / unsettled
+These terms describe whether a post-movement visual state has stabilized enough to support lasting-change judgment.
+A settled region may support coarse or local comparison.
+An unsettled region must not be treated as lasting-change support yet.
+resolved changed / resolved unchanged / resolved ambiguous
+
+These are the official Stage 3 footprint-coverage buckets. Stage 3 should use these terms rather than looser alternatives when describing the outcome of cell-level comparison.
+
+reference window
+This term should be used for the before reference window and after reference window used by Stage 3.
+The document should prefer reference window over bare window when the meaning is specifically the Stage 3 comparison window.
+
+full footprint
+This term should be used when Stage 3 means the entire union footprint.
+sub-region or cell-specific region should be used when only part of the footprint is being evaluated.
+bounded ambiguity / endpoint ambiguity
+Endpoint ambiguity is the specific Stage 3 case where a small localized unresolved remainder remains near the endpoint of the union because of lingering obscuration or unresolved contamination.
+Bounded ambiguity is the broader rule category that allows survival only when that unresolved remainder stays small, localized, and not contradicted by the resolved evidence.
+
+Design note:
+This terminology rule exists to keep Stage 3 implementation and debugging language consistent.
+The document should avoid switching casually between similar words such as usable, quiet, clean, trustworthy, unresolved, and ambiguous when one of the standardized terms above is the more precise choice.
+
+
+Stage 3 coverage-bucket rule
+For Stage 3, the union footprint should be evaluated at the level of individual footprint cells.
+After Step 1 and, if needed, snapshot rescue, each footprint cell should be placed into one of three coverage buckets:
+resolved changed
+resolved unchanged
+resolved ambiguous
+
+A cell is resolved changed when Stage 3 has enough trustworthy comparison evidence to determine that the cell shows lasting change relative to the reconstructed before state.
+A cell is resolved unchanged when Stage 3 has enough trustworthy comparison evidence to determine that the cell does not show lasting change relative to the reconstructed before state.
+A cell is resolved ambiguous when Stage 3 does not yet have enough trustworthy comparison evidence to classify the cell as either changed or unchanged.
+
+The purpose of these buckets is to make the Stage 3 decision explicit. Stage 3 does not decide union survival from vague overall impressions. It decides from how much of the footprint has been resolved as changed, resolved as unchanged, or remains resolved ambiguous.
+
+Stage 3 coverage aggregation rule
+For the current default design, Stage 3 coverage values should be computed as the proportion of union-footprint cells assigned to each Stage 3 coverage bucket.
+
+This means:
+resolved changed coverage = the number of union-footprint cells classified as resolved changed divided by the total number of cells in the union footprint
+resolved unchanged coverage = the number of union-footprint cells classified as resolved unchanged divided by the total number of cells in the union footprint
+resolved ambiguous coverage = the number of union-footprint cells classified as resolved ambiguous divided by the total number of cells in the union footprint
+These coverage values should therefore be normalized proportions in the range 0.0 to 1.0.
+
+Coverage aggregation note
+For the current default design, Stage 3 should use unweighted footprint-cell coverage.
+Each footprint cell contributes equally to the Stage 3 coverage totals unless a later design revision explicitly introduces weighted coverage.
+This means Stage 3 should not assume confidence weighting, area weighting, or connectedness weighting unless those rules are later added explicitly.
+
+Design note:
+This aggregation rule exists to ensure that Stage 3 placeholder thresholds, debug outputs, and union-level decision rules all refer to the same underlying coverage measurement.
+
+Stage 3 changed-cluster rule
+For the current default design, the minimum changed-cluster size for changed-evidence survival should be interpreted spatially rather than as any two changed cells anywhere in the footprint.
+A changed cluster means one connected group of footprint cells that are all classified as resolved changed.
+For the current placeholder rule, cells belong to the same changed cluster only when they are orthogonally adjacent to one another within the footprint.
+Diagonal-only contact does not count as belonging to the same changed cluster for this minimum-cluster rule.
+This means the placeholder parameter:
+Minimum Changed-Cluster Size For Survival = 2 cells
+should be interpreted as requiring at least one connected resolved-changed cluster containing two orthogonally adjacent footprint cells before Stage 3 may treat changed evidence as strong enough for changed-evidence survival.
+
+Design note:
+This rule exists to prevent Stage 3 from treating two scattered single changed cells as equivalent to one small coherent changed patch.
+The exact connectivity rule may be tuned later, but the first implementation should use this simple connected-cluster interpretation.
+
+
+Stage 3 union-level decision rule
+Stage 3 should make its union-level survive or reject decision from the footprint coverage buckets.
+A candidate union should survive when enough footprint cells are resolved changed to show meaningful lasting change.
+A candidate union should also survive when a bounded remainder of the footprint remains resolved ambiguous and that ambiguous remainder cannot be confidently invalidated at Stage 3's coarse level.
+A candidate union should be rejected when the resolved footprint evidence shows no meaningful lasting change and any remaining ambiguous cells can either be invalidated by trustworthy after-reference checks or are too weak or too insignificant to prevent rejection.
+A candidate union must not survive merely because the comparison is noisy, weak, inconvenient, or incomplete in a generic sense.
+Ambiguity-based survival applies only when the ambiguous remainder is real, bounded, and cannot be confidently invalidated by the evidence available to Stage 3.
+
+Design note:
+This rule makes Stage 3 concrete without turning it into a slice-level refinement stage.
+Stage 3 still remains a coarse whole-union screening pass. It may reason about individual footprint cells in order to decide whether the union as a whole should survive, but it does not use those cell decisions to temporally localize exact valid internal ranges. That remains the responsibility of Stage 4 and Stage 5.
+
+Stage 3 placeholder threshold rule
+For implementation and early benchmark testing, Stage 3 should use explicit placeholder thresholds when converting footprint coverage buckets into survive or reject decisions.
+The purpose of these thresholds is not to define final truth, but to prevent implementation drift while the design is being tested and tuned.
+
+The following placeholder thresholds should be used for the current default design:
+Minimum Resolved-Changed Coverage For Survival = 0.10
+Maximum Resolved-Ambiguous Coverage For Bounded Ambiguity = 0.10
+Minimum Reconstructed-Before Coverage For Rescue-Supported Survival = 0.80
+Resolved-Unchanged Rejection Priority Threshold = 0.85
+Minimum Changed-Cluster Size For Survival = 2 cells
+
+Threshold precedence rule
+If more than one threshold-based outcome appears to be satisfied at the same time, Stage 3 must resolve that conflict by precedence rather than by ad hoc judgment.
+For the current default design, rejection-priority takes precedence over changed-evidence survival when the resolved-unchanged rejection-priority threshold is met.
+This means a candidate union must not survive by changed-evidence threshold alone if the same footprint evidence also satisfies the rejection-priority rule.
+Changed-evidence survival should be evaluated only after the rejection-priority rule has failed.
+
+Threshold interpretation rule
+A candidate union should survive by changed evidence only when all of the following are true:
+resolved changed coverage reaches at least the minimum resolved-changed coverage threshold
+the changed evidence includes at least one connected resolved-changed cluster that satisfies the minimum changed-cluster size under the Stage 3 changed-cluster rule
+the resolved-unchanged rejection-priority threshold is not simultaneously satisfied
+A candidate union may survive by bounded ambiguity only when resolved ambiguous coverage does not exceed the maximum bounded-ambiguity threshold and the other bounded-ambiguity rules are satisfied.
+A candidate union should not reach rescue-supported survival through either full-resolution rescue or partial-resolution changed-evidence survival unless the reconstructed before-state coverage reaches at least the minimum reconstructed-before coverage threshold.
+A candidate union may be rejected by resolved evidence when resolved unchanged coverage reaches at least the rejection-priority threshold and the remaining resolved ambiguous coverage does not exceed the bounded-ambiguity threshold or has otherwise been confidently invalidated.
+
+Design note:
+These are temporary implementation thresholds for the current default design.
+They should be treated as starting values for testing, debugging, and benchmark review, not as permanent design truths.
+
+
+
+Stage 3 / Stage 4 boundary rule
+Stage 3 and Stage 4 serve different purposes and must remain distinct.
+Stage 3 is a coarse whole-union screening stage.
+Stage 3 is allowed to inspect the union footprint spatially, reason about individual footprint cells, reconstruct a composite before-state baseline, use trustworthy cell-specific invalidation checks, and determine whether the union as a whole should survive or be rejected.
+However, Stage 3 must not divide the union into internal temporal units, must not assign validity to exact internal time ranges, and must not attempt to label which specific sub-ranges inside the union are the true valid portions.
+Stage 4 is the first stage that performs explicit internal temporal localization.
+Once a union survives Stage 3, Stage 4 may divide that surviving union into time slices and classify those internal temporal parts as valid, invalid, or undetermined.
+Stage 3 may use the union's own later internal settled state only as coarse support for the union-level survival decision.
+It may not use that internal inspection to define exact valid start and end points inside the union.
+
+Design note:
+The purpose of this boundary is to let Stage 3 become smarter about reference validity and coarse rescue logic without turning it into a hidden time-slicing stage.
+Stage 3 decides whether the union is worth refining.
+Stage 4 begins the work of determining where inside that surviving union the valid temporal material actually lies.
+
+
+
+Design principles for Stage 3
+use the union footprint, not the whole frame
+prefer nearby trustworthy references first
+use short reference windows for the simple path, not single frames
+allow composite before-state rescue when a single clean reference is unavailable
+avoid borrowing unrelated future activity as proof for the current union
+treat lasting change as something that remains after movement has passed through the region
+optimize for coarse screening, not precision slicing
+reject clearly weak unions early while keeping genuinely plausible or unresolved unions alive for refinement
+Placeholder tuning guidance
+The exact numeric parameters for Stage 3 are still tuning parameters, not final design truths. These include:
+the nearby simple-search window length
+the before reference window length
+the after reference window length
+the before reference offset
+the after reference delay
+the maximum rescue-search distance
+the reference stability check length
+the internal settlement check length
+the minimum acceptable reconstructed-before coverage for rescue-supported survival
+the minimum resolved-changed coverage required for survival
+the maximum resolved-ambiguous coverage allowed for bounded ambiguity
+the resolved-unchanged rejection-priority threshold
+the minimum changed-cluster size required for changed-evidence survival
+the maximum acceptable bounded endpoint ambiguity size before Stage 3 should stop treating the union as coarsely resolvable
+the exact debug flags and reason labels
+
+These values should be defined separately as tunable parameters, not embedded into the conceptual definition itself.
+
+Initial default parameters
+For initial implementation and benchmark testing, Stage 3 should initially assume:
+
+Nearby Simple Search Window = 00:00:10:00
+Before Reference Window Length = 00:00:00:10
+Before Reference Offset = 00:00:00:05
+After Reference Delay = 00:00:00:05
+After Reference Window Length = 00:00:00:10
+Maximum Snapshot Rescue Search Distance = 00:00:30:00
+Stage 3 Reference Stability Check Length = 3 frames
+Stage 3 Internal Settlement Check Length = 3 frames
+
+Minimum Resolved-Changed Coverage For Survival = 0.10
+Maximum Resolved-Ambiguous Coverage For Bounded Ambiguity = 0.10
+Minimum Reconstructed-Before Coverage For Rescue-Supported Survival = 0.80
+Resolved-Unchanged Rejection Priority Threshold = 0.85
+Minimum Changed-Cluster Size For Survival = 2 cells
+
+These are starting defaults, not final truths, and may be tuned later through benchmark testing.
+
+Open parameter questions
+The exact placeholder values still need to be chosen for:
+
+nearby simple-search window length
+before reference window length
+after reference window length
+before reference offset
+after reference delay
+maximum snapshot rescue search distance
+reference stability check length
+internal settlement check length
+minimum reconstructed-before coverage for rescue-supported survival
+minimum resolved-changed coverage for survival
+maximum resolved-ambiguous coverage for bounded ambiguity
+resolved-unchanged rejection-priority threshold
+minimum changed-cluster size for changed-evidence survival
+maximum bounded endpoint ambiguity size
+the exact debug-flag scheme
+
+These are tuning parameters, not conceptual definitions.
+Stage 4: Top-Level Time Slice Classification
+Purpose
+Stage 4 takes each surviving union and divides it into time slices for direct classification. Its role is to perform the first explicit internal temporal localization pass, determining which internal parts of the surviving union are valid, which are invalid, and which remain undetermined and therefore require further refinement.
+Stage 4 does not construct final clips.
+Inputs
+the list of surviving unions from Stage 3
+the movement evidence records associated with each surviving union
+Outputs
+A set of time slices for each surviving union. Each time slice stores:
+start_time
+end_time
+slice_footprint
+slice_footprint_size
+classification
+Each time slice is classified as:
+valid
+invalid
+undetermined
+Responsibilities
+processes each surviving union independently
+splits each surviving union in half by default, creating two equal time slices
+derives a slice-specific footprint for each time slice
+evaluates each slice for evidence of lasting meaningful change
+classifies each slice as valid, invalid, or undetermined
+retains valid slices
+discards invalid slices
+passes undetermined slices forward for further refinement
+Non-responsibilities
+recursively refine undetermined slices to the minimum threshold
+construct clips
+merge retained slices into final outputs
+define the final stopping rule
+First split rule
+By default, Stage 4 splits each surviving union in half, creating two equal time slices. If a surviving union is already at or below the minimum allowed subdivision size, Stage 4 does not force a split and instead evaluates it as a single time slice.
+Minimum-size crossing rule
+A surviving union that is still above the minimum allowed subdivision size may be split even if the resulting time slices fall below that minimum.
+The minimum allowed subdivision size prevents further splitting once a slice has reached that size or smaller. It does not forbid the final split that first crosses below it.
+Comparison region rule
+Stage 4 evaluates each time slice using its own slice-specific footprint. It should not use the whole union footprint for slice-level classification, because Stage 4 is the first stage that attempts internal precision rather than whole-union screening.
+Local comparison-state rule
+For Stage 4, the relevant before state for a time slice is taken from a short local comparison window immediately before the slice begins, and the relevant after state is taken from a short local comparison window immediately after the slice ends.
+For the current default design, each local comparison window should use up to 10 frames of nearby material.
+These comparison windows must lie outside the slice’s own time range and should be as close as practical to the slice being evaluated.
+Stage 4 uses these local comparison windows to judge whether settled sub-regions within the slice footprint show meaningful lasting change.
+Unlike Stage 3, Stage 4 does not require broad quiet-region windows around the whole surviving union. Its comparison context is local to the time slice being classified.
+For the current default design, a local comparison window should be treated as too contaminated to trust when the nearby comparison region remains too active to support a settled before/after judgment.
+If the local comparison context is too contaminated, too active, or too unclear to support a confident decision, the slice should tend toward undetermined rather than being forced directly to valid or invalid.
+Design Note: Stage 3 performs coarse whole-union screening, while Stage 4 and Stage 5 perform local slice-level and sub-time-slice-level comparison. The slice-level stages therefore use nearby local comparison windows rather than broad union-level quiet-region windows.
+
+
+Local comparison-state construction rule
+For the first implementation, Stage 4 and Stage 5 should construct local comparison states from the nearest locally trustworthy material on each side of the slice or sub-time-slice being evaluated.
+
+Before-side construction rule
+The local before state should be taken from the nearest eligible locally trustworthy run that lies immediately before the evaluated slice and outside that slice's own time range.
+If more than one locally trustworthy before run is available within the allowed nearby comparison window, Stage 4 and Stage 5 should prefer the nearest one.
+The representative before state should then be taken from the frame closest to the slice boundary within that nearest trustworthy before run.
+
+After-side construction rule
+The local after state should be taken from the nearest eligible locally trustworthy run that lies immediately after the evaluated slice and outside that slice's own time range.
+If more than one locally trustworthy after run is available within the allowed nearby comparison window, Stage 4 and Stage 5 should prefer the nearest one.
+The representative after state should then be taken from the frame closest to the slice boundary within that nearest trustworthy after run.
+
+Contamination rule
+If no sufficiently trustworthy local before state or after state can be constructed within the allowed nearby comparison window because the local comparison region remains too active, too obscured, or too unstable, the slice should tend toward undetermined rather than forcing valid or invalid classification from contaminated local comparison material.
+
+Stage 5 note:
+The same local comparison-state construction rule should apply recursively in Stage 5 unless a later Stage 5-specific rule explicitly overrides it.
+
+Design note:
+This rule exists to make local slice comparison deterministic while still keeping Stage 4 and Stage 5 local and lightweight compared with Stage 3.
+
+
+Slice footprint rule
+A slice footprint is derived from the movement evidence records whose evaluation points fall within that slice’s time range. The slice footprint is the set of all grid coordinates touched by those movement evidence records.
+Slice footprint inclusion rule
+A grid coordinate belongs to a slice footprint if it appears in at least one movement evidence record within that slice’s time range.
+Classification rule
+A time slice is valid if its lasting change evidence score is greater than or equal to the valid threshold.
+A time slice is invalid if its lasting change evidence score is less than or equal to the invalid threshold.
+A time slice is undetermined if its lasting change evidence score falls within the undetermined classification band.
+A time slice with no meaningful footprint support cannot be classified as valid.
+
+Low-footprint rule
+A time slice with little or no meaningful footprint support cannot be classified as valid.
+If the time slice shows no meaningful lasting change and no meaningful unsettled activity, it should be classified as invalid.
+If the time slice still contains activity that is too weak, too sparse, or too unsettled to support a clear valid or invalid decision, it should be classified as undetermined and passed forward for further refinement.
+This rule prevents weak or nearly empty slice footprints from being treated as valid while still allowing genuinely unclear cases to remain unresolved until further refinement.
+
+Initial default classification parameters
+For initial implementation and benchmark testing, Stage 4 should use:
+Valid Threshold = 0.70
+Invalid Threshold = 0.30
+Undetermined Classification Band = (0.30, 0.70)
+Minimum Allowed Subdivision Size = 00:00:00:15
+These are starting defaults, not final truths, and may be tuned later through benchmark testing.
+Classification bias
+Stage 4 should prefer classifying borderline slices as undetermined rather than invalid. Its role is to identify clearly valid material, clearly invalid material, and unresolved material that needs further refinement.
+Local settlement principle
+Stage 4 evaluates lasting change at the level of settled sub-regions within the slice footprint, not only by comparing the slice footprint as one broad whole. Areas that are still actively changing at the end of the slice should not be treated as evidence of settled lasting change.
+Unsettled-region ruleIf part or all of a slice footprint is still visibly active or still obscured by ongoing motion at the end of the slice, that area does not count as settled evidence for valid classification. A slice with no settled sub-regions cannot be classified as valid on that basis alone. If the slice is still too active or unclear to judge, it should be classified as undetermined and passed forward for further refinement. If it shows no meaningful lasting change, it should be classified as invalid.
+This means Stage 4 should inspect the slice footprint internally and evaluate local settled sub-regions within it, rather than treating the entire footprint as a single uniformly settled area.
+Design principles for Stage 4
+Stage 4 is the first precision stage
+it should classify slices, not whole unions
+it should use slice-specific footprints
+it should avoid forcing premature invalid decisions
+it should pass mixed or unclear material forward as undetermined
+it should remain consistent with the minimum subdivision rules defined later in Stage 5
+it should refine movement evidence carried forward from earlier stages rather than recomputing movement evidence from the raw video from scratch
+Placeholder tuning guidance
+The exact numeric parameters for Stage 4 are still tuning parameters, not final design truths. These include:
+the minimum allowed subdivision size
+the exact rule for interpreting lasting-change evidence within a slice
+the threshold for valid classification
+the threshold for invalid classification
+the undetermined classification band
+These values should be defined separately as tunable parameters, not embedded into the conceptual definition itself.
+Open parameter questions
+The exact placeholder values still need to be chosen for:
+minimum allowed subdivision size
+slice-level lasting-change interpretation rule
+valid threshold
+invalid threshold
+undetermined classification band
+These are tuning parameters, not conceptual definitions.
+
+Stage 5: Recursive Refinement
+Purpose
+Stage 5 takes each undetermined slice from Stage 4 and refines it further by subdividing it into smaller sub-time slices. Its role is to resolve as much ambiguous material as possible into valid or invalid results, while allowing temporary undetermined states only until refinement reaches the minimum allowed subdivision size. Any remaining unresolved material must then be forced into boundary or invalid.
+Stage 5 does not construct final clips.
+Inputs
+the list of undetermined slices from Stage 4
+the movement evidence records associated with each undetermined slice
+the slice-level metadata carried forward from Stage 4, including:
+start_time
+end_time
+slice_footprint
+slice_footprint_size
+classification
+Outputs
+A refined set of sub-time slices. Each sub-time slice stores:
+start_time
+end_time
+sub_time_slice_footprint
+sub_time_slice_footprint_size
+classification
+Each sub-time slice is classified as:
+valid
+invalid
+undetermined
+At the end of Stage 5, the retained material consists of:
+valid slices or sub-time slices
+boundary slices created from unresolved minimum-size material that is retained as edge support
+Invalid slices or sub-time slices are discarded and do not move forward into Stage 6.
+
+Responsibilities
+processes each undetermined slice independently
+splits each undetermined slice in half by default
+derives a sub-time-slice-specific footprint for each resulting sub-time slice
+evaluates each sub-time slice for evidence of lasting meaningful change
+classifies each one as valid, invalid, or undetermined
+repeats this process recursively for any sub-time slice that remains undetermined
+stops refinement when the minimum allowed subdivision size is reached and then forces any remaining unresolved material into boundary or invalid
+
+Non-responsibilities
+merge retained material into final clips
+apply final clip-construction rules
+revisit earlier union-level decisions
+Split rule
+By default, Stage 5 splits each undetermined slice in half, creating two equal sub-time slices. If a sub-time slice is already at or below the minimum allowed subdivision size, Stage 5 does not split it further.
+Minimum-size crossing rule
+An undetermined slice that is still above the minimum allowed subdivision size may be split even if the resulting sub-time slices fall below that minimum.
+The minimum allowed subdivision size prevents further splitting once a sub-time slice has reached that size or smaller. It does not forbid the final split that first crosses below it.
+Sub-time-slice footprint rule
+A sub-time-slice footprint is derived from the movement evidence records whose evaluation points fall within that sub-time slice’s time range. The sub-time-slice footprint is the set of all grid coordinates touched by those movement evidence records.
+Sub-time-slice footprint inclusion rule
+A grid coordinate belongs to a sub-time-slice footprint if it appears in at least one movement evidence record within that sub-time slice’s time range.
+
+Local comparison-state rule
+For Stage 5, the relevant before state for a sub-time slice is taken from a short local comparison window immediately before the sub-time slice begins, and the relevant after state is taken from a short local comparison window immediately after the sub-time slice ends.
+For the current default design, each local comparison window should use up to 10 frames of nearby material, while never exceeding the size of the sub-time slice being evaluated.
+These comparison windows must lie outside the sub-time slice’s own time range and should be as close as practical to the sub-time slice being evaluated.
+Stage 5 uses these local comparison windows to judge whether settled sub-regions within the sub-time-slice footprint show meaningful lasting change.
+Stage 5 follows the same local comparison model as Stage 4, but at finer temporal precision.
+For the current default design, a local comparison window should be treated as too contaminated to trust when the nearby comparison region remains too active to support a settled before/after judgment.
+If the local comparison context is too contaminated, too active, or too unclear to support a confident decision, the sub-time slice should remain undetermined until further refinement or final stopping-rule resolution.
+Design Note: Stage 3 performs coarse whole-union screening, while Stage 4 and Stage 5 perform local slice-level and sub-time-slice-level comparison. The slice-level stages therefore use nearby local comparison windows rather than broad union-level quiet-region windows.
+Classification rule
+A sub-time slice is valid if its lasting change evidence score is greater than or equal to the valid threshold.
+A sub-time slice is invalid if its lasting change evidence score is less than or equal to the invalid threshold.
+A sub-time slice is undetermined if its lasting change evidence score falls within the undetermined classification band.
+A sub-time slice with no meaningful footprint support cannot be classified as valid.
+
+Low-footprint rule
+A sub-time slice with little or no meaningful footprint support cannot be classified as valid.
+If the sub-time slice shows no meaningful lasting change and no meaningful unsettled activity, it should be classified as invalid.
+If the sub-time slice still contains activity that is too weak, too sparse, or too unsettled to support a clear valid or invalid decision, it should remain undetermined until further refinement or final stopping-rule resolution.
+This rule prevents weak or nearly empty sub-time-slice footprints from being treated as valid while still allowing genuinely unclear cases to remain unresolved until the stopping rule forces a final outcome.
+
+Initial default classification parameters
+For initial implementation and benchmark testing, Stage 5 should use:
+Valid Threshold = 0.70
+Invalid Threshold = 0.30
+Undetermined Classification Band = (0.30, 0.70)
+Minimum Allowed Subdivision Size = 00:00:00:15
+These are starting defaults, not final truths, and may be tuned later through benchmark testing.
+Classification bias
+Stage 5 should prefer classifying borderline sub-time slices as undetermined rather than invalid, until the minimum allowed subdivision size is reached.
+Stopping rule
+When an undetermined sub-time slice reaches the minimum allowed subdivision size, recursive refinement stops and the slice must be finally resolved as either boundary or invalid.
+At that point:
+the sub-time slice becomes a boundary slice if it is directly adjacent in time to at least one valid slice or valid sub-time slice
+the sub-time slice becomes invalid if it is isolated and not directly attached to valid material
+For this rule, directly adjacent in time means that the unresolved sub-time slice touches a valid slice or valid sub-time slice with no gap between them.
+Adjacency may occur on either side of the valid material.
+Support definition note: For the current default design, meaningful support at the Stage 5 stopping rule is defined operationally by direct temporal adjacency to valid material.
+This means unresolved minimum-size material becomes boundary only when it directly touches valid material in time, rather than from a broader or more subjective notion of support.
+This stopping rule is evaluated before any Stage 6 lead-in or tail-after expansion is applied.
+
+Stage 5 stopping-order rule
+When Stage 5 reaches the minimum allowed subdivision size, boundary or invalid conversion should be evaluated only after all directly neighboring minimum-size units at that decision frontier have been classified.
+This means Stage 5 should not assign boundary or invalid status prematurely during traversal before the classification state of the relevant neighboring units is known.
+A minimum-size unresolved unit should become boundary only when, after that local frontier is evaluated, it is directly adjacent in time to valid material.
+If it is not directly adjacent in time to valid material after that frontier-level evaluation is complete, it should become invalid.
+Design note:
+This rule exists to prevent traversal order from changing final Stage 5 boundary outcomes.
+
+Evidence reuse rule
+Stage 5 refines the movement evidence and slice metadata carried forward from earlier stages rather than re-scanning raw video from scratch by default.
+Local settlement principle
+Stage 5 evaluates lasting change at the level of settled sub-regions within the sub-time-slice footprint, not only by comparing the footprint as one broad whole. Areas that are still actively changing at the end of the sub-time slice should not be treated as evidence of settled lasting change.
+Unsettled-region rule
+If part or all of a sub-time-slice footprint is still visibly active or still obscured by ongoing motion at the end of the sub-time slice, that area does not count as settled evidence for valid classification. A sub-time slice with no settled sub-regions cannot be classified as valid on that basis alone. If the sub-time slice is still too active or unclear to judge, it should remain undetermined until further refinement or final stopping-rule resolution. If it shows no meaningful lasting change, it should be classified as invalid.
+This means Stage 5 should inspect the sub-time-slice footprint internally and evaluate local settled sub-regions within it, rather than treating the entire footprint as a single uniformly settled area.
+Design principles for Stage 5
+Stage 5 continues the refinement model established in Stage 4
+it should increase temporal precision gradually
+it should avoid forcing premature invalid decisions
+it should convert unresolved minimum-size material into boundary only when it meaningfully supports nearby valid material
+Placeholder tuning guidance
+The exact numeric parameters for Stage 5 are still tuning parameters, not final design truths. These include:
+the minimum allowed subdivision size
+the threshold for valid classification
+the threshold for invalid classification
+the undetermined classification band
+the adjacency rule used by the stopping rule
+These values should be defined separately as tunable parameters, not embedded into the conceptual definition itself.
+Open parameter questions
+The exact placeholder values still need to be chosen for:
+minimum allowed subdivision size
+valid threshold
+invalid threshold
+undetermined classification band
+adjacency rule for converting minimum-size unresolved sub-time slices into boundary
+These are tuning parameters, not conceptual definitions.
+
+
+Stage 6: Final Clip Construction
+Purpose
+Stage 6 takes the valid and boundary material produced by refinement and constructs the final clips.
+Its role is to:
+gather all retained units
+merge nearby retained units into pre-clips
+apply lead-in and tail-after to each pre-clip
+merge any expanded clips that overlap or touch
+output the final clip ranges
+Stage 6 is the first stage that creates output intended for export or editing use.
+Inputs
+valid time slices
+valid sub-time slices
+boundary slices
+Together, these form the retained material used by Stage 6.
+Outputs
+A list of final clips.
+Each clip stores:
+start_time
+end_time
+Responsibilities
+Stage 6:
+collects all retained units
+orders them chronologically
+merges nearby retained units into pre-clips using the merge rule
+ensures each pre-clip contains at least one valid slice and is not formed from boundary material alone
+applies lead-in and tail-after to each pre-clip
+merges any expanded clips that overlap or touch
+outputs the final clip list
+Non-responsibilities
+Stage 6 does not:
+classify material as valid, invalid, undetermined, or boundary.
+refine unresolved material further
+revisit earlier union or slice decisions
+Pre-clip rule
+A pre-clip is formed by merging nearby retained units that are close enough in time to belong together under the merge rule.
+A pre-clip must contain at least one valid slice.
+Boundary material may contribute to a pre-clip, but may not form a pre-clip on its own.
+Merge rule
+Two retained units may merge into the same pre-clip when:
+they overlap in time
+or they touch
+or the gap between them is no greater than the maximum merge gap
+The maximum merge gap should be small and conservative, because boundary material already provides a buffer around valid material.
+Union-lineage rule
+Stage 6 is allowed to merge retained units across original surviving union boundaries when the normal merge rule is satisfied.
+Candidate unions and surviving unions are analysis containers, not final clip boundaries.
+A final clip may therefore include retained material that originated from more than one surviving union, provided the merged result still contains at least one valid slice and does not violate the normal merge constraints.
+Lead-in and tail-after rule
+Lead-in and tail-after are applied after retained units have already been merged into a pre-clip.
+They are not used to decide whether retained units should merge.
+This keeps the merge logic structural and the lead-in / tail-after logic editorial.
+Post-expansion merge rule
+If lead-in and tail-after expansion causes two clips to overlap or touch, they are merged into a single final clip.
+This avoids duplicated overlapping footage and keeps the final output clean.
+Testing rule
+During testing and validation, lead-in and tail-after may be set to zero so that the underlying merge and refinement behavior can be inspected without editorial expansion masking errors.
+Design principles for Stage 6
+Stage 6 should follow these principles:
+Stage 6 performs construction, not classification
+every final clip must contain at least one valid slice and may not be formed from boundary material alone
+boundary material may support a clip, but may not create one on its own
+merge decisions should be conservative
+lead-in and tail-after should be applied after pre-clips are formed
+overlapping expanded clips should merge into one final clip
+Placeholder tuning guidance
+The exact numeric parameters for Stage 6 are still tuning parameters, not final design truths.
+These include:
+the maximum merge gap
+the lead-in duration
+the tail-after duration
+These values should be defined separately as tunable parameters, not embedded into the conceptual definition itself.
+Implementation note: Final clip boundaries should not extend beyond the actual start or end of the source footage.
+Open parameter questions
+The exact placeholder values still need to be chosen for:
+maximum merge gap
+lead-in duration
+tail-after duration
+These are tuning parameters, not conceptual definitions.
