@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # SECTION A - Interactive Prompt Helpers
 # ============================================================
 
@@ -98,7 +98,7 @@ $defaultSampleStride = '1'
 $defaultActivityThreshold = '8.0'
 $defaultActivePixelRatio = '0.0015'
 $defaultMinBurst = '00:00:00:10'
-$defaultUseStagedDetector = $true
+$defaultUseLegacyDetector = $false
 
 Write-Host ''
 Write-Host 'Interactive harvesting tool runner' -ForegroundColor Cyan
@@ -106,6 +106,10 @@ Write-Host 'Leave any prompt blank to accept the default shown in brackets.'
 Write-Host ''
 
 $videoPath = Read-HostWithDefault -Prompt 'Video path' -DefaultValue $defaultVideoPath
+$precomputedMovementEvidenceJson = Read-Host 'Pre-made Stage 1A Movement Evidence Record.json path (leave blank to scan video)'
+if (-not [string]::IsNullOrWhiteSpace($precomputedMovementEvidenceJson)) {
+    $precomputedMovementEvidenceJson = $precomputedMovementEvidenceJson.Trim()
+}
 $videoBaseName = [System.IO.Path]::GetFileNameWithoutExtension($videoPath)
 $defaultStemName = if ([string]::IsNullOrWhiteSpace($videoBaseName)) { 'harvest_run' } else { "$videoBaseName`_harvest" }
 $stemNameInput = Read-HostWithDefault -Prompt 'Output name stem (file-name only, no extension)' -DefaultValue $defaultStemName
@@ -132,7 +136,7 @@ $sampleStride = Read-HostWithDefault -Prompt 'Sample stride' -DefaultValue $defa
 $activityThreshold = Read-HostWithDefault -Prompt 'Activity threshold' -DefaultValue $defaultActivityThreshold
 $activePixelRatio = Read-HostWithDefault -Prompt 'Active pixel ratio' -DefaultValue $defaultActivePixelRatio
 $minBurst = Read-HostWithDefault -Prompt 'Minimum burst duration' -DefaultValue $defaultMinBurst
-$useStagedDetector = Read-YesNoWithDefault -Prompt 'Use staged detector' -DefaultValue $defaultUseStagedDetector
+$useLegacyDetector = Read-YesNoWithDefault -Prompt 'Use legacy detector instead of V3 staged detector' -DefaultValue $defaultUseLegacyDetector
 
 $outputStem = Join-Path $runOutputRoot $safeStemName
 $debugStem = Join-Path $runOutputRoot ($safeStemName + '_debug')
@@ -145,7 +149,10 @@ Write-Host "  Chapter: $chapterStart -> $chapterEnd"
 Write-Host "  Output stem: $outputStem"
 Write-Host "  Debug stem: $debugStem"
 Write-Host "  Resolve timeline name: $resolveTimelineName"
-Write-Host "  Use staged detector: $useStagedDetector"
+Write-Host "  Use legacy detector: $useLegacyDetector"
+if (-not [string]::IsNullOrWhiteSpace($precomputedMovementEvidenceJson)) {
+    Write-Host "  Pre-made Stage 1A record: $precomputedMovementEvidenceJson"
+}
 Write-Host ''
 
 $shouldRun = Read-YesNoWithDefault -Prompt 'Start the harvesting tool now' -DefaultValue $true
@@ -202,8 +209,12 @@ $engineArgs = @(
     '-ResolveTimelineName', $resolveTimelineName
 )
 
-if ($useStagedDetector) {
-    $engineArgs += '-UseStagedDetector'
+if (-not [string]::IsNullOrWhiteSpace($precomputedMovementEvidenceJson)) {
+    $engineArgs += '-PrecomputedMovementEvidenceJson'
+    $engineArgs += $precomputedMovementEvidenceJson
+}
+if ($useLegacyDetector) {
+    $engineArgs += '-UseLegacyDetector'
 }
 
 Write-Host ''
@@ -224,3 +235,5 @@ else {
 
 Read-Host 'Press Enter to close'
 exit $exitCode
+
+

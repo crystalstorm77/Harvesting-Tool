@@ -4,8 +4,11 @@
 # SECTION A - Imports And Reused Detection Primitives
 # ============================================================
 
+from bisect import bisect_left
 from collections import deque
 from dataclasses import dataclass, replace
+import json
+import numpy as np
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -53,6 +56,7 @@ GridCoordinate = tuple[int, int]
 STAGE1_OPEN_WINDOW_RECORDS = 3
 STAGE1_OPEN_MIN_ACTIVE_RECORDS = 2
 STAGE1_CLOSE_INACTIVE_RECORDS = 3
+STAGE3_REFERENCE_CANDIDATE_STEP_FRAMES = 2
 STRONG_CONTINUITY_GAP_FRAMES = 10
 MAX_UNION_GAP_FRAMES = FRAME_RATE
 MAX_SPATIAL_DISTANCE_CELLS = 2
@@ -66,6 +70,8 @@ STAGE3_ART_STATE_BEFORE_WINDOW_FRAMES = 10
 STAGE3_ART_STATE_AFTER_DELAY_FRAMES = 5
 STAGE3_ART_STATE_AFTER_WINDOW_FRAMES = 10
 STAGE3_ART_STATE_MIN_SAMPLES = 2
+STAGE3_ART_STATE_SIMPLE_SEARCH_FRAMES = FRAME_RATE * 10
+STAGE3_ART_STATE_RESCUE_SEARCH_FRAMES = FRAME_RATE * 30
 STAGE3_ART_STATE_SEARCH_FRAMES = FRAME_RATE * 3
 STAGE3_ART_STATE_SEARCH_MARGIN_FRAMES = 3
 STAGE3_ART_STATE_LOCAL_WINDOW_DISTANCE_FRAMES = FRAME_RATE
@@ -214,6 +220,7 @@ class ScreenedCandidateUnion:
     stage3_reveal_window_start: str | None = None
     stage3_reveal_window_end: str | None = None
     stage3_reveal_window_hold_score: float = 0.0
+    stage3_debug_trace: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -392,7 +399,7 @@ def detect_movement_evidence_records(
     chapter_range: ChapterRange,
     settings: DetectorSettings,
     progress_callback: Callable[[int], None] | None = None,
-) -> list[MovementEvidenceRecord]:
+) -> tuple[list[MovementEvidenceRecord], list[dict[str, object]]]:
     try:
         import cv2  # type: ignore
     except ImportError as exc:  # pragma: no cover
@@ -404,6 +411,7 @@ def detect_movement_evidence_records(
 
     recent_persistent_masks: deque = deque(maxlen=TRAIL_MASK_WINDOW)
     sampled_frames: deque[dict[str, object]] = deque(maxlen=3)
+    retained_stage3_samples: list[dict[str, object]] = []
     records: list[MovementEvidenceRecord] = []
     last_progress_percent = -PROGRESS_STEP_PERCENT
     record_index = 1
@@ -423,7 +431,19 @@ def detect_movement_evidence_records(
                 last_percent=last_progress_percent,
             )
             if ((current_frame - chapter_range.start.total_frames) % settings.sample_stride) == 0:
-                sampled_frames.append({'frame_index': current_frame, 'gray': extract_canvas_region(frame, cv2)})
+                canvas_gray = extract_canvas_region(frame, cv2)
+                stage1_sample = {
+                    'frame_index': current_frame,
+                    'gray': canvas_gray,
+                }
+                sampled_frames.append(stage1_sample)
+                retained_stage3_samples.append(
+                    {
+                        'frame_index': current_frame,
+                        'canvas_gray': canvas_gray,
+                        'art_gray': extract_art_state_region(canvas_gray),
+                    }
+                )
                 if len(sampled_frames) == 3:
                     records.append(
                         build_movement_evidence_record(
@@ -454,7 +474,7 @@ def detect_movement_evidence_records(
     finally:
         capture.release()
 
-    return records
+    return records, retained_stage3_samples
 
 
 
@@ -567,8 +587,8 @@ def build_stage1_movement_spans(
 # ============================================================
 
 
-MAX_STAGE2_EXPANSION_ABSOLUTE_CELLS = 6
-MAX_STAGE2_EXPANSION_GROWTH_RATIO = 0.25
+MAX_STAGE2_WEAK_PATH_NEW_CELL_GROWTH = 4
+MIN_STAGE2_WEAK_PATH_ATTACHMENT_RATIO = 0.50
 
 
 
@@ -609,18 +629,45 @@ def span_has_spatial_support(
 
 
 
+def compute_stage2_new_cells(
+    current_union_footprint: frozenset[GridCoordinate],
+    next_span_footprint: frozenset[GridCoordinate],
+) -> frozenset[GridCoordinate]:
+    return frozenset(
+        coordinate for coordinate in next_span_footprint
+        if coordinate not in current_union_footprint
+    )
+
+
+
+def compute_stage2_new_cell_attachment_ratio(
+    current_union_footprint: frozenset[GridCoordinate],
+    new_cells: frozenset[GridCoordinate],
+) -> float:
+    if not new_cells:
+        return 1.0
+
+    attached_cells = sum(
+        1
+        for coordinate in new_cells
+        if span_has_spatial_support(frozenset({coordinate}), current_union_footprint)
+    )
+    return attached_cells / len(new_cells)
+
+
+
 def merge_causes_large_stage2_expansion(
     current_union_footprint: frozenset[GridCoordinate],
     next_span_footprint: frozenset[GridCoordinate],
 ) -> bool:
     if not current_union_footprint:
         return False
-    merged_union_footprint = current_union_footprint.union(next_span_footprint)
-    new_cells_added = len(merged_union_footprint) - len(current_union_footprint)
-    growth_ratio = new_cells_added / max(1, len(current_union_footprint))
+
+    new_cells = compute_stage2_new_cells(current_union_footprint, next_span_footprint)
+    attachment_ratio = compute_stage2_new_cell_attachment_ratio(current_union_footprint, new_cells)
     return (
-        new_cells_added > MAX_STAGE2_EXPANSION_ABSOLUTE_CELLS
-        and growth_ratio > MAX_STAGE2_EXPANSION_GROWTH_RATIO
+        len(new_cells) > MAX_STAGE2_WEAK_PATH_NEW_CELL_GROWTH
+        and attachment_ratio < MIN_STAGE2_WEAK_PATH_ATTACHMENT_RATIO
     )
 
 
@@ -656,13 +703,12 @@ def build_stage2_candidate_unions(
         previous_span = current_spans[-1]
         temporal_gap = next_span.start_frame - previous_span.end_frame
         union_footprint = frozenset(current_footprint)
-        previous_span_support = span_has_spatial_support(next_span.footprint, previous_span.footprint)
         union_support = span_has_spatial_support(next_span.footprint, union_footprint)
-        large_expansion = merge_causes_large_stage2_expansion(union_footprint, next_span.footprint)
+        weak_path_blocked_by_guardrail = merge_causes_large_stage2_expansion(union_footprint, next_span.footprint)
         should_merge = False
-        if temporal_gap <= STRONG_CONTINUITY_GAP_FRAMES and previous_span_support and not large_expansion:
+        if temporal_gap <= STRONG_CONTINUITY_GAP_FRAMES:
             should_merge = True
-        elif temporal_gap <= MAX_UNION_GAP_FRAMES and previous_span_support and union_support and not large_expansion:
+        elif temporal_gap <= MAX_UNION_GAP_FRAMES and union_support and not weak_path_blocked_by_guardrail:
             should_merge = True
 
         if should_merge:
@@ -693,6 +739,86 @@ def collect_records_in_frame_range(
 
 
 
+
+def build_stage3_runtime_context(
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        'ordered_records': ordered_records,
+        'record_frame_indices': [record.frame_index for record in ordered_records],
+        'sampled_frames': sampled_frames,
+        'sample_frame_indices': [int(sample['frame_index']) for sample in sampled_frames],
+        'record_range_cache': {},
+        'sample_range_cache': {},
+        'window_metadata_cache': {},
+        'window_active_coordinate_cache': {},
+        'cell_movement_cache': {},
+        'outside_footprint_cache': {},
+        'outside_coordinate_cache': {},
+        'cell_trust_cache': {},
+    }
+
+
+def get_stage3_window_records(
+    stage3_context: dict[str, object] | None,
+    ordered_records: list[MovementEvidenceRecord],
+    window_start: int,
+    window_end: int,
+) -> list[MovementEvidenceRecord]:
+    if stage3_context is None:
+        return collect_records_in_frame_range(ordered_records, window_start, window_end)
+    cache = stage3_context['record_range_cache']
+    cache_key = (window_start, window_end)
+    if cache_key not in cache:
+        frame_indices = stage3_context['record_frame_indices']
+        start_index = bisect_left(frame_indices, window_start)
+        end_index = bisect_left(frame_indices, window_end)
+        cache[cache_key] = ordered_records[start_index:end_index]
+    return cache[cache_key]
+
+
+def get_stage3_window_samples(
+    stage3_context: dict[str, object] | None,
+    sampled_frames: list[dict[str, object]],
+    window_start: int,
+    window_end: int,
+) -> list[dict[str, object]]:
+    if stage3_context is None:
+        return collect_window_samples(sampled_frames, window_start, window_end)
+    cache = stage3_context['sample_range_cache']
+    cache_key = (window_start, window_end)
+    if cache_key not in cache:
+        frame_indices = stage3_context['sample_frame_indices']
+        start_index = bisect_left(frame_indices, window_start)
+        end_index = bisect_left(frame_indices, window_end)
+        cache[cache_key] = sampled_frames[start_index:end_index]
+    return cache[cache_key]
+
+def get_stage3_window_active_coordinates(
+    stage3_context: dict[str, object] | None,
+    ordered_records: list[MovementEvidenceRecord],
+    window_start: int,
+    window_end: int,
+) -> frozenset[GridCoordinate]:
+    if stage3_context is None:
+        return frozenset(
+            coordinate
+            for record in ordered_records
+            if window_start <= record.frame_index < window_end and record.movement_present
+            for coordinate in record.touched_grid_coordinates
+        )
+    cache = stage3_context['window_active_coordinate_cache']
+    cache_key = (window_start, window_end)
+    if cache_key not in cache:
+        cache[cache_key] = frozenset(
+            coordinate
+            for record in get_stage3_window_records(stage3_context, ordered_records, window_start, window_end)
+            if record.movement_present
+            for coordinate in record.touched_grid_coordinates
+        )
+    return cache[cache_key]
+
 def average_record_score(records: Iterable[MovementEvidenceRecord], attribute_name: str) -> float:
     selected_records = list(records)
     if not selected_records:
@@ -713,7 +839,37 @@ def collect_stage3_art_state_samples(
     video_path: Path,
     chapter_range: ChapterRange,
     settings: DetectorSettings,
+    status_callback: Callable[[str], None] | None = None,
+    precomputed_samples: list[dict[str, object]] | None = None,
+    reuse_source_description: str | None = None,
 ) -> list[dict[str, object]]:
+    total_frames = max(0, chapter_range.end.total_frames - chapter_range.start.total_frames)
+    expected_sample_count = 0 if total_frames <= 0 else ((total_frames - 1) // max(1, settings.sample_stride)) + 1
+    progress_interval = max(1, expected_sample_count // 20) if expected_sample_count > 0 else 1
+    last_reported_sample_count = 0
+    stage_started_at = time.perf_counter()
+
+    if precomputed_samples is not None:
+        sampled_frames = list(precomputed_samples)
+        for sampled_frame_count in range(1, len(sampled_frames) + 1):
+            should_report_progress = (
+                status_callback is not None
+                and (
+                    sampled_frame_count == 1
+                    or sampled_frame_count == len(sampled_frames)
+                    or (sampled_frame_count - last_reported_sample_count) >= progress_interval
+                )
+            )
+            if should_report_progress:
+                last_reported_sample_count = sampled_frame_count
+                elapsed = format_stage_elapsed(time.perf_counter() - stage_started_at)
+                status_callback(
+                    f"Runtime Stage 2B - Collecting Stage 3 art-state samples: "
+                    f"{sampled_frame_count}/{max(1, expected_sample_count)} sampled frames "
+                    f"(elapsed {elapsed}; {reuse_source_description or 'reusing precomputed Stage 3 art-state samples'})"
+                )
+        return sampled_frames
+
     try:
         import cv2  # type: ignore
     except ImportError as exc:  # pragma: no cover
@@ -740,6 +896,23 @@ def collect_stage3_art_state_samples(
                         'art_gray': extract_art_state_region(canvas_gray),
                     }
                 )
+                sampled_frame_count = len(sampled_frames)
+                should_report_progress = (
+                    status_callback is not None
+                    and (
+                        sampled_frame_count == 1
+                        or sampled_frame_count == expected_sample_count
+                        or (sampled_frame_count - last_reported_sample_count) >= progress_interval
+                    )
+                )
+                if should_report_progress:
+                    last_reported_sample_count = sampled_frame_count
+                    elapsed = format_stage_elapsed(time.perf_counter() - stage_started_at)
+                    status_callback(
+                        f"Runtime Stage 2B - Collecting Stage 3 art-state samples: "
+                        f"{sampled_frame_count}/{expected_sample_count} sampled frames "
+                        f"(elapsed {elapsed})"
+                    )
             current_frame += 1
     finally:
         capture.release()
@@ -836,6 +1009,12 @@ def build_stage3_reference_window_candidates(
     return candidates
 
 
+
+def get_stage3_reference_candidate_step_frames(settings: DetectorSettings) -> int:
+    return max(STAGE3_REFERENCE_CANDIDATE_STEP_FRAMES, settings.sample_stride)
+
+
+
 def score_stage3_reference_window(
     candidate_window: tuple[int, int],
     records: Iterable[MovementEvidenceRecord],
@@ -877,6 +1056,7 @@ def score_stage3_reference_window(
     }
 
 
+
 def select_stage3_art_state_reference_window(
     *,
     search_start: int,
@@ -886,12 +1066,13 @@ def select_stage3_art_state_reference_window(
     sampled_frames: list[dict[str, object]],
     settings: DetectorSettings,
     cv2,
+    stage3_context: dict[str, object] | None = None,
 ) -> tuple[dict[str, object] | None, int]:
     candidate_windows = build_stage3_reference_window_candidates(
         search_start,
         search_end,
         STAGE3_ART_STATE_BEFORE_WINDOW_FRAMES,
-        settings.sample_stride,
+        get_stage3_reference_candidate_step_frames(settings),
     )
     scored_candidates: list[dict[str, object]] = []
     for candidate_window in candidate_windows:
@@ -913,6 +1094,7 @@ def select_stage3_art_state_reference_window(
         key=lambda candidate: (candidate['quality_score'], -candidate['distance_frames']),
     )
     return best_candidate, len(candidate_windows)
+
 
 
 def build_stage3_reveal_search_range(
@@ -1224,193 +1406,962 @@ def screen_candidate_union(
 
 
 
-def screen_candidate_union_with_art_state_prototype(
-    candidate_union: CandidateUnion,
-    records: Iterable[MovementEvidenceRecord],
-    sampled_frames: list[dict[str, object]],
-    chapter_range: ChapterRange,
+def build_stage3_cell_art_state_masks(
+    footprint: frozenset[GridCoordinate],
+    canvas_shape: tuple[int, int],
+) -> dict[GridCoordinate, object]:
+    return {
+        coordinate: crop_canvas_mask_to_art_state(
+            build_canvas_footprint_mask_from_coordinates([coordinate], canvas_shape)
+        )
+        for coordinate in footprint
+    }
+
+
+
+def compute_stage3_cell_window_instability(
+    window_samples: list[dict[str, object]],
+    cell_art_state_mask,
     settings: DetectorSettings,
-    previous_union_end: int | None,
-    next_union_start: int | None,
     cv2,
-) -> ScreenedCandidateUnion:
-    ordered_records = sorted(records, key=lambda record: record.frame_index)
-    within_union_records = collect_records_in_frame_range(
+) -> float:
+    if len(window_samples) < 2:
+        return 0.0
+
+    instability_scores: list[float] = []
+    for sample_index in range(len(window_samples) - 1):
+        current_art_gray = window_samples[sample_index]['art_gray']
+        next_art_gray = window_samples[sample_index + 1]['art_gray']
+        instability_mask = build_art_state_change_mask(current_art_gray, next_art_gray, settings, cv2)
+        focused_instability_mask = cv2.bitwise_and(instability_mask, cell_art_state_mask)
+        instability_scores.append(compute_binary_mask_ratio(focused_instability_mask))
+    if not instability_scores:
+        return 0.0
+    return sum(instability_scores) / len(instability_scores)
+
+
+
+def cell_has_meaningful_movement_in_window(
+    ordered_records: list[MovementEvidenceRecord],
+    window_start: int,
+    window_end: int,
+    coordinate: GridCoordinate,
+    stage3_context: dict[str, object] | None = None,
+) -> bool:
+    if stage3_context is None:
+        return any(
+            record.movement_present and coordinate in record.touched_grid_coordinates
+            for record in ordered_records
+            if window_start <= record.frame_index < window_end
+        )
+    cache = stage3_context['cell_movement_cache']
+    cache_key = (coordinate, window_start, window_end)
+    if cache_key not in cache:
+        cache[cache_key] = any(
+            record.movement_present and coordinate in record.touched_grid_coordinates
+            for record in get_stage3_window_records(stage3_context, ordered_records, window_start, window_end)
+        )
+    return cache[cache_key]
+
+
+
+def window_has_meaningful_movement_outside_footprint(
+    ordered_records: list[MovementEvidenceRecord],
+    window_start: int,
+    window_end: int,
+    footprint: frozenset[GridCoordinate],
+    stage3_context: dict[str, object] | None = None,
+) -> bool:
+    if stage3_context is None:
+        return any(
+            record.movement_present
+            and any(coordinate not in footprint for coordinate in record.touched_grid_coordinates)
+            for record in ordered_records
+            if window_start <= record.frame_index < window_end
+        )
+    cache = stage3_context['outside_footprint_cache']
+    cache_key = (footprint, window_start, window_end)
+    if cache_key not in cache:
+        cache[cache_key] = any(
+            record.movement_present
+            and any(coordinate not in footprint for coordinate in record.touched_grid_coordinates)
+            for record in get_stage3_window_records(stage3_context, ordered_records, window_start, window_end)
+        )
+    return cache[cache_key]
+
+
+
+def build_stage3_endpoint_coordinates(
+    within_union_records: list[MovementEvidenceRecord],
+) -> frozenset[GridCoordinate]:
+    active_records = [
+        record
+        for record in within_union_records
+        if record.movement_present and record.touched_grid_coordinates
+    ]
+    if not active_records:
+        return frozenset()
+    latest_frame = max(record.frame_index for record in active_records)
+    return frozenset(
+        coordinate
+        for record in active_records
+        if record.frame_index == latest_frame
+        for coordinate in record.touched_grid_coordinates
+    )
+
+
+
+def build_stage3_cell_touch_frame_bounds(
+    footprint: frozenset[GridCoordinate],
+    within_union_records: list[MovementEvidenceRecord],
+) -> dict[GridCoordinate, dict[str, int]]:
+    bounds: dict[GridCoordinate, dict[str, int]] = {coordinate: {} for coordinate in footprint}
+    for record in within_union_records:
+        if not record.movement_present:
+            continue
+        for coordinate in record.touched_grid_coordinates:
+            if coordinate not in bounds:
+                continue
+            cell_bounds = bounds[coordinate]
+            cell_bounds.setdefault('first_touch_frame', record.frame_index)
+            cell_bounds['last_touch_frame'] = record.frame_index
+    return bounds
+
+
+
+def window_has_meaningful_movement_outside_coordinate(
+    ordered_records: list[MovementEvidenceRecord],
+    window_start: int,
+    window_end: int,
+    coordinate: GridCoordinate,
+    stage3_context: dict[str, object] | None = None,
+) -> bool:
+    if stage3_context is None:
+        return any(
+            record.movement_present
+            and any(other_coordinate != coordinate for other_coordinate in record.touched_grid_coordinates)
+            for record in ordered_records
+            if window_start <= record.frame_index < window_end
+        )
+    cache = stage3_context['outside_coordinate_cache']
+    cache_key = (coordinate, window_start, window_end)
+    if cache_key not in cache:
+        cache[cache_key] = any(
+            record.movement_present
+            and any(other_coordinate != coordinate for other_coordinate in record.touched_grid_coordinates)
+            for record in get_stage3_window_records(stage3_context, ordered_records, window_start, window_end)
+        )
+    return cache[cache_key]
+
+
+
+def stage3_cell_is_trustworthy_in_window(
+    coordinate: GridCoordinate,
+    window_start: int,
+    window_end: int,
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    cell_art_state_masks: dict[GridCoordinate, object],
+    footprint: frozenset[GridCoordinate],
+    require_external_movement: bool,
+    settings: DetectorSettings,
+    cv2,
+    stage3_context: dict[str, object] | None = None,
+) -> bool:
+    cache_key = None
+    if stage3_context is not None:
+        cache_key = (coordinate, window_start, window_end, footprint, require_external_movement)
+        trust_cache = stage3_context['cell_trust_cache']
+        if cache_key in trust_cache:
+            return trust_cache[cache_key]
+
+    window_samples = get_stage3_window_samples(stage3_context, sampled_frames, window_start, window_end)
+    if len(window_samples) < STAGE3_ART_STATE_MIN_SAMPLES:
+        result = False
+    elif cell_has_meaningful_movement_in_window(ordered_records, window_start, window_end, coordinate, stage3_context):
+        result = False
+    elif require_external_movement and not window_has_meaningful_movement_outside_footprint(
         ordered_records,
-        candidate_union.start_frame,
-        candidate_union.end_frame + 1,
-    )
-    (before_search_start, before_search_end), (after_search_start, after_search_end) = build_stage3_art_state_search_ranges(
-        candidate_union,
-        chapter_range,
-    )
-    selected_before_window, before_window_candidate_count = select_stage3_art_state_reference_window(
-        search_start=before_search_start,
-        search_end=before_search_end,
-        union_anchor_frame=candidate_union.start_frame,
-        records=ordered_records,
-        sampled_frames=sampled_frames,
-        settings=settings,
-        cv2=cv2,
-    )
-    selected_after_window, after_window_candidate_count = select_stage3_art_state_reference_window(
-        search_start=after_search_start,
-        search_end=after_search_end,
-        union_anchor_frame=candidate_union.end_frame,
-        records=ordered_records,
-        sampled_frames=sampled_frames,
-        settings=settings,
-        cv2=cv2,
-    )
-    before_window_start = selected_before_window["window_start"] if selected_before_window is not None else before_search_start
-    before_window_end = selected_before_window["window_end"] if selected_before_window is not None else before_search_start
-    after_window_start = selected_after_window["window_start"] if selected_after_window is not None else after_search_start
-    after_window_end = selected_after_window["window_end"] if selected_after_window is not None else after_search_start
-    reveal_search_start, reveal_search_end = build_stage3_reveal_search_range(
-        after_window_end,
-        chapter_range,
-        next_union_start,
-    )
-    selected_reveal_window, reveal_window_candidate_count = select_stage3_art_state_reference_window(
-        search_start=reveal_search_start,
-        search_end=reveal_search_end,
-        union_anchor_frame=after_window_end,
-        records=ordered_records,
-        sampled_frames=sampled_frames,
-        settings=settings,
-        cv2=cv2,
-    )
-    reveal_window_start = selected_reveal_window["window_start"] if selected_reveal_window is not None else reveal_search_start
-    reveal_window_end = selected_reveal_window["window_end"] if selected_reveal_window is not None else reveal_search_start
-    before_records = collect_records_in_frame_range(ordered_records, before_window_start, before_window_end)
-    after_records = collect_records_in_frame_range(ordered_records, after_window_start, after_window_end)
-    before_samples, pre_baseline = build_stage3_art_state_window_baseline(sampled_frames, before_window_start, before_window_end)
-    after_samples, post_baseline = build_stage3_art_state_window_baseline(sampled_frames, after_window_start, after_window_end)
-    reveal_samples, reveal_baseline = build_stage3_art_state_window_baseline(sampled_frames, reveal_window_start, reveal_window_end)
-
-    mean_movement_strength = average_record_score(within_union_records, 'movement_strength_score')
-    mean_temporal_persistence = average_record_score(within_union_records, 'temporal_persistence_score')
-    mean_spatial_extent = average_record_score(within_union_records, 'spatial_extent_score')
-    before_reference_activity = average_record_score(before_records, 'movement_strength_score')
-    after_reference_activity = average_record_score(after_records, 'movement_strength_score')
-    reference_windows_reliable = (
-        selected_before_window is not None
-        and selected_after_window is not None
-        and len(before_samples) >= STAGE3_ART_STATE_MIN_SAMPLES
-        and len(after_samples) >= STAGE3_ART_STATE_MIN_SAMPLES
-        and pre_baseline is not None
-        and post_baseline is not None
-    )
-    reveal_window_reliable = (
-        selected_reveal_window is not None
-        and len(reveal_samples) >= STAGE3_ART_STATE_MIN_SAMPLES
-        and reveal_baseline is not None
-    )
-
-    persistent_difference_score = 0.0
-    footprint_support_score = 0.0
-    after_window_persistence_score = 0.0
-    reveal_window_hold_score = 0.0
-    if reference_windows_reliable:
-        reference_canvas_shape = before_samples[0]['canvas_gray'].shape
-        canvas_footprint_mask = build_union_canvas_footprint_mask(candidate_union, reference_canvas_shape)
-        art_state_footprint_mask = crop_canvas_mask_to_art_state(canvas_footprint_mask)
-        art_state_change_mask = build_art_state_change_mask(pre_baseline, post_baseline, settings, cv2)
-        focused_change_mask = cv2.bitwise_and(art_state_change_mask, art_state_footprint_mask)
-        persistent_difference_score = compute_stage3_art_state_persistent_difference_score(
-            focused_change_mask,
-            candidate_union.union_footprint_size,
-            settings,
-        )
-        footprint_support_score = compute_stage3_art_state_footprint_support_score(
-            focused_change_mask,
-            candidate_union.union_footprint_size,
-        )
-        after_window_persistence_score = compute_stage3_art_state_after_window_persistence_score(
-            pre_baseline,
-            post_baseline,
-            after_samples,
-            art_state_footprint_mask,
-            candidate_union.union_footprint_size,
+        window_start,
+        window_end,
+        footprint,
+        stage3_context,
+    ):
+        result = False
+    else:
+        instability = compute_stage3_cell_window_instability(
+            window_samples,
+            cell_art_state_masks[coordinate],
             settings,
             cv2,
         )
-        if reveal_window_reliable:
-            reveal_window_hold_score = compute_stage3_art_state_reveal_hold_score(
-                pre_baseline,
-                post_baseline,
-                reveal_baseline,
-                reveal_samples,
-                art_state_footprint_mask,
-                candidate_union.union_footprint_size,
+        result = instability <= STAGE3_ART_STATE_MAX_INTERNAL_INSTABILITY
+
+    if stage3_context is not None and cache_key is not None:
+        stage3_context['cell_trust_cache'][cache_key] = result
+    return result
+
+
+def build_stage3_reference_window_metadata(
+    window_start: int,
+    window_end: int,
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    stage3_context: dict[str, object] | None = None,
+) -> dict[str, object]:
+    if stage3_context is not None:
+        cache = stage3_context['window_metadata_cache']
+        cache_key = (window_start, window_end)
+        if cache_key in cache:
+            return dict(cache[cache_key])
+
+    window_records = get_stage3_window_records(stage3_context, ordered_records, window_start, window_end)
+    window_samples = get_stage3_window_samples(stage3_context, sampled_frames, window_start, window_end)
+    metadata = {
+        'window_start': window_start,
+        'window_end': window_end,
+        'mean_window_activity': average_record_score(window_records, 'movement_strength_score'),
+        'sample_count': len(window_samples),
+    }
+    if stage3_context is not None:
+        stage3_context['window_metadata_cache'][(window_start, window_end)] = dict(metadata)
+    return metadata
+
+
+
+def evaluate_stage3_full_footprint_window_blockers(
+    *,
+    window_start: int,
+    window_end: int,
+    footprint: frozenset[GridCoordinate],
+    endpoint_coordinates: frozenset[GridCoordinate],
+    require_external_movement_for_all_cells: bool,
+    require_external_movement_for_endpoints: bool,
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    cell_art_state_masks: dict[GridCoordinate, object],
+    settings: DetectorSettings,
+    cv2,
+    stage3_context: dict[str, object] | None = None,
+) -> tuple[frozenset[GridCoordinate], frozenset[GridCoordinate]]:
+    active_coordinates = get_stage3_window_active_coordinates(
+        stage3_context,
+        ordered_records,
+        window_start,
+        window_end,
+    )
+    blocking_coordinates: set[GridCoordinate] = set()
+    active_blocking_coordinates: set[GridCoordinate] = set()
+    for coordinate in footprint:
+        require_external_movement = (
+            require_external_movement_for_all_cells
+            or (require_external_movement_for_endpoints and coordinate in endpoint_coordinates)
+        )
+        if stage3_cell_is_trustworthy_in_window(
+            coordinate,
+            window_start,
+            window_end,
+            ordered_records,
+            sampled_frames,
+            cell_art_state_masks,
+            footprint,
+            require_external_movement,
+            settings,
+            cv2,
+            stage3_context,
+        ):
+            continue
+        blocking_coordinates.add(coordinate)
+        if coordinate in active_coordinates:
+            active_blocking_coordinates.add(coordinate)
+    return frozenset(blocking_coordinates), frozenset(active_blocking_coordinates)
+
+
+
+def find_next_stage3_candidate_position_after_blocker_release(
+    ordered_candidates: list[tuple[int, int]],
+    current_candidate_position: int,
+    active_blocking_coordinates: frozenset[GridCoordinate],
+    ordered_records: list[MovementEvidenceRecord],
+    stage3_context: dict[str, object] | None = None,
+) -> int:
+    if not active_blocking_coordinates:
+        return current_candidate_position + 1
+
+    next_candidate_position = current_candidate_position + 1
+    while next_candidate_position < len(ordered_candidates):
+        next_window_start, next_window_end = ordered_candidates[next_candidate_position]
+        next_active_coordinates = get_stage3_window_active_coordinates(
+            stage3_context,
+            ordered_records,
+            next_window_start,
+            next_window_end,
+        )
+        if not active_blocking_coordinates.issubset(next_active_coordinates):
+            return next_candidate_position
+        next_candidate_position += 1
+    return len(ordered_candidates)
+
+
+
+def select_stage3_full_footprint_reference_window_v3(
+    *,
+    search_start: int,
+    search_end: int,
+    prefer_nearest: bool,
+    footprint: frozenset[GridCoordinate],
+    endpoint_coordinates: frozenset[GridCoordinate],
+    require_external_movement_for_all_cells: bool,
+    require_external_movement_for_endpoints: bool,
+    require_external_movement_outside_coordinate_for_all_cells: bool,
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    cell_art_state_masks: dict[GridCoordinate, object],
+    settings: DetectorSettings,
+    cv2,
+    stage3_context: dict[str, object] | None = None,
+    status_callback: Callable[[str], None] | None = None,
+    progress_prefix: str | None = None,
+    progress_label: str = 'full-footprint window search progress',
+) -> tuple[dict[str, object] | None, int]:
+    candidate_windows = build_stage3_reference_window_candidates(
+        search_start,
+        search_end,
+        STAGE3_ART_STATE_BEFORE_WINDOW_FRAMES,
+        get_stage3_reference_candidate_step_frames(settings),
+    )
+    ordered_candidates = list(reversed(candidate_windows)) if prefer_nearest else candidate_windows
+    total_candidates = len(ordered_candidates)
+    progress_interval = max(1, total_candidates // 8) if total_candidates > 0 else 1
+    progress_started_at = time.perf_counter() if status_callback is not None else 0.0
+    candidate_position = 0
+    checked_candidate_count = 0
+    blocker_analysis_enabled = not prefer_nearest
+    while candidate_position < total_candidates:
+        window_start, window_end = ordered_candidates[candidate_position]
+        checked_candidate_count += 1
+
+        if all(
+            stage3_cell_is_trustworthy_in_window(
+                coordinate,
+                window_start,
+                window_end,
+                ordered_records,
+                sampled_frames,
+                cell_art_state_masks,
+                footprint,
+                require_external_movement_for_all_cells or (require_external_movement_for_endpoints and coordinate in endpoint_coordinates),
                 settings,
                 cv2,
+                stage3_context,
             )
+            for coordinate in footprint
+        ):
+            if status_callback is not None and progress_prefix is not None:
+                elapsed = format_stage_elapsed(time.perf_counter() - progress_started_at)
+                status_callback(
+                    f"{progress_prefix} - {progress_label}: "
+                    f"{checked_candidate_count}/{max(1, total_candidates)} windows checked, "
+                    f"full-footprint match found "
+                    f"(elapsed {elapsed})"
+                )
+            metadata = build_stage3_reference_window_metadata(
+                window_start,
+                window_end,
+                ordered_records,
+                sampled_frames,
+                stage3_context,
+            )
+            metadata['tier'] = 'full_footprint'
+            return metadata, len(candidate_windows)
 
-    lasting_change_evidence_score = compute_stage3_art_state_evidence_score(
-        persistent_difference_score,
-        footprint_support_score,
-        after_window_persistence_score,
-        reveal_window_hold_score if reveal_window_reliable else STAGE3_ART_STATE_MISSING_REVEAL_SCORE,
+        next_candidate_position = candidate_position + 1
+        jumped_window_count = 0
+        blocking_coordinates: frozenset[GridCoordinate] = frozenset()
+        active_blocking_coordinates: frozenset[GridCoordinate] = frozenset()
+        should_analyze_blockers = blocker_analysis_enabled
+        if should_analyze_blockers:
+            blocking_coordinates, active_blocking_coordinates = evaluate_stage3_full_footprint_window_blockers(
+                window_start=window_start,
+                window_end=window_end,
+                footprint=footprint,
+                endpoint_coordinates=endpoint_coordinates,
+                require_external_movement_for_all_cells=require_external_movement_for_all_cells,
+                require_external_movement_for_endpoints=require_external_movement_for_endpoints,
+                ordered_records=ordered_records,
+                sampled_frames=sampled_frames,
+                cell_art_state_masks=cell_art_state_masks,
+                settings=settings,
+                cv2=cv2,
+                stage3_context=stage3_context,
+            )
+            if blocking_coordinates and not active_blocking_coordinates:
+                blocker_analysis_enabled = False
+            if active_blocking_coordinates and blocking_coordinates == active_blocking_coordinates:
+                next_candidate_position = find_next_stage3_candidate_position_after_blocker_release(
+                    ordered_candidates,
+                    candidate_position,
+                    active_blocking_coordinates,
+                    ordered_records,
+                    stage3_context,
+                )
+                jumped_window_count = max(0, next_candidate_position - candidate_position - 1)
+
+        if (
+            status_callback is not None
+            and progress_prefix is not None
+            and (
+                checked_candidate_count == 1
+                or candidate_position == (total_candidates - 1)
+                or (checked_candidate_count % progress_interval) == 0
+                or jumped_window_count > 0
+            )
+        ):
+            elapsed = format_stage_elapsed(time.perf_counter() - progress_started_at)
+            if should_analyze_blockers:
+                jump_suffix = ''
+                if jumped_window_count > 0:
+                    jump_suffix = f"; jumped over {jumped_window_count} windows until blocker activity changed"
+                status_callback(
+                    f"{progress_prefix} - {progress_label}: "
+                    f"{checked_candidate_count}/{max(1, total_candidates)} windows checked, "
+                    f"no full-footprint match yet "
+                    f"({len(blocking_coordinates)} blocking cells, "
+                    f"{len(active_blocking_coordinates)} still movement-active; "
+                    f"elapsed {elapsed}{jump_suffix})"
+                )
+            else:
+                status_callback(
+                    f"{progress_prefix} - {progress_label}: "
+                    f"{checked_candidate_count}/{max(1, total_candidates)} windows checked, "
+                    f"no full-footprint match yet "
+                    f"(elapsed {elapsed})"
+                )
+        candidate_position = next_candidate_position
+    return None, len(candidate_windows)
+
+
+
+def select_stage3_cell_reference_windows(
+    *,
+    search_start: int,
+    search_end: int,
+    prefer_nearest: bool,
+    footprint: frozenset[GridCoordinate],
+    endpoint_coordinates: frozenset[GridCoordinate],
+    require_external_movement_for_all_cells: bool,
+    require_external_movement_for_endpoints: bool,
+    require_external_movement_outside_coordinate_for_all_cells: bool,
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    cell_art_state_masks: dict[GridCoordinate, object],
+    settings: DetectorSettings,
+    cv2,
+    stage3_context: dict[str, object] | None = None,
+    target_coordinates: frozenset[GridCoordinate] | None = None,
+    status_callback: Callable[[str], None] | None = None,
+    progress_prefix: str | None = None,
+    progress_label: str = 'partial-footprint reference assignment',
+) -> tuple[dict[GridCoordinate, dict[str, object]], int]:
+    candidate_windows = build_stage3_reference_window_candidates(
+        search_start,
+        search_end,
+        STAGE3_ART_STATE_BEFORE_WINDOW_FRAMES,
+        get_stage3_reference_candidate_step_frames(settings),
     )
-    reference_activity_ceiling = max(before_reference_activity, after_reference_activity)
-    contrast_score = lasting_change_evidence_score - reference_activity_ceiling
-    has_meaningful_union_activity = (
-        bool(within_union_records)
-        and candidate_union.union_footprint_size > 0
-        and lasting_change_evidence_score >= STAGE3_SURVIVING_THRESHOLD
+    ordered_candidates = list(reversed(candidate_windows)) if prefer_nearest else candidate_windows
+    target_footprint = footprint if target_coordinates is None else target_coordinates
+    assignments: dict[GridCoordinate, dict[str, object]] = {}
+    total_candidates = len(ordered_candidates)
+    total_target_cells = len(target_footprint)
+    progress_interval = max(1, total_candidates // 8) if total_candidates > 0 else 1
+    progress_started_at = time.perf_counter() if status_callback is not None else 0.0
+
+    if require_external_movement_outside_coordinate_for_all_cells:
+        search_active_coordinates = get_stage3_window_active_coordinates(
+            stage3_context,
+            ordered_records,
+            search_start,
+            search_end,
+        )
+        if not search_active_coordinates:
+            if status_callback is not None and progress_prefix is not None:
+                elapsed = format_stage_elapsed(time.perf_counter() - progress_started_at)
+                status_callback(
+                    f"{progress_prefix} - {progress_label}: "
+                    f"0/{max(1, total_candidates)} windows checked, "
+                    f"0/{max(1, total_target_cells)} cells assigned, "
+                    f"{max(0, total_target_cells)} unresolved "
+                    f"(elapsed {elapsed}; no movement evidence in search range, deferring to internal rescue)"
+                )
+            return assignments, len(candidate_windows)
+
+    for candidate_index, (window_start, window_end) in enumerate(ordered_candidates, start=1):
+        metadata: dict[str, object] | None = None
+        active_coordinates = get_stage3_window_active_coordinates(
+            stage3_context,
+            ordered_records,
+            window_start,
+            window_end,
+        )
+        if require_external_movement_outside_coordinate_for_all_cells and not active_coordinates:
+            if (
+                status_callback is not None
+                and progress_prefix is not None
+                and (
+                    candidate_index == 1
+                    or candidate_index == total_candidates
+                    or (candidate_index % progress_interval) == 0
+                )
+            ):
+                elapsed = format_stage_elapsed(time.perf_counter() - progress_started_at)
+                status_callback(
+                    f"{progress_prefix} - {progress_label}: "
+                    f"{candidate_index}/{max(1, total_candidates)} windows checked, "
+                    f"{len(assignments)}/{max(1, total_target_cells)} cells assigned, "
+                    f"{max(0, total_target_cells - len(assignments))} unresolved "
+                    f"(elapsed {elapsed})"
+                )
+            continue
+        for coordinate in target_footprint:
+            if coordinate in assignments:
+                continue
+            if coordinate in active_coordinates:
+                continue
+            if stage3_cell_is_trustworthy_in_window(
+                coordinate,
+                window_start,
+                window_end,
+                ordered_records,
+                sampled_frames,
+                cell_art_state_masks,
+                footprint,
+                require_external_movement_for_all_cells or (require_external_movement_for_endpoints and coordinate in endpoint_coordinates),
+                settings,
+                cv2,
+                stage3_context,
+            ):
+                if (
+                    require_external_movement_outside_coordinate_for_all_cells
+                    and not active_coordinates
+                    and not window_has_meaningful_movement_outside_coordinate(
+                        ordered_records,
+                        window_start,
+                        window_end,
+                        coordinate,
+                        stage3_context,
+                    )
+                ):
+                    continue
+                if metadata is None:
+                    metadata = build_stage3_reference_window_metadata(
+                        window_start,
+                        window_end,
+                        ordered_records,
+                        sampled_frames,
+                        stage3_context,
+                    )
+                    metadata['tier'] = 'cell_specific'
+                assignments[coordinate] = metadata
+        if (
+            status_callback is not None
+            and progress_prefix is not None
+            and (
+                candidate_index == 1
+                or candidate_index == total_candidates
+                or (candidate_index % progress_interval) == 0
+            )
+        ):
+            elapsed = format_stage_elapsed(time.perf_counter() - progress_started_at)
+            status_callback(
+                f"{progress_prefix} - {progress_label}: "
+                f"{candidate_index}/{max(1, total_candidates)} windows checked, "
+                f"{len(assignments)}/{max(1, total_target_cells)} cells assigned, "
+                f"{max(0, total_target_cells - len(assignments))} unresolved "
+                f"(elapsed {elapsed})"
+            )
+        if len(assignments) == len(target_footprint):
+            break
+    return assignments, len(candidate_windows)
+
+
+
+def select_stage3_internal_before_reference_windows(
+    *,
+    union_start: int,
+    union_end: int,
+    footprint: frozenset[GridCoordinate],
+    touch_frame_bounds: dict[GridCoordinate, dict[str, int]],
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    cell_art_state_masks: dict[GridCoordinate, object],
+    settings: DetectorSettings,
+    cv2,
+    stage3_context: dict[str, object] | None = None,
+    target_coordinates: frozenset[GridCoordinate] | None = None,
+) -> dict[GridCoordinate, dict[str, object]]:
+    assignments: dict[GridCoordinate, dict[str, object]] = {}
+    target_footprint = footprint if target_coordinates is None else target_coordinates
+    for coordinate in target_footprint:
+        first_touch_frame = touch_frame_bounds.get(coordinate, {}).get('first_touch_frame', union_end + 1)
+        candidate_windows = build_stage3_reference_window_candidates(
+            union_start,
+            first_touch_frame,
+            STAGE3_ART_STATE_BEFORE_WINDOW_FRAMES,
+            get_stage3_reference_candidate_step_frames(settings),
+        )
+        for window_start, window_end in reversed(candidate_windows):
+            if not stage3_cell_is_trustworthy_in_window(
+                coordinate,
+                window_start,
+                window_end,
+                ordered_records,
+                sampled_frames,
+                cell_art_state_masks,
+                frozenset({coordinate}),
+                False,
+                settings,
+                cv2,
+                stage3_context,
+            ):
+                continue
+            if not window_has_meaningful_movement_outside_coordinate(
+                ordered_records,
+                window_start,
+                window_end,
+                coordinate,
+                stage3_context,
+            ):
+                continue
+            metadata = build_stage3_reference_window_metadata(
+                window_start,
+                window_end,
+                ordered_records,
+                sampled_frames,
+                stage3_context,
+            )
+            metadata['tier'] = 'internal_before'
+            assignments[coordinate] = metadata
+            break
+    return assignments
+
+
+
+def select_stage3_internal_after_reference_windows(
+    *,
+    union_start: int,
+    union_end: int,
+    footprint: frozenset[GridCoordinate],
+    touch_frame_bounds: dict[GridCoordinate, dict[str, int]],
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    cell_art_state_masks: dict[GridCoordinate, object],
+    settings: DetectorSettings,
+    cv2,
+    stage3_context: dict[str, object] | None = None,
+    target_coordinates: frozenset[GridCoordinate] | None = None,
+) -> dict[GridCoordinate, dict[str, object]]:
+    assignments: dict[GridCoordinate, dict[str, object]] = {}
+    target_footprint = footprint if target_coordinates is None else target_coordinates
+    for coordinate in target_footprint:
+        cell_bounds = touch_frame_bounds.get(coordinate, {})
+        if 'last_touch_frame' not in cell_bounds:
+            continue
+        search_start = cell_bounds['last_touch_frame'] + 1
+        candidate_windows = build_stage3_reference_window_candidates(
+            search_start,
+            union_end + 1,
+            STAGE3_ART_STATE_AFTER_WINDOW_FRAMES,
+            get_stage3_reference_candidate_step_frames(settings),
+        )
+        for window_start, window_end in candidate_windows:
+            if not stage3_cell_is_trustworthy_in_window(
+                coordinate,
+                window_start,
+                window_end,
+                ordered_records,
+                sampled_frames,
+                cell_art_state_masks,
+                frozenset({coordinate}),
+                False,
+                settings,
+                cv2,
+                stage3_context,
+            ):
+                continue
+            if not window_has_meaningful_movement_outside_coordinate(
+                ordered_records,
+                window_start,
+                window_end,
+                coordinate,
+                stage3_context,
+            ):
+                continue
+            metadata = build_stage3_reference_window_metadata(
+                window_start,
+                window_end,
+                ordered_records,
+                sampled_frames,
+                stage3_context,
+            )
+            metadata['tier'] = 'internal_after'
+            assignments[coordinate] = metadata
+            break
+    return assignments
+
+
+
+def merge_stage3_reference_assignments(
+    primary_assignments: dict[GridCoordinate, dict[str, object]],
+    secondary_assignments: dict[GridCoordinate, dict[str, object]],
+) -> dict[GridCoordinate, dict[str, object]]:
+    merged = dict(primary_assignments)
+    for coordinate, metadata in secondary_assignments.items():
+        merged.setdefault(coordinate, metadata)
+    return merged
+
+
+def get_stage3_window_baseline(
+    baseline_cache: dict[tuple[int, int], tuple[list[dict[str, object]], object | None]],
+    sampled_frames: list[dict[str, object]],
+    window_start: int,
+    window_end: int,
+    stage3_context: dict[str, object] | None = None,
+) -> tuple[list[dict[str, object]], object | None]:
+    cache_key = (window_start, window_end)
+    if cache_key not in baseline_cache:
+        window_samples = get_stage3_window_samples(stage3_context, sampled_frames, window_start, window_end)
+        baseline_cache[cache_key] = (window_samples, build_median_baseline(window_samples))
+    return baseline_cache[cache_key]
+
+
+
+def classify_stage3_cell_change(
+    coordinate: GridCoordinate,
+    before_window: dict[str, object],
+    after_window: dict[str, object],
+    sampled_frames: list[dict[str, object]],
+    cell_art_state_masks: dict[GridCoordinate, object],
+    baseline_cache: dict[tuple[int, int], tuple[list[dict[str, object]], object | None]],
+    settings: DetectorSettings,
+    cv2,
+    stage3_context: dict[str, object] | None = None,
+) -> str:
+    _, before_baseline = get_stage3_window_baseline(
+        baseline_cache,
+        sampled_frames,
+        int(before_window['window_start']),
+        int(before_window['window_end']),
+        stage3_context,
     )
-    has_meaningful_footprint_support = (
-        footprint_support_score >= STAGE3_ART_STATE_MIN_FOOTPRINT_SUPPORT_SCORE
+    _, after_baseline = get_stage3_window_baseline(
+        baseline_cache,
+        sampled_frames,
+        int(after_window['window_start']),
+        int(after_window['window_end']),
+        stage3_context,
     )
-    fallback_post_reference_without_reveal = (
-        not reveal_window_reliable
-        and selected_after_window is not None
-        and str(selected_after_window['tier']) == 'fallback'
+    if before_baseline is None or after_baseline is None:
+        return 'resolved_ambiguous'
+
+    change_mask = build_art_state_change_mask(before_baseline, after_baseline, settings, cv2)
+    focused_change_mask = cv2.bitwise_and(change_mask, cell_art_state_masks[coordinate])
+    change_score = compute_stage3_art_state_persistent_difference_score(
+        focused_change_mask,
+        1,
+        settings,
     )
-    fallback_post_reference_supports_survival = (
-        candidate_union.union_footprint_size >= STAGE3_ART_STATE_FALLBACK_REFERENCE_MIN_FOOTPRINT
+    return 'resolved_changed' if change_score >= 0.50 else 'resolved_unchanged'
+
+
+
+def build_stage3_connected_clusters(
+    coordinates: set[GridCoordinate],
+) -> list[set[GridCoordinate]]:
+    remaining = set(coordinates)
+    clusters: list[set[GridCoordinate]] = []
+    while remaining:
+        start_coordinate = remaining.pop()
+        cluster = {start_coordinate}
+        pending = [start_coordinate]
+        while pending:
+            row_index, column_index = pending.pop()
+            for row_offset, column_offset in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                neighbor = (row_index + row_offset, column_index + column_offset)
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    cluster.add(neighbor)
+                    pending.append(neighbor)
+        clusters.append(cluster)
+    return clusters
+
+
+
+def evaluate_stage3_bucket_coverages(
+    footprint: frozenset[GridCoordinate],
+    bucket_by_cell: dict[GridCoordinate, str],
+) -> dict[str, object]:
+    total_cells = max(1, len(footprint))
+    changed_cells = {coordinate for coordinate, bucket in bucket_by_cell.items() if bucket == 'resolved_changed'}
+    unchanged_cells = {coordinate for coordinate, bucket in bucket_by_cell.items() if bucket == 'resolved_unchanged'}
+    ambiguous_cells = {coordinate for coordinate, bucket in bucket_by_cell.items() if bucket == 'resolved_ambiguous'}
+    changed_clusters = build_stage3_connected_clusters(changed_cells)
+    ambiguous_clusters = build_stage3_connected_clusters(ambiguous_cells)
+    return {
+        'resolved_changed_coverage': len(changed_cells) / total_cells,
+        'resolved_unchanged_coverage': len(unchanged_cells) / total_cells,
+        'resolved_ambiguous_coverage': len(ambiguous_cells) / total_cells,
+        'largest_changed_cluster_size': max((len(cluster) for cluster in changed_clusters), default=0),
+        'ambiguous_cluster_count': len(ambiguous_clusters),
+    }
+
+
+
+def decide_stage3_bucket_outcome(
+    *,
+    coverage_summary: dict[str, object],
+    reconstructed_before_coverage: float,
+    mode: str,
+) -> tuple[str | None, bool, str | None, bool]:
+    resolved_changed_coverage = float(coverage_summary['resolved_changed_coverage'])
+    resolved_unchanged_coverage = float(coverage_summary['resolved_unchanged_coverage'])
+    resolved_ambiguous_coverage = float(coverage_summary['resolved_ambiguous_coverage'])
+    largest_changed_cluster_size = int(coverage_summary['largest_changed_cluster_size'])
+    ambiguous_cluster_count = int(coverage_summary['ambiguous_cluster_count'])
+    bounded_ambiguity = (
+        resolved_ambiguous_coverage > 0.0
+        and resolved_ambiguous_coverage <= 0.10
+        and ambiguous_cluster_count == 1
+    )
+    rejection_priority = resolved_unchanged_coverage >= 0.85
+    changed_evidence_survival = (
+        reconstructed_before_coverage >= 0.80
+        and resolved_changed_coverage >= 0.10
+        and largest_changed_cluster_size >= 2
+        and not rejection_priority
     )
 
-    if not has_meaningful_union_activity:
-        screening_result = 'rejected'
-        surviving = False
-        provisional_survival = False
-        reason = 'weak_union_activity'
-    elif not reference_windows_reliable:
-        screening_result = 'provisional_surviving'
-        surviving = True
-        provisional_survival = True
-        reason = 'reference_windows_unreliable'
-    elif not has_meaningful_footprint_support:
-        screening_result = 'rejected'
-        surviving = False
-        provisional_survival = False
-        reason = 'insufficient_footprint_support'
-    elif fallback_post_reference_without_reveal and not fallback_post_reference_supports_survival:
-        screening_result = 'rejected'
-        surviving = False
-        provisional_survival = False
-        reason = 'fallback_post_reference_too_small'
-    elif (
-        reference_activity_ceiling <= STAGE3_MAX_REFERENCE_ACTIVITY
-        or contrast_score >= STAGE3_MIN_CONTRAST_SCORE
-    ):
-        screening_result = 'surviving'
-        surviving = True
-        provisional_survival = False
-        reason = 'art_state_change_supported'
-    else:
-        screening_result = 'rejected'
-        surviving = False
-        provisional_survival = False
-        reason = 'reference_windows_too_active'
+    if changed_evidence_survival:
+        if mode == 'step1':
+            return 'surviving', True, 'step1_clear_survival', False
+        return 'surviving', True, 'survived_by_changed_evidence', False
+    if bounded_ambiguity:
+        return 'surviving', True, 'survived_by_bounded_ambiguity', True
+    if rejection_priority:
+        if mode == 'step1':
+            return 'rejected', False, 'step1_clear_rejection', False
+        return 'rejected', False, 'rejected_by_resolved_unchanged_evidence', False
+    if mode == 'step1':
+        return None, False, None, False
+    return 'rejected', False, 'rejected_after_rescue_failure', False
 
+
+
+def serialize_stage3_window_metadata(window_metadata: dict[str, object] | None) -> dict[str, object] | None:
+    if window_metadata is None:
+        return None
+    return {
+        'window_start': int(window_metadata['window_start']),
+        'window_end': int(window_metadata['window_end']),
+        'window_start_time': Timecode(total_frames=int(window_metadata['window_start'])).to_hhmmssff(),
+        'window_end_time': Timecode(total_frames=int(window_metadata['window_end'])).to_hhmmssff(),
+        'sample_count': int(window_metadata.get('sample_count', 0)),
+        'mean_window_activity': round(float(window_metadata.get('mean_window_activity', 0.0)), 6),
+        'tier': window_metadata.get('tier'),
+    }
+
+
+
+def serialize_stage3_coverage_summary(coverage_summary: dict[str, object]) -> dict[str, object]:
+    return {
+        'resolved_changed_coverage': round(float(coverage_summary.get('resolved_changed_coverage', 0.0)), 6),
+        'resolved_unchanged_coverage': round(float(coverage_summary.get('resolved_unchanged_coverage', 0.0)), 6),
+        'resolved_ambiguous_coverage': round(float(coverage_summary.get('resolved_ambiguous_coverage', 0.0)), 6),
+        'largest_changed_cluster_size': int(coverage_summary.get('largest_changed_cluster_size', 0)),
+        'ambiguous_cluster_count': int(coverage_summary.get('ambiguous_cluster_count', 0)),
+    }
+
+
+
+def build_stage3_bucket_cell_rows(
+    footprint: frozenset[GridCoordinate],
+    bucket_by_cell: dict[GridCoordinate, str],
+) -> list[dict[str, object]]:
+    return [
+        {
+            'coordinate': [coordinate[0], coordinate[1]],
+            'coordinate_label': format_grid_coordinate_label(coordinate),
+            'bucket': bucket_by_cell.get(coordinate, 'resolved_ambiguous'),
+        }
+        for coordinate in sorted(footprint)
+    ]
+
+
+
+def build_stage3_rescue_cell_rows(
+    footprint: frozenset[GridCoordinate],
+    before_assignments: dict[GridCoordinate, dict[str, object]],
+    after_assignments: dict[GridCoordinate, dict[str, object]],
+    rescue_bucket_by_cell: dict[GridCoordinate, str],
+) -> list[dict[str, object]]:
+    return [
+        {
+            'coordinate': [coordinate[0], coordinate[1]],
+            'coordinate_label': format_grid_coordinate_label(coordinate),
+            'before_window': serialize_stage3_window_metadata(before_assignments.get(coordinate)),
+            'after_window': serialize_stage3_window_metadata(after_assignments.get(coordinate)),
+            'bucket': rescue_bucket_by_cell.get(coordinate, 'resolved_ambiguous'),
+        }
+        for coordinate in sorted(footprint)
+    ]
+
+
+
+def build_stage3_candidate_window_rows(candidate_windows: list[tuple[int, int]]) -> list[dict[str, object]]:
+    return [
+        {
+            'window_start': int(window_start),
+            'window_end': int(window_end),
+            'window_start_time': Timecode(total_frames=int(window_start)).to_hhmmssff(),
+            'window_end_time': Timecode(total_frames=int(window_end)).to_hhmmssff(),
+        }
+        for window_start, window_end in candidate_windows
+    ]
+
+
+
+def build_stage3_screened_union_result(
+    *,
+    candidate_union: CandidateUnion,
+    within_union_records: list[MovementEvidenceRecord],
+    before_records: list[MovementEvidenceRecord],
+    after_records: list[MovementEvidenceRecord],
+    mean_movement_strength: float,
+    mean_temporal_persistence: float,
+    mean_spatial_extent: float,
+    before_reference_activity: float,
+    after_reference_activity: float,
+    screening_result: str,
+    surviving: bool,
+    reason: str,
+    reference_windows_reliable: bool,
+    stage3_mode: str,
+    stage3_alignment_mode: str,
+    resolved_changed_coverage: float,
+    reconstructed_before_coverage: float,
+    resolved_ambiguous_coverage: float,
+    before_window: dict[str, object] | None,
+    after_window: dict[str, object] | None,
+    before_window_candidate_count: int,
+    after_window_candidate_count: int,
+    survived_by_bounded_ambiguity: bool,
+    stage3_debug_trace: dict[str, object] | None = None,
+) -> ScreenedCandidateUnion:
     return ScreenedCandidateUnion(
         candidate_union=candidate_union,
         screening_result=screening_result,
         surviving=surviving,
-        provisional_survival=provisional_survival,
+        provisional_survival=False,
         reason=reason,
         within_union_record_count=len(within_union_records),
         before_record_count=len(before_records),
@@ -1418,34 +2369,622 @@ def screen_candidate_union_with_art_state_prototype(
         mean_movement_strength=mean_movement_strength,
         mean_temporal_persistence=mean_temporal_persistence,
         mean_spatial_extent=mean_spatial_extent,
-        lasting_change_evidence_score=lasting_change_evidence_score,
+        lasting_change_evidence_score=resolved_changed_coverage,
         before_reference_activity=before_reference_activity,
         after_reference_activity=after_reference_activity,
         reference_windows_reliable=reference_windows_reliable,
-        stage3_mode='art_state',
-        stage3_alignment_mode='none',
-        stage3_persistent_difference_score=persistent_difference_score,
-        stage3_footprint_support_score=footprint_support_score,
-        stage3_after_window_persistence_score=after_window_persistence_score,
-        stage3_before_window_start=Timecode(total_frames=before_window_start).to_hhmmssff(),
-        stage3_before_window_end=Timecode(total_frames=before_window_end).to_hhmmssff(),
-        stage3_after_window_start=Timecode(total_frames=after_window_start).to_hhmmssff(),
-        stage3_after_window_end=Timecode(total_frames=after_window_end).to_hhmmssff(),
-        stage3_reveal_window_start=Timecode(total_frames=reveal_window_start).to_hhmmssff(),
-        stage3_reveal_window_end=Timecode(total_frames=reveal_window_end).to_hhmmssff(),
-        stage3_before_sample_count=len(before_samples),
-        stage3_after_sample_count=len(after_samples),
-        stage3_reveal_sample_count=len(reveal_samples),
-        stage3_before_window_quality_score=0.0 if selected_before_window is None else float(selected_before_window['quality_score']),
-        stage3_after_window_quality_score=0.0 if selected_after_window is None else float(selected_after_window['quality_score']),
-        stage3_reveal_window_quality_score=0.0 if selected_reveal_window is None else float(selected_reveal_window['quality_score']),
+        stage3_mode=stage3_mode,
+        stage3_alignment_mode=stage3_alignment_mode,
+        stage3_persistent_difference_score=resolved_changed_coverage,
+        stage3_footprint_support_score=reconstructed_before_coverage,
+        stage3_after_window_persistence_score=1.0 - resolved_ambiguous_coverage,
+        stage3_before_window_start=None if before_window is None else Timecode(total_frames=int(before_window['window_start'])).to_hhmmssff(),
+        stage3_before_window_end=None if before_window is None else Timecode(total_frames=int(before_window['window_end'])).to_hhmmssff(),
+        stage3_after_window_start=None if after_window is None else Timecode(total_frames=int(after_window['window_start'])).to_hhmmssff(),
+        stage3_after_window_end=None if after_window is None else Timecode(total_frames=int(after_window['window_end'])).to_hhmmssff(),
+        stage3_before_sample_count=0 if before_window is None else int(before_window['sample_count']),
+        stage3_after_sample_count=0 if after_window is None else int(after_window['sample_count']),
+        stage3_reveal_sample_count=0,
+        stage3_before_window_quality_score=0.0 if before_window is None else 1.0,
+        stage3_after_window_quality_score=0.0 if after_window is None else 1.0,
+        stage3_reveal_window_quality_score=0.0,
         stage3_before_window_candidate_count=before_window_candidate_count,
         stage3_after_window_candidate_count=after_window_candidate_count,
-        stage3_reveal_window_candidate_count=reveal_window_candidate_count,
-        stage3_before_window_tier=None if selected_before_window is None else str(selected_before_window['tier']),
-        stage3_after_window_tier=None if selected_after_window is None else str(selected_after_window['tier']),
-        stage3_reveal_window_tier=None if selected_reveal_window is None else str(selected_reveal_window['tier']),
-        stage3_reveal_window_hold_score=reveal_window_hold_score,
+        stage3_reveal_window_candidate_count=0,
+        stage3_before_window_tier=None if before_window is None else 'full_footprint',
+        stage3_after_window_tier=None if after_window is None else 'full_footprint',
+        stage3_reveal_window_tier='bounded_ambiguity' if survived_by_bounded_ambiguity else None,
+        stage3_reveal_window_hold_score=1.0 if survived_by_bounded_ambiguity else 0.0,
+        stage3_debug_trace=stage3_debug_trace,
+    )
+
+
+
+def screen_candidate_union_with_art_state_prototype(
+    candidate_union: CandidateUnion,
+    records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    chapter_range: ChapterRange,
+    settings: DetectorSettings,
+    previous_union_end: int | None,
+    next_union_start: int | None,
+    cv2,
+    stage3_context: dict[str, object] | None = None,
+    status_callback: Callable[[str], None] | None = None,
+    union_progress_prefix: str | None = None,
+) -> ScreenedCandidateUnion:
+    def report_union_substep(message: str) -> None:
+        if status_callback is None or union_progress_prefix is None:
+            return
+        status_callback(f"{union_progress_prefix} - {message}")
+
+    ordered_records = records
+    if stage3_context is None:
+        stage3_context = build_stage3_runtime_context(ordered_records, sampled_frames)
+    within_union_records = get_stage3_window_records(stage3_context, ordered_records,
+        candidate_union.start_frame,
+        candidate_union.end_frame + 1,
+    )
+    mean_movement_strength = average_record_score(within_union_records, 'movement_strength_score')
+    mean_temporal_persistence = average_record_score(within_union_records, 'temporal_persistence_score')
+    mean_spatial_extent = average_record_score(within_union_records, 'spatial_extent_score')
+
+    stage3_debug_trace: dict[str, object] = {
+        'candidate_union_index': candidate_union.union_index,
+        'union_start_time': candidate_union.start_time,
+        'union_end_time': candidate_union.end_time,
+        'union_footprint_size': candidate_union.union_footprint_size,
+        'previous_union_end': None if previous_union_end is None else Timecode(total_frames=previous_union_end).to_hhmmssff(),
+        'next_union_start': None if next_union_start is None else Timecode(total_frames=next_union_start).to_hhmmssff(),
+    }
+
+    if not within_union_records or candidate_union.union_footprint_size <= 0 or not sampled_frames:
+        stage3_debug_trace['step1'] = {'attempted': False, 'reason': 'missing_union_activity_or_samples'}
+        stage3_debug_trace['snapshot_rescue'] = {'attempted': False, 'reason': 'missing_union_activity_or_samples'}
+        stage3_debug_trace['final_stage3_outcome'] = {
+            'screening_result': 'rejected',
+            'surviving': False,
+            'reason': 'weak_union_activity',
+            'mode': 'snapshot_rescue',
+            'alignment_mode': 'none',
+        }
+        return build_stage3_screened_union_result(
+            candidate_union=candidate_union,
+            within_union_records=within_union_records,
+            before_records=[],
+            after_records=[],
+            mean_movement_strength=mean_movement_strength,
+            mean_temporal_persistence=mean_temporal_persistence,
+            mean_spatial_extent=mean_spatial_extent,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            screening_result='rejected',
+            surviving=False,
+            reason='weak_union_activity',
+            reference_windows_reliable=False,
+            stage3_mode='snapshot_rescue',
+            stage3_alignment_mode='none',
+            resolved_changed_coverage=0.0,
+            reconstructed_before_coverage=0.0,
+            resolved_ambiguous_coverage=1.0 if candidate_union.union_footprint_size > 0 else 0.0,
+            before_window=None,
+            after_window=None,
+            before_window_candidate_count=0,
+            after_window_candidate_count=0,
+            survived_by_bounded_ambiguity=False,
+            stage3_debug_trace=stage3_debug_trace,
+        )
+
+    reference_canvas_shape = sampled_frames[0]['canvas_gray'].shape
+    cell_art_state_masks = build_stage3_cell_art_state_masks(candidate_union.union_footprint, reference_canvas_shape)
+    endpoint_coordinates = build_stage3_endpoint_coordinates(within_union_records)
+    touch_frame_bounds = build_stage3_cell_touch_frame_bounds(candidate_union.union_footprint, within_union_records)
+    baseline_cache: dict[tuple[int, int], tuple[list[dict[str, object]], object | None]] = {}
+
+    simple_before_search_start = max(chapter_range.start.total_frames, candidate_union.start_frame - STAGE3_ART_STATE_SIMPLE_SEARCH_FRAMES)
+    simple_before_search_end = max(simple_before_search_start, candidate_union.start_frame - STAGE3_ART_STATE_BEFORE_OFFSET_FRAMES)
+    simple_after_search_start = min(chapter_range.end.total_frames, candidate_union.end_frame + STAGE3_ART_STATE_AFTER_DELAY_FRAMES)
+    simple_after_search_end = min(chapter_range.end.total_frames, candidate_union.end_frame + STAGE3_ART_STATE_SIMPLE_SEARCH_FRAMES)
+    if next_union_start is not None:
+        simple_after_search_end = min(simple_after_search_end, next_union_start)
+
+    rescue_before_search_start = max(chapter_range.start.total_frames, candidate_union.start_frame - STAGE3_ART_STATE_RESCUE_SEARCH_FRAMES)
+    rescue_before_search_end = simple_before_search_end
+    rescue_after_search_start = simple_after_search_start
+    rescue_after_search_end = min(chapter_range.end.total_frames, candidate_union.end_frame + STAGE3_ART_STATE_RESCUE_SEARCH_FRAMES)
+    if next_union_start is not None:
+        rescue_after_search_end = min(rescue_after_search_end, next_union_start)
+
+    stage3_debug_trace['search_ranges'] = {
+        'step1_before_search_start': Timecode(total_frames=simple_before_search_start).to_hhmmssff(),
+        'step1_before_search_end': Timecode(total_frames=simple_before_search_end).to_hhmmssff(),
+        'step1_after_search_start': Timecode(total_frames=simple_after_search_start).to_hhmmssff(),
+        'step1_after_search_end': Timecode(total_frames=simple_after_search_end).to_hhmmssff(),
+        'rescue_before_search_start': Timecode(total_frames=rescue_before_search_start).to_hhmmssff(),
+        'rescue_before_search_end': Timecode(total_frames=rescue_before_search_end).to_hhmmssff(),
+        'rescue_after_search_start': Timecode(total_frames=rescue_after_search_start).to_hhmmssff(),
+        'rescue_after_search_end': Timecode(total_frames=rescue_after_search_end).to_hhmmssff(),
+        'step1_before_candidate_windows': build_stage3_candidate_window_rows(
+            build_stage3_reference_window_candidates(simple_before_search_start, simple_before_search_end, STAGE3_ART_STATE_BEFORE_WINDOW_FRAMES, get_stage3_reference_candidate_step_frames(settings))
+        ),
+        'step1_after_candidate_windows': build_stage3_candidate_window_rows(
+            build_stage3_reference_window_candidates(simple_after_search_start, simple_after_search_end, STAGE3_ART_STATE_AFTER_WINDOW_FRAMES, get_stage3_reference_candidate_step_frames(settings))
+        ),
+        'rescue_before_candidate_windows': build_stage3_candidate_window_rows(
+            build_stage3_reference_window_candidates(rescue_before_search_start, rescue_before_search_end, STAGE3_ART_STATE_BEFORE_WINDOW_FRAMES, get_stage3_reference_candidate_step_frames(settings))
+        ),
+        'rescue_after_candidate_windows': build_stage3_candidate_window_rows(
+            build_stage3_reference_window_candidates(rescue_after_search_start, rescue_after_search_end, STAGE3_ART_STATE_AFTER_WINDOW_FRAMES, get_stage3_reference_candidate_step_frames(settings))
+        ),
+    }
+
+    report_union_substep('Step 1 full-footprint window search')
+    selected_before_window, before_window_candidate_count = select_stage3_full_footprint_reference_window_v3(
+        search_start=simple_before_search_start,
+        search_end=simple_before_search_end,
+        prefer_nearest=True,
+        footprint=candidate_union.union_footprint,
+        endpoint_coordinates=endpoint_coordinates,
+        require_external_movement_for_all_cells=False,
+        require_external_movement_for_endpoints=False,
+        require_external_movement_outside_coordinate_for_all_cells=True,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        status_callback=status_callback,
+        progress_prefix=union_progress_prefix,
+        progress_label='Step 1 full-footprint before search progress',
+    )
+    selected_after_window, after_window_candidate_count = select_stage3_full_footprint_reference_window_v3(
+        search_start=simple_after_search_start,
+        search_end=simple_after_search_end,
+        prefer_nearest=False,
+        footprint=candidate_union.union_footprint,
+        endpoint_coordinates=endpoint_coordinates,
+        require_external_movement_for_all_cells=False,
+        require_external_movement_for_endpoints=True,
+        require_external_movement_outside_coordinate_for_all_cells=False,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        status_callback=status_callback,
+        progress_prefix=union_progress_prefix,
+        progress_label='Step 1 full-footprint after search progress',
+    )
+
+    report_union_substep(
+        f"Step 1 full-footprint search complete "
+        f"(before candidates {before_window_candidate_count}, after candidates {after_window_candidate_count})"
+    )
+
+    step1_trace: dict[str, object] = {
+        'attempted': True,
+        'full_footprint': {
+            'selected_before_window': serialize_stage3_window_metadata(selected_before_window),
+            'selected_after_window': serialize_stage3_window_metadata(selected_after_window),
+            'before_window_candidate_count': before_window_candidate_count,
+            'after_window_candidate_count': after_window_candidate_count,
+        },
+    }
+
+    if selected_before_window is not None and selected_after_window is not None:
+        report_union_substep('Step 1 full-footprint cell classification')
+        step1_bucket_by_cell = {
+            coordinate: classify_stage3_cell_change(
+                coordinate,
+                selected_before_window,
+                selected_after_window,
+                sampled_frames,
+                cell_art_state_masks,
+                baseline_cache,
+                settings,
+                cv2,
+                stage3_context,
+            )
+            for coordinate in candidate_union.union_footprint
+        }
+        step1_coverage = evaluate_stage3_bucket_coverages(candidate_union.union_footprint, step1_bucket_by_cell)
+        step1_screening_result, step1_surviving, step1_reason, step1_bounded_ambiguity = decide_stage3_bucket_outcome(
+            coverage_summary=step1_coverage,
+            reconstructed_before_coverage=1.0,
+            mode='step1',
+        )
+        step1_trace['full_footprint']['bucket_coverages'] = serialize_stage3_coverage_summary(step1_coverage)
+        step1_trace['full_footprint']['bucket_by_cell'] = build_stage3_bucket_cell_rows(candidate_union.union_footprint, step1_bucket_by_cell)
+        step1_trace['full_footprint']['decision'] = {
+            'screening_result': step1_screening_result,
+            'surviving': step1_surviving,
+            'reason': step1_reason,
+            'bounded_ambiguity': step1_bounded_ambiguity,
+        }
+        if step1_screening_result is not None and step1_reason is not None:
+            stage3_debug_trace['step1'] = step1_trace
+            stage3_debug_trace['snapshot_rescue'] = {'attempted': False, 'reason': 'step1_reached_decision'}
+            stage3_debug_trace['final_stage3_outcome'] = {
+                'screening_result': step1_screening_result,
+                'surviving': step1_surviving,
+                'reason': step1_reason,
+                'mode': 'step1',
+                'alignment_mode': 'full_footprint',
+            }
+            before_records = get_stage3_window_records(stage3_context, ordered_records,
+                int(selected_before_window['window_start']),
+                int(selected_before_window['window_end']),
+            )
+            after_records = get_stage3_window_records(stage3_context, ordered_records,
+                int(selected_after_window['window_start']),
+                int(selected_after_window['window_end']),
+            )
+            return build_stage3_screened_union_result(
+                candidate_union=candidate_union,
+                within_union_records=within_union_records,
+                before_records=before_records,
+                after_records=after_records,
+                mean_movement_strength=mean_movement_strength,
+                mean_temporal_persistence=mean_temporal_persistence,
+                mean_spatial_extent=mean_spatial_extent,
+                before_reference_activity=float(selected_before_window['mean_window_activity']),
+                after_reference_activity=float(selected_after_window['mean_window_activity']),
+                screening_result=step1_screening_result,
+                surviving=step1_surviving,
+                reason=step1_reason,
+                reference_windows_reliable=True,
+                stage3_mode='step1',
+                stage3_alignment_mode='full_footprint',
+                resolved_changed_coverage=float(step1_coverage['resolved_changed_coverage']),
+                reconstructed_before_coverage=1.0,
+                resolved_ambiguous_coverage=float(step1_coverage['resolved_ambiguous_coverage']),
+                before_window=selected_before_window,
+                after_window=selected_after_window,
+                before_window_candidate_count=before_window_candidate_count,
+                after_window_candidate_count=after_window_candidate_count,
+                survived_by_bounded_ambiguity=step1_bounded_ambiguity,
+                stage3_debug_trace=stage3_debug_trace,
+            )
+    else:
+        step1_trace['full_footprint']['bucket_coverages'] = None
+        step1_trace['full_footprint']['bucket_by_cell'] = []
+        step1_trace['full_footprint']['decision'] = {
+            'screening_result': None,
+            'surviving': False,
+            'reason': 'full_footprint_windows_not_found',
+            'bounded_ambiguity': False,
+        }
+
+    report_union_substep('Step 1 partial-footprint reference assignment')
+    step1_before_assignments, step1_before_candidate_count = select_stage3_cell_reference_windows(
+        search_start=simple_before_search_start,
+        search_end=simple_before_search_end,
+        prefer_nearest=True,
+        footprint=candidate_union.union_footprint,
+        endpoint_coordinates=endpoint_coordinates,
+        require_external_movement_for_all_cells=False,
+        require_external_movement_for_endpoints=False,
+        require_external_movement_outside_coordinate_for_all_cells=True,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        status_callback=status_callback,
+        progress_prefix=union_progress_prefix,
+        progress_label='Step 1 partial before assignment progress',
+    )
+    step1_after_assignments, step1_after_candidate_count = select_stage3_cell_reference_windows(
+        search_start=simple_after_search_start,
+        search_end=simple_after_search_end,
+        prefer_nearest=False,
+        footprint=candidate_union.union_footprint,
+        endpoint_coordinates=endpoint_coordinates,
+        require_external_movement_for_all_cells=False,
+        require_external_movement_for_endpoints=True,
+        require_external_movement_outside_coordinate_for_all_cells=False,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        status_callback=status_callback,
+        progress_prefix=union_progress_prefix,
+        progress_label='Step 1 partial after assignment progress',
+    )
+    report_union_substep(
+        f"Step 1 partial-footprint assignment complete "
+        f"(before assignments {len(step1_before_assignments)}, after assignments {len(step1_after_assignments)})"
+    )
+    report_union_substep('Step 1 partial-footprint cell classification')
+    step1_partial_bucket_by_cell: dict[GridCoordinate, str] = {}
+    for coordinate in candidate_union.union_footprint:
+        before_window = step1_before_assignments.get(coordinate)
+        after_window = step1_after_assignments.get(coordinate)
+        if before_window is None or after_window is None:
+            step1_partial_bucket_by_cell[coordinate] = 'resolved_ambiguous'
+            continue
+        step1_partial_bucket_by_cell[coordinate] = classify_stage3_cell_change(
+            coordinate,
+            before_window,
+            after_window,
+            sampled_frames,
+            cell_art_state_masks,
+            baseline_cache,
+            settings,
+            cv2,
+            stage3_context,
+        )
+    step1_partial_coverage = evaluate_stage3_bucket_coverages(candidate_union.union_footprint, step1_partial_bucket_by_cell)
+    step1_partial_before_coverage = len(step1_before_assignments) / max(1, candidate_union.union_footprint_size)
+    step1_partial_screening_result, step1_partial_surviving, step1_partial_reason, step1_partial_bounded_ambiguity = decide_stage3_bucket_outcome(
+        coverage_summary=step1_partial_coverage,
+        reconstructed_before_coverage=step1_partial_before_coverage,
+        mode='step1',
+    )
+    step1_trace['partial_footprint'] = {
+        'before_assignment_count': len(step1_before_assignments),
+        'after_assignment_count': len(step1_after_assignments),
+        'before_window_candidate_count': step1_before_candidate_count,
+        'after_window_candidate_count': step1_after_candidate_count,
+        'representative_before_window': serialize_stage3_window_metadata(next(iter(step1_before_assignments.values())) if step1_before_assignments else None),
+        'representative_after_window': serialize_stage3_window_metadata(next(iter(step1_after_assignments.values())) if step1_after_assignments else None),
+        'reconstructed_before_coverage': round(step1_partial_before_coverage, 6),
+        'bucket_coverages': serialize_stage3_coverage_summary(step1_partial_coverage),
+        'bucket_by_cell': build_stage3_bucket_cell_rows(candidate_union.union_footprint, step1_partial_bucket_by_cell),
+        'decision': {
+            'screening_result': step1_partial_screening_result,
+            'surviving': step1_partial_surviving,
+            'reason': step1_partial_reason,
+            'bounded_ambiguity': step1_partial_bounded_ambiguity,
+        },
+    }
+    if step1_partial_screening_result is not None and step1_partial_reason is not None:
+        representative_before_window = next(iter(step1_before_assignments.values())) if step1_before_assignments else None
+        representative_after_window = next(iter(step1_after_assignments.values())) if step1_after_assignments else None
+        stage3_debug_trace['step1'] = step1_trace
+        stage3_debug_trace['snapshot_rescue'] = {'attempted': False, 'reason': 'step1_partial_reached_decision'}
+        stage3_debug_trace['final_stage3_outcome'] = {
+            'screening_result': step1_partial_screening_result,
+            'surviving': step1_partial_surviving,
+            'reason': step1_partial_reason,
+            'mode': 'step1',
+            'alignment_mode': 'partial_footprint',
+        }
+        before_records = [] if representative_before_window is None else get_stage3_window_records(stage3_context, ordered_records,
+            int(representative_before_window['window_start']),
+            int(representative_before_window['window_end']),
+        )
+        after_records = [] if representative_after_window is None else get_stage3_window_records(stage3_context, ordered_records,
+            int(representative_after_window['window_start']),
+            int(representative_after_window['window_end']),
+        )
+        return build_stage3_screened_union_result(
+            candidate_union=candidate_union,
+            within_union_records=within_union_records,
+            before_records=before_records,
+            after_records=after_records,
+            mean_movement_strength=mean_movement_strength,
+            mean_temporal_persistence=mean_temporal_persistence,
+            mean_spatial_extent=mean_spatial_extent,
+            before_reference_activity=0.0 if representative_before_window is None else float(representative_before_window['mean_window_activity']),
+            after_reference_activity=0.0 if representative_after_window is None else float(representative_after_window['mean_window_activity']),
+            screening_result=step1_partial_screening_result,
+            surviving=step1_partial_surviving,
+            reason=step1_partial_reason,
+            reference_windows_reliable=bool(step1_before_assignments) and bool(step1_after_assignments),
+            stage3_mode='step1',
+            stage3_alignment_mode='partial_footprint',
+            resolved_changed_coverage=float(step1_partial_coverage['resolved_changed_coverage']),
+            reconstructed_before_coverage=len(step1_before_assignments) / max(1, candidate_union.union_footprint_size),
+            resolved_ambiguous_coverage=float(step1_partial_coverage['resolved_ambiguous_coverage']),
+            before_window=representative_before_window,
+            after_window=representative_after_window,
+            before_window_candidate_count=before_window_candidate_count,
+            after_window_candidate_count=after_window_candidate_count,
+            survived_by_bounded_ambiguity=step1_partial_bounded_ambiguity,
+            stage3_debug_trace=stage3_debug_trace,
+        )
+
+    stage3_debug_trace['step1'] = step1_trace
+    before_assignments = dict(step1_before_assignments)
+    after_assignments = dict(step1_after_assignments)
+    unresolved_before_coordinates = frozenset(candidate_union.union_footprint.difference(before_assignments))
+    report_union_substep('Snapshot rescue before-state reference assignment')
+    internal_before_assignments = {} if not unresolved_before_coordinates else select_stage3_internal_before_reference_windows(
+        union_start=candidate_union.start_frame,
+        union_end=candidate_union.end_frame,
+        footprint=candidate_union.union_footprint,
+        touch_frame_bounds=touch_frame_bounds,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        target_coordinates=unresolved_before_coordinates,
+    )
+    before_assignments = merge_stage3_reference_assignments(before_assignments, internal_before_assignments)
+    unresolved_before_coordinates = frozenset(candidate_union.union_footprint.difference(before_assignments))
+    external_before_assignments, rescue_before_candidate_count = ({}, 0) if not unresolved_before_coordinates else select_stage3_cell_reference_windows(
+        search_start=rescue_before_search_start,
+        search_end=rescue_before_search_end,
+        prefer_nearest=True,
+        footprint=candidate_union.union_footprint,
+        endpoint_coordinates=endpoint_coordinates,
+        require_external_movement_for_all_cells=False,
+        require_external_movement_for_endpoints=False,
+        require_external_movement_outside_coordinate_for_all_cells=True,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        target_coordinates=unresolved_before_coordinates,
+    )
+    before_assignments = merge_stage3_reference_assignments(before_assignments, external_before_assignments)
+
+    report_union_substep(
+        f"Snapshot rescue before-state assignment complete "
+        f"(internal {len(internal_before_assignments)}, external {len(external_before_assignments)})"
+    )
+
+    after_assignments = dict(step1_after_assignments)
+    unresolved_after_coordinates = frozenset(candidate_union.union_footprint.difference(after_assignments))
+    report_union_substep('Snapshot rescue after-state reference assignment')
+    internal_after_assignments = {} if not unresolved_after_coordinates else select_stage3_internal_after_reference_windows(
+        union_start=candidate_union.start_frame,
+        union_end=candidate_union.end_frame,
+        footprint=candidate_union.union_footprint,
+        touch_frame_bounds=touch_frame_bounds,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        target_coordinates=unresolved_after_coordinates,
+    )
+    after_assignments = merge_stage3_reference_assignments(after_assignments, internal_after_assignments)
+    unresolved_after_coordinates = frozenset(candidate_union.union_footprint.difference(after_assignments))
+    external_after_assignments, rescue_after_candidate_count = ({}, 0) if not unresolved_after_coordinates else select_stage3_cell_reference_windows(
+        search_start=rescue_after_search_start,
+        search_end=rescue_after_search_end,
+        prefer_nearest=False,
+        footprint=candidate_union.union_footprint,
+        endpoint_coordinates=endpoint_coordinates,
+        require_external_movement_for_all_cells=False,
+        require_external_movement_for_endpoints=True,
+        require_external_movement_outside_coordinate_for_all_cells=False,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        target_coordinates=unresolved_after_coordinates,
+    )
+    after_assignments = merge_stage3_reference_assignments(after_assignments, external_after_assignments)
+
+    report_union_substep(
+        f"Snapshot rescue after-state assignment complete "
+        f"(internal {len(internal_after_assignments)}, external {len(external_after_assignments)})"
+    )
+    report_union_substep('Snapshot rescue cell classification')
+    rescue_bucket_by_cell: dict[GridCoordinate, str] = {}
+    for coordinate in candidate_union.union_footprint:
+        before_window = before_assignments.get(coordinate)
+        after_window = after_assignments.get(coordinate)
+        if before_window is None or after_window is None:
+            rescue_bucket_by_cell[coordinate] = 'resolved_ambiguous'
+            continue
+        rescue_bucket_by_cell[coordinate] = classify_stage3_cell_change(
+            coordinate,
+            before_window,
+            after_window,
+            sampled_frames,
+            cell_art_state_masks,
+            baseline_cache,
+            settings,
+            cv2,
+            stage3_context,
+        )
+
+    rescue_coverage = evaluate_stage3_bucket_coverages(candidate_union.union_footprint, rescue_bucket_by_cell)
+    reconstructed_before_coverage = len(before_assignments) / max(1, candidate_union.union_footprint_size)
+    rescue_screening_result, rescue_surviving, rescue_reason, rescue_bounded_ambiguity = decide_stage3_bucket_outcome(
+        coverage_summary=rescue_coverage,
+        reconstructed_before_coverage=reconstructed_before_coverage,
+        mode='snapshot_rescue',
+    )
+    if rescue_screening_result is None or rescue_reason is None:
+        rescue_screening_result = 'rejected'
+        rescue_surviving = False
+        rescue_reason = 'rejected_after_rescue_failure'
+
+    representative_before_window = selected_before_window
+    if representative_before_window is None and before_assignments:
+        representative_before_window = next(iter(before_assignments.values()))
+    representative_after_window = selected_after_window
+    if representative_after_window is None and after_assignments:
+        representative_after_window = next(iter(after_assignments.values()))
+
+    stage3_debug_trace['snapshot_rescue'] = {
+        'attempted': True,
+        'internal_before_assignment_count': len(internal_before_assignments),
+        'external_before_assignment_count': len(external_before_assignments),
+        'before_assignment_count': len(before_assignments),
+        'internal_after_assignment_count': len(internal_after_assignments),
+        'external_after_assignment_count': len(external_after_assignments),
+        'after_assignment_count': len(after_assignments),
+        'before_window_candidate_count': rescue_before_candidate_count,
+        'after_window_candidate_count': rescue_after_candidate_count,
+        'representative_before_window': serialize_stage3_window_metadata(representative_before_window),
+        'representative_after_window': serialize_stage3_window_metadata(representative_after_window),
+        'reconstructed_before_coverage': round(reconstructed_before_coverage, 6),
+        'bucket_coverages': serialize_stage3_coverage_summary(rescue_coverage),
+        'decision': {
+            'screening_result': rescue_screening_result,
+            'surviving': rescue_surviving,
+            'reason': rescue_reason,
+            'bounded_ambiguity': rescue_bounded_ambiguity,
+        },
+        'cell_traces': build_stage3_rescue_cell_rows(
+            candidate_union.union_footprint,
+            before_assignments,
+            after_assignments,
+            rescue_bucket_by_cell,
+        ),
+    }
+    stage3_debug_trace['final_stage3_outcome'] = {
+        'screening_result': rescue_screening_result,
+        'surviving': rescue_surviving,
+        'reason': rescue_reason,
+        'mode': 'snapshot_rescue',
+        'alignment_mode': 'composite_before_after',
+    }
+
+    before_records = [] if representative_before_window is None else get_stage3_window_records(stage3_context, ordered_records,
+        int(representative_before_window['window_start']),
+        int(representative_before_window['window_end']),
+    )
+    after_records = [] if representative_after_window is None else get_stage3_window_records(stage3_context, ordered_records,
+        int(representative_after_window['window_start']),
+        int(representative_after_window['window_end']),
+    )
+    before_reference_activity = 0.0 if representative_before_window is None else float(representative_before_window['mean_window_activity'])
+    after_reference_activity = 0.0 if representative_after_window is None else float(representative_after_window['mean_window_activity'])
+
+    return build_stage3_screened_union_result(
+        candidate_union=candidate_union,
+        within_union_records=within_union_records,
+        before_records=before_records,
+        after_records=after_records,
+        mean_movement_strength=mean_movement_strength,
+        mean_temporal_persistence=mean_temporal_persistence,
+        mean_spatial_extent=mean_spatial_extent,
+        before_reference_activity=before_reference_activity,
+        after_reference_activity=after_reference_activity,
+        screening_result=rescue_screening_result,
+        surviving=rescue_surviving,
+        reason=rescue_reason,
+        reference_windows_reliable=bool(before_assignments) and bool(after_assignments),
+        stage3_mode='snapshot_rescue',
+        stage3_alignment_mode='composite_before_after',
+        resolved_changed_coverage=float(rescue_coverage['resolved_changed_coverage']),
+        reconstructed_before_coverage=reconstructed_before_coverage,
+        resolved_ambiguous_coverage=float(rescue_coverage['resolved_ambiguous_coverage']),
+        before_window=representative_before_window,
+        after_window=representative_after_window,
+        before_window_candidate_count=rescue_before_candidate_count,
+        after_window_candidate_count=rescue_after_candidate_count,
+        survived_by_bounded_ambiguity=rescue_bounded_ambiguity,
+        stage3_debug_trace=stage3_debug_trace,
     )
 
 
@@ -1456,32 +2995,60 @@ def screen_stage3_candidate_unions(
     chapter_range: ChapterRange | None = None,
     settings: DetectorSettings | None = None,
     use_art_state_prototype: bool = False,
+    status_callback: Callable[[str], None] | None = None,
+    union_complete_callback: Callable[[list[ScreenedCandidateUnion]], None] | None = None,
 ) -> list[ScreenedCandidateUnion]:
     ordered_candidate_unions = list(candidate_unions)
+    ordered_records = sorted(records, key=lambda record: record.frame_index)
     if sampled_frames is None or chapter_range is None or settings is None:
-        return [screen_candidate_union(candidate_union, records) for candidate_union in ordered_candidate_unions]
+        return [screen_candidate_union(candidate_union, ordered_records) for candidate_union in ordered_candidate_unions]
 
     try:
         import cv2  # type: ignore
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError('OpenCV is required for staged Stage 3 art-state screening.') from exc
 
+    stage3_context = build_stage3_runtime_context(ordered_records, sampled_frames)
     screened_unions: list[ScreenedCandidateUnion] = []
+    total_union_count = len(ordered_candidate_unions)
     for candidate_union_index, candidate_union in enumerate(ordered_candidate_unions):
         previous_union_end = None if candidate_union_index == 0 else ordered_candidate_unions[candidate_union_index - 1].end_frame
         next_union_start = None if candidate_union_index == (len(ordered_candidate_unions) - 1) else ordered_candidate_unions[candidate_union_index + 1].start_frame
-        screened_unions.append(
-            screen_candidate_union_with_art_state_prototype(
-                candidate_union=candidate_union,
-                records=records,
-                sampled_frames=sampled_frames,
-                chapter_range=chapter_range,
-                settings=settings,
-                previous_union_end=previous_union_end,
-                next_union_start=next_union_start,
-                cv2=cv2,
-            )
+        union_label = (
+            f"Union {candidate_union.union_index} "
+            f"({candidate_union.start_time} -> {candidate_union.end_time})"
         )
+        union_progress_prefix = (
+            f"Runtime Stage 3A - Union {candidate_union_index + 1}/{total_union_count} "
+            f"({candidate_union.start_time} -> {candidate_union.end_time})"
+        )
+        if status_callback is not None:
+            status_callback(
+                f"Runtime Stage 3A - Screening candidate union {candidate_union_index + 1}/{total_union_count}: {union_label}"
+            )
+        union_started_at = time.perf_counter()
+        screened_union = screen_candidate_union_with_art_state_prototype(
+            candidate_union=candidate_union,
+            records=ordered_records,
+            sampled_frames=sampled_frames,
+            chapter_range=chapter_range,
+            settings=settings,
+            previous_union_end=previous_union_end,
+            next_union_start=next_union_start,
+            cv2=cv2,
+            stage3_context=stage3_context,
+            status_callback=status_callback,
+            union_progress_prefix=union_progress_prefix,
+        )
+        screened_unions.append(screened_union)
+        if union_complete_callback is not None:
+            union_complete_callback(list(screened_unions))
+        if status_callback is not None:
+            status_callback(
+                f"Runtime Stage 3A - Finished candidate union {candidate_union_index + 1}/{total_union_count}: "
+                f"{union_label} in {format_stage_elapsed(time.perf_counter() - union_started_at)} "
+                f"({screened_union.screening_result})"
+            )
     return screened_unions
 # ============================================================
 # SECTION G - Stage 4 Time Slice Classification
@@ -1604,8 +3171,6 @@ def score_local_subregion_reference_window(
     sampled_frames: list[dict[str, object]],
     subregion: frozenset[GridCoordinate],
     anchor_frame: int,
-    search_radius_frames: int,
-    settings: DetectorSettings,
 ) -> dict[str, object] | None:
     window_start, window_end = candidate_window
     window_samples = collect_window_samples(sampled_frames, window_start, window_end)
@@ -1615,21 +3180,15 @@ def score_local_subregion_reference_window(
     window_records = collect_records_in_frame_range(records, window_start, window_end)
     local_window_activity = compute_local_subregion_window_activity(window_records, subregion)
     distance_frames = min(abs(anchor_frame - window_start), abs(anchor_frame - window_end))
-    activity_score = 1.0 - clamp_score(local_window_activity / max(STAGE4_MAX_REFERENCE_ACTIVITY, 1e-6))
-    distance_score = 1.0 - clamp_score(distance_frames / max(1, search_radius_frames))
-    quality_score = clamp_score((0.75 * activity_score) + (0.25 * distance_score))
     return {
         'window_start': window_start,
         'window_end': window_end,
         'sample_count': len(window_samples),
         'local_window_activity': local_window_activity,
         'distance_frames': distance_frames,
-        'quality_score': quality_score,
+        'trustworthy': local_window_activity <= STAGE4_MAX_REFERENCE_ACTIVITY,
         'tier': 'local' if distance_frames <= STAGE3_ART_STATE_LOCAL_WINDOW_DISTANCE_FRAMES else 'fallback',
     }
-
-
-
 def select_local_subregion_reference_window(
     *,
     search_ranges: Iterable[tuple[int, int]],
@@ -1641,7 +3200,6 @@ def select_local_subregion_reference_window(
     settings: DetectorSettings,
 ) -> tuple[dict[str, object] | None, int]:
     total_candidate_count = 0
-    best_scored_candidate: dict[str, object] | None = None
 
     for search_start, search_end in search_ranges:
         if search_end <= search_start:
@@ -1661,37 +3219,18 @@ def select_local_subregion_reference_window(
                 sampled_frames,
                 subregion,
                 anchor_frame,
-                max(1, search_end - search_start),
-                settings,
             )
             if scored_candidate is not None:
                 scored_candidates.append(scored_candidate)
 
-        acceptable_candidates = [
-            scored_candidate
-            for scored_candidate in scored_candidates
-            if scored_candidate['local_window_activity'] <= STAGE4_MAX_REFERENCE_ACTIVITY
-        ]
-        if acceptable_candidates:
-            return max(
-                acceptable_candidates,
-                key=lambda candidate: (candidate['quality_score'], -candidate['distance_frames']),
-            ), total_candidate_count
+        for scored_candidate in sorted(
+            scored_candidates,
+            key=lambda candidate: (candidate['distance_frames'], candidate['window_start'], candidate['window_end']),
+        ):
+            if bool(scored_candidate['trustworthy']):
+                return scored_candidate, total_candidate_count
 
-        if scored_candidates:
-            strongest_candidate = max(
-                scored_candidates,
-                key=lambda candidate: (candidate['quality_score'], -candidate['distance_frames']),
-            )
-            if best_scored_candidate is None or strongest_candidate['quality_score'] > best_scored_candidate['quality_score']:
-                best_scored_candidate = strongest_candidate
-
-    if best_scored_candidate is not None and best_scored_candidate['quality_score'] >= 0.40:
-        return best_scored_candidate, total_candidate_count
     return None, total_candidate_count
-
-
-
 def build_slice_reference_search_ranges(
     *,
     slice_start: int,
@@ -1763,14 +3302,20 @@ def evaluate_local_subregion_change(
         reference_window_frames=reference_window_frames,
         settings=settings,
     )
+
+    before_reference_activity = 0.0 if selected_before_window is None else float(selected_before_window['local_window_activity'])
+    after_reference_activity = 0.0 if selected_after_window is None else float(selected_after_window['local_window_activity'])
     if selected_before_window is None or selected_after_window is None:
         return {
             'subregion': subregion,
+            'comparison_state': 'reference_missing',
+            'settled': False,
             'supported': False,
             'unresolved': True,
             'reference_windows_reliable': False,
-            'before_reference_activity': 0.0 if selected_before_window is None else float(selected_before_window['local_window_activity']),
-            'after_reference_activity': 0.0 if selected_after_window is None else float(selected_after_window['local_window_activity']),
+            'meaningful_unsettled_activity': True,
+            'before_reference_activity': before_reference_activity,
+            'after_reference_activity': after_reference_activity,
             'evidence_score': 0.0,
             'persistent_difference_score': 0.0,
             'footprint_support_score': 0.0,
@@ -1788,11 +3333,14 @@ def evaluate_local_subregion_change(
     if pre_baseline is None or post_baseline is None or not before_samples or not after_samples:
         return {
             'subregion': subregion,
+            'comparison_state': 'reference_missing',
+            'settled': False,
             'supported': False,
             'unresolved': True,
             'reference_windows_reliable': False,
-            'before_reference_activity': float(selected_before_window['local_window_activity']),
-            'after_reference_activity': float(selected_after_window['local_window_activity']),
+            'meaningful_unsettled_activity': True,
+            'before_reference_activity': before_reference_activity,
+            'after_reference_activity': after_reference_activity,
             'evidence_score': 0.0,
             'persistent_difference_score': 0.0,
             'footprint_support_score': 0.0,
@@ -1830,23 +3378,43 @@ def evaluate_local_subregion_change(
         after_window_persistence_score,
         0.0,
     )
-    supported = (
-        evidence_score >= STAGE4_VALID_EVIDENCE_SCORE
+    quiet_after_reference = after_reference_activity <= STAGE4_MAX_REFERENCE_ACTIVITY
+    meaningful_persistent_difference = footprint_support_score >= STAGE4_MIN_CONTRAST_SCORE
+    settled_changed = (
+        quiet_after_reference
+        and evidence_score >= STAGE4_VALID_EVIDENCE_SCORE
         and after_window_persistence_score >= 0.45
-        and float(selected_after_window['local_window_activity']) <= (STAGE4_MAX_REFERENCE_ACTIVITY * 1.25)
+        and meaningful_persistent_difference
     )
-    unresolved = not supported and (
-        evidence_score >= STAGE4_INVALID_EVIDENCE_SCORE
-        or float(selected_before_window['local_window_activity']) > STAGE4_MAX_REFERENCE_ACTIVITY
-        or float(selected_after_window['local_window_activity']) > STAGE4_MAX_REFERENCE_ACTIVITY
+    settled_unchanged = (
+        quiet_after_reference
+        and evidence_score <= STAGE4_INVALID_EVIDENCE_SCORE
+        and not meaningful_persistent_difference
     )
+    meaningful_unsettled_activity = (
+        not quiet_after_reference
+        or (after_window_persistence_score < 0.45 and evidence_score > STAGE4_INVALID_EVIDENCE_SCORE)
+    )
+
+    if settled_changed:
+        comparison_state = 'settled_changed'
+    elif settled_unchanged:
+        comparison_state = 'settled_unchanged'
+    elif meaningful_unsettled_activity:
+        comparison_state = 'unsettled'
+    else:
+        comparison_state = 'ambiguous'
+
     return {
         'subregion': subregion,
-        'supported': supported,
-        'unresolved': unresolved,
+        'comparison_state': comparison_state,
+        'settled': comparison_state in {'settled_changed', 'settled_unchanged'},
+        'supported': comparison_state == 'settled_changed',
+        'unresolved': comparison_state in {'unsettled', 'ambiguous', 'reference_missing'},
         'reference_windows_reliable': True,
-        'before_reference_activity': float(selected_before_window['local_window_activity']),
-        'after_reference_activity': float(selected_after_window['local_window_activity']),
+        'meaningful_unsettled_activity': meaningful_unsettled_activity,
+        'before_reference_activity': before_reference_activity,
+        'after_reference_activity': after_reference_activity,
         'evidence_score': evidence_score,
         'persistent_difference_score': persistent_difference_score,
         'footprint_support_score': footprint_support_score,
@@ -1857,6 +3425,103 @@ def evaluate_local_subregion_change(
 
 
 
+def summarize_time_slice_local_subregions(
+    subregion_results: list[dict[str, object]],
+    footprint_size: int,
+) -> dict[str, float | int]:
+    changed_footprint = sum(
+        len(result['subregion'])
+        for result in subregion_results
+        if result['comparison_state'] == 'settled_changed'
+    )
+    unchanged_footprint = sum(
+        len(result['subregion'])
+        for result in subregion_results
+        if result['comparison_state'] == 'settled_unchanged'
+    )
+    unsettled_footprint = sum(
+        len(result['subregion'])
+        for result in subregion_results
+        if result['comparison_state'] == 'unsettled'
+    )
+    ambiguous_footprint = sum(
+        len(result['subregion'])
+        for result in subregion_results
+        if result['comparison_state'] in {'ambiguous', 'reference_missing'}
+    )
+    settled_results = [
+        result
+        for result in subregion_results
+        if result['comparison_state'] in {'settled_changed', 'settled_unchanged'}
+    ]
+    settled_footprint = changed_footprint + unchanged_footprint
+    settled_evidence_score = 0.0
+    if settled_footprint > 0:
+        settled_evidence_score = sum(
+            float(result['evidence_score']) * len(result['subregion'])
+            for result in settled_results
+        ) / settled_footprint
+
+    return {
+        'changed_footprint': changed_footprint,
+        'unchanged_footprint': unchanged_footprint,
+        'unsettled_footprint': unsettled_footprint,
+        'ambiguous_footprint': ambiguous_footprint,
+        'settled_footprint': settled_footprint,
+        'changed_ratio': changed_footprint / max(1, footprint_size),
+        'unsettled_ratio': unsettled_footprint / max(1, footprint_size),
+        'ambiguous_ratio': ambiguous_footprint / max(1, footprint_size),
+        'settled_evidence_score': settled_evidence_score,
+    }
+
+
+
+def classify_local_time_slice_from_summary(
+    summary: dict[str, float | int],
+    reference_windows_reliable: bool,
+) -> tuple[str, str]:
+    changed_ratio = float(summary['changed_ratio'])
+    unsettled_ratio = float(summary['unsettled_ratio'])
+    ambiguous_ratio = float(summary['ambiguous_ratio'])
+    settled_footprint = int(summary['settled_footprint'])
+    settled_evidence_score = float(summary['settled_evidence_score'])
+
+    if settled_footprint == 0:
+        if unsettled_ratio > 0.0:
+            return 'undetermined', 'unsettled_slice_activity'
+        if ambiguous_ratio > 0.0 or not reference_windows_reliable:
+            return 'undetermined', 'reference_windows_unreliable' if not reference_windows_reliable else 'mixed_slice_evidence'
+        return 'invalid', 'weak_slice_activity'
+
+    if (
+        changed_ratio >= STAGE4_MIN_SUPPORTED_SUBREGION_FOOTPRINT_RATIO
+        and settled_evidence_score >= STAGE4_VALID_EVIDENCE_SCORE
+        and unsettled_ratio <= STAGE4_MAX_UNRESOLVED_SUBREGION_FOOTPRINT_RATIO_FOR_VALID
+        and ambiguous_ratio <= STAGE4_MAX_UNRESOLVED_SUBREGION_FOOTPRINT_RATIO_FOR_VALID
+    ):
+        return 'valid', 'slice_activity_supported'
+
+    if changed_ratio < STAGE4_MIN_SUPPORTED_SUBREGION_FOOTPRINT_RATIO:
+        if unsettled_ratio > STAGE4_MAX_UNRESOLVED_SUBREGION_FOOTPRINT_RATIO_FOR_VALID:
+            return 'undetermined', 'unsettled_slice_activity'
+        if ambiguous_ratio > STAGE4_MAX_UNRESOLVED_SUBREGION_FOOTPRINT_RATIO_FOR_VALID or not reference_windows_reliable:
+            return 'undetermined', 'reference_windows_unreliable' if not reference_windows_reliable else 'mixed_slice_evidence'
+        if settled_evidence_score <= STAGE4_INVALID_EVIDENCE_SCORE:
+            return 'invalid', 'weak_slice_activity'
+        return 'undetermined', 'mixed_slice_evidence'
+
+    if (
+        settled_evidence_score <= STAGE4_INVALID_EVIDENCE_SCORE
+        and unsettled_ratio <= STAGE4_MAX_UNRESOLVED_SUBREGION_FOOTPRINT_RATIO_FOR_VALID
+        and ambiguous_ratio <= STAGE4_MAX_UNRESOLVED_SUBREGION_FOOTPRINT_RATIO_FOR_VALID
+    ):
+        return 'invalid', 'weak_slice_activity'
+
+    if unsettled_ratio > 0.0:
+        return 'undetermined', 'unsettled_slice_activity'
+    if ambiguous_ratio > 0.0 or not reference_windows_reliable:
+        return 'undetermined', 'reference_windows_unreliable' if not reference_windows_reliable else 'mixed_slice_evidence'
+    return 'undetermined', 'mixed_slice_evidence'
 def evaluate_time_slice_local_subregions(
     screened_candidate_union: ScreenedCandidateUnion,
     slice_start: int,
@@ -1966,44 +3631,23 @@ def evaluate_time_slice_local_subregions(
             'reference_windows_reliable': False,
         }
 
-    supported_subregions = [result for result in subregion_results if bool(result['supported'])]
-    unresolved_subregions = [result for result in subregion_results if bool(result['unresolved'])]
+    summary = summarize_time_slice_local_subregions(subregion_results, footprint_size)
+    reference_windows_reliable = all(bool(result['reference_windows_reliable']) for result in subregion_results)
+    classification, reason = classify_local_time_slice_from_summary(summary, reference_windows_reliable)
     average_before_activity = sum(float(result['before_reference_activity']) for result in subregion_results) / len(subregion_results)
     average_after_activity = sum(float(result['after_reference_activity']) for result in subregion_results) / len(subregion_results)
-    strongest_evidence_score = max(float(result['evidence_score']) for result in subregion_results)
-    reference_windows_reliable = all(bool(result['reference_windows_reliable']) for result in subregion_results)
-    supported_footprint = sum(len(result['subregion']) for result in supported_subregions)
-    unresolved_footprint = sum(len(result['subregion']) for result in unresolved_subregions)
-    supported_footprint_ratio = supported_footprint / max(1, footprint_size)
-    unresolved_footprint_ratio = unresolved_footprint / max(1, footprint_size)
-    has_strong_supported_coverage = (
-        supported_footprint_ratio >= STAGE4_MIN_SUPPORTED_SUBREGION_FOOTPRINT_RATIO
-        and unresolved_footprint_ratio <= STAGE4_MAX_UNRESOLVED_SUBREGION_FOOTPRINT_RATIO_FOR_VALID
-    )
 
-    if supported_subregions and has_strong_supported_coverage:
-        classification = 'valid'
-        reason = 'slice_activity_supported'
-    elif supported_subregions or unresolved_subregions:
-        classification = 'undetermined'
-        reason = 'mixed_reference_activity' if average_before_activity <= STAGE4_MAX_REFERENCE_ACTIVITY else 'reference_windows_too_active'
-    else:
-        classification = 'invalid'
-        reason = 'weak_slice_activity'
     return {
         'slice_records': slice_records,
         'footprint': footprint,
         'footprint_size': footprint_size,
         'classification': classification,
         'reason': reason,
-        'lasting_change_evidence_score': strongest_evidence_score,
+        'lasting_change_evidence_score': float(summary['settled_evidence_score']),
         'before_reference_activity': average_before_activity,
         'after_reference_activity': average_after_activity,
         'reference_windows_reliable': reference_windows_reliable,
     }
-
-
-
 def classify_time_slice(
     screened_candidate_union: ScreenedCandidateUnion,
     slice_index: int,
@@ -2104,20 +3748,47 @@ def classify_stage5_minimum_size_leaf(
     allow_valid_anchor_promotion: bool = False,
     has_adjacent_valid_support: bool = False,
 ) -> ClassifiedTimeSlice:
-    if time_slice.classification == 'valid':
-        return time_slice
-    if time_slice.classification == 'invalid':
+    if time_slice.classification in {'valid', 'invalid', 'boundary'}:
         return time_slice
     if time_slice.footprint_size <= 0:
         return replace(time_slice, classification='invalid', reason='minimum_subdivision_size_reached')
     if has_adjacent_valid_support:
         return replace(time_slice, classification='boundary', reason='minimum_subdivision_size_reached')
     return replace(time_slice, classification='invalid', reason='minimum_subdivision_size_reached')
-
-
-
 def stage5_slices_are_directly_adjacent(first_slice: ClassifiedTimeSlice, second_slice: ClassifiedTimeSlice) -> bool:
     return first_slice.end_frame == second_slice.start_frame or second_slice.end_frame == first_slice.start_frame
+
+
+
+def build_stage5_terminal_frontier_groups(
+    terminal_slices: Iterable[ClassifiedTimeSlice],
+) -> list[list[ClassifiedTimeSlice]]:
+    frontier_buckets: dict[tuple[int, int, tuple[int, int] | None], list[ClassifiedTimeSlice]] = {}
+    for terminal_slice in terminal_slices:
+        frontier_key = (
+            terminal_slice.parent_union_index,
+            terminal_slice.slice_level,
+            terminal_slice.parent_range,
+        )
+        frontier_buckets.setdefault(frontier_key, []).append(terminal_slice)
+
+    frontier_groups: list[list[ClassifiedTimeSlice]] = []
+    for bucket_slices in frontier_buckets.values():
+        ordered_bucket_slices = sorted(bucket_slices, key=lambda slice_info: (slice_info.start_frame, slice_info.end_frame))
+        current_group: list[ClassifiedTimeSlice] = []
+        for bucket_slice in ordered_bucket_slices:
+            if not current_group:
+                current_group = [bucket_slice]
+                continue
+            if stage5_slices_are_directly_adjacent(current_group[-1], bucket_slice):
+                current_group.append(bucket_slice)
+                continue
+            frontier_groups.append(current_group)
+            current_group = [bucket_slice]
+        if current_group:
+            frontier_groups.append(current_group)
+
+    return frontier_groups
 
 
 
@@ -2129,26 +3800,43 @@ def resolve_stage5_terminal_slices(
         if refined_slice.classification == 'valid':
             valid_slices_by_union.setdefault(refined_slice.parent_union_index, []).append(refined_slice)
 
-    resolved_slices: list[ClassifiedTimeSlice] = []
-    for refined_slice in refined_slices:
-        if refined_slice.classification != 'undetermined':
-            resolved_slices.append(refined_slice)
+    terminal_undetermined_slices = [
+        refined_slice
+        for refined_slice in refined_slices
+        if refined_slice.classification == 'undetermined'
+    ]
+    resolved_lookup: dict[tuple[int, int, int, int], ClassifiedTimeSlice] = {}
+    for frontier_group in build_stage5_terminal_frontier_groups(terminal_undetermined_slices):
+        if not frontier_group:
             continue
-
-        adjacent_valid_support = any(
-            stage5_slices_are_directly_adjacent(refined_slice, valid_slice)
-            for valid_slice in valid_slices_by_union.get(refined_slice.parent_union_index, [])
-        )
-        resolved_slices.append(
-            classify_stage5_minimum_size_leaf(
-                refined_slice,
+        parent_union_index = frontier_group[0].parent_union_index
+        valid_slices = valid_slices_by_union.get(parent_union_index, [])
+        for frontier_slice in frontier_group:
+            adjacent_valid_support = any(
+                stage5_slices_are_directly_adjacent(frontier_slice, valid_slice)
+                for valid_slice in valid_slices
+            )
+            resolved_slice = classify_stage5_minimum_size_leaf(
+                frontier_slice,
                 has_adjacent_valid_support=adjacent_valid_support,
             )
+            resolved_lookup[(
+                resolved_slice.parent_union_index,
+                resolved_slice.slice_level,
+                resolved_slice.start_frame,
+                resolved_slice.end_frame,
+            )] = resolved_slice
+
+    resolved_slices: list[ClassifiedTimeSlice] = []
+    for refined_slice in refined_slices:
+        slice_key = (
+            refined_slice.parent_union_index,
+            refined_slice.slice_level,
+            refined_slice.start_frame,
+            refined_slice.end_frame,
         )
+        resolved_slices.append(resolved_lookup.get(slice_key, refined_slice))
     return resolved_slices
-
-
-
 def refine_stage5_sub_slices(
     screened_candidate_unions: Iterable[ScreenedCandidateUnion],
     classified_time_slices: Iterable[ClassifiedTimeSlice],
@@ -2207,6 +3895,7 @@ def refine_stage5_sub_slices(
         refined_slices.extend(refine_slice(time_slice))
 
     return resolve_stage5_terminal_slices(refined_slices)
+
 def is_stage6_candidate_slice(
     time_slice: ClassifiedTimeSlice,
     maximum_boundary_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
@@ -2220,14 +3909,7 @@ def is_stage6_candidate_slice(
     return (time_slice.end_frame - time_slice.start_frame) <= maximum_boundary_frames
 
 
-def compute_stage6_footprint_overlap(first_slice: ClassifiedTimeSlice, second_slice: ClassifiedTimeSlice) -> float:
-    if not first_slice.footprint or not second_slice.footprint:
-        return 0.0
-    shared_footprint = len(first_slice.footprint & second_slice.footprint)
-    combined_footprint = len(first_slice.footprint | second_slice.footprint)
-    if combined_footprint == 0:
-        return 0.0
-    return shared_footprint / combined_footprint
+
 
 
 def build_stage6_candidate_groups(
@@ -2252,13 +3934,7 @@ def build_stage6_candidate_groups(
         previous_slice = current_group[-1]
         gap_frames = next_slice.start_frame - previous_slice.end_frame
         close_enough = gap_frames <= merge_gap_frames
-        footprint_overlap = compute_stage6_footprint_overlap(previous_slice, next_slice)
-        low_overlap_valid_boundary = (
-            gap_frames > 0
-            and ('valid' in {previous_slice.classification, next_slice.classification})
-            and footprint_overlap < STAGE6_VALID_MERGE_MIN_FOOTPRINT_OVERLAP
-        )
-        if close_enough and not low_overlap_valid_boundary:
+        if close_enough:
             current_group.append(next_slice)
         else:
             candidate_groups.append(current_group)
@@ -2306,24 +3982,70 @@ def assemble_stage6_candidate_ranges(
                 boundary_count=boundary_count,
             )
         )
-    return final_ranges# ============================================================
+    return final_ranges
+
+# ============================================================
 # SECTION J - Staged Pipeline Execution And Debug Output
 # ============================================================
 
 import json
+import time
 
 
 DEBUG_ARTIFACT_TITLES = {
     'movement_evidence_records': 'Stage 1A - Movement Evidence Record',
     'movement_spans': 'Stage 1B - Movement Spans',
+    'reusable_stage3_art_state_samples': 'Stage 1C - Reusable Stage 2B Frame Payload',
     'candidate_unions': 'Stage 2A - Candidate Union Record',
-    'screened_candidate_unions': 'Stage 2B - Union Classifications',
+    'screened_candidate_unions': 'Stage 3A - Union Screening',
+    'stage3_screening_traces': 'Stage 3B - Screening Trace [Step 1 + Snapshot Rescue]',
     'classified_time_slices': 'Stage 4 - Time Slice Classifications',
     'refined_sub_slices': 'Stage 5 - Recursive Sub-Time Slice Classifications',
     'final_candidate_ranges': 'Stage 6A - Candidate Ranges [Pre-Filters]',
     'candidate_clips': 'Stage 6B - Candidate Pre-Clips [Post-Filters]',
 }
 DEBUG_SUMMARY_TITLE = 'Debug Summary'
+
+def format_stage_elapsed(elapsed_seconds: float) -> str:
+    whole_seconds = max(0, int(elapsed_seconds))
+    hours = whole_seconds // 3600
+    minutes = (whole_seconds % 3600) // 60
+    remaining_seconds = whole_seconds % 60
+    if hours > 0:
+        return f'{hours:02}:{minutes:02}:{remaining_seconds:02}'
+    return f'{minutes:02}:{remaining_seconds:02}'
+
+
+def emit_stage_status(status_callback: Callable[[str], None] | None, message: str) -> None:
+    if status_callback is not None:
+        status_callback(message)
+
+
+def build_stage_timing_entry(stage_key: str, stage_label: str, elapsed_seconds: float, item_count: int | None = None) -> dict[str, object]:
+    entry: dict[str, object] = {
+        'stage_key': stage_key,
+        'stage_label': stage_label,
+        'elapsed_seconds': round(elapsed_seconds, 6),
+        'elapsed_hhmmss': format_stage_elapsed(elapsed_seconds),
+    }
+    if item_count is not None:
+        entry['item_count'] = item_count
+    return entry
+
+
+def format_grid_coordinate_label(coordinate: GridCoordinate) -> str:
+    row_index, column_index = coordinate
+    column_label = chr(ord('A') + column_index)
+    return f"{column_label}{row_index + 1}"
+
+
+
+def serialize_grid_coordinate(coordinate: GridCoordinate) -> dict[str, object]:
+    return {
+        'row_index': coordinate[0],
+        'column_index': coordinate[1],
+        'label': format_grid_coordinate_label(coordinate),
+    }
 
 
 def serialize_movement_evidence_record(record: MovementEvidenceRecord) -> dict[str, object]:
@@ -2333,6 +4055,8 @@ def serialize_movement_evidence_record(record: MovementEvidenceRecord) -> dict[s
         'frame_index': record.frame_index,
         'movement_present': record.movement_present,
         'touched_grid_coordinates': [list(coordinate) for coordinate in record.touched_grid_coordinates],
+        'touched_grid_coordinate_labels': [format_grid_coordinate_label(coordinate) for coordinate in record.touched_grid_coordinates],
+        'touched_grid_coordinate_details': [serialize_grid_coordinate(coordinate) for coordinate in record.touched_grid_coordinates],
         'touched_grid_coordinate_count': record.touched_grid_coordinate_count,
         'change_magnitude_score': round(record.change_magnitude_score, 6),
         'spatial_extent_score': round(record.spatial_extent_score, 6),
@@ -2345,6 +4069,90 @@ def serialize_movement_evidence_record(record: MovementEvidenceRecord) -> dict[s
 
 
 
+
+
+def deserialize_movement_evidence_record(payload: dict[str, object]) -> MovementEvidenceRecord:
+    touched_grid_coordinates = tuple(
+        (int(coordinate[0]), int(coordinate[1]))
+        for coordinate in payload.get('touched_grid_coordinates', [])
+    )
+    return MovementEvidenceRecord(
+        record_index=int(payload['record_index']),
+        evaluation_point_timecode=str(payload['evaluation_point_timecode']),
+        frame_index=int(payload['frame_index']),
+        movement_present=bool(payload['movement_present']),
+        touched_grid_coordinates=touched_grid_coordinates,
+        touched_grid_coordinate_count=int(payload.get('touched_grid_coordinate_count', len(touched_grid_coordinates))),
+        change_magnitude_score=float(payload['change_magnitude_score']),
+        spatial_extent_score=float(payload['spatial_extent_score']),
+        temporal_persistence_score=float(payload['temporal_persistence_score']),
+        movement_strength_score=float(payload['movement_strength_score']),
+        opening_signal=bool(payload.get('opening_signal', False)),
+        continuation_signal=bool(payload.get('continuation_signal', False)),
+        weak_signal=bool(payload.get('weak_signal', False)),
+    )
+
+
+def load_precomputed_movement_evidence_records(path: Path) -> list[MovementEvidenceRecord]:
+    raw_payload = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(raw_payload, list):
+        raise RuntimeError(f'Precomputed movement evidence JSON must contain a top-level list: {path}')
+    return [deserialize_movement_evidence_record(item) for item in raw_payload]
+
+
+def infer_debug_stem_from_artifact_path(artifact_path: Path, artifact_key: str, suffix: str) -> Path | None:
+    artifact_title = DEBUG_ARTIFACT_TITLES[artifact_key]
+    artifact_suffix = f' - {artifact_title}{suffix}'
+    if not artifact_path.name.endswith(artifact_suffix):
+        return None
+    return artifact_path.with_name(artifact_path.name[:-len(artifact_suffix)])
+
+
+def write_reusable_stage3_art_state_sample_cache(debug_stem: Path, sampled_frames: list[dict[str, object]]) -> Path:
+    output_path = build_staged_debug_output_path(debug_stem, 'reusable_stage3_art_state_samples', '.npz')
+    frame_indices = np.asarray([int(sample['frame_index']) for sample in sampled_frames], dtype=np.int32)
+    if sampled_frames:
+        canvas_gray_stack = np.stack([np.asarray(sample['canvas_gray'], dtype=np.uint8) for sample in sampled_frames], axis=0)
+        art_gray_stack = np.stack([np.asarray(sample['art_gray'], dtype=np.uint8) for sample in sampled_frames], axis=0)
+    else:
+        canvas_gray_stack = np.empty((0, 0, 0), dtype=np.uint8)
+        art_gray_stack = np.empty((0, 0, 0), dtype=np.uint8)
+    np.savez_compressed(output_path, frame_indices=frame_indices, canvas_gray=canvas_gray_stack, art_gray=art_gray_stack)
+    return output_path
+
+
+def load_reusable_stage3_art_state_sample_cache(path: Path) -> list[dict[str, object]]:
+    try:
+        with np.load(path, allow_pickle=False) as payload:
+            frame_indices = payload['frame_indices']
+            canvas_gray_stack = payload['canvas_gray']
+            art_gray_stack = payload['art_gray']
+    except Exception as exc:
+        raise RuntimeError(f'Unable to load reusable Stage 2B frame payload: {path}') from exc
+    if len(frame_indices) != len(canvas_gray_stack) or len(frame_indices) != len(art_gray_stack):
+        raise RuntimeError(f'Reusable Stage 2B frame payload is inconsistent: {path}')
+    return [
+        {
+            'frame_index': int(frame_indices[index]),
+            'canvas_gray': canvas_gray_stack[index],
+            'art_gray': art_gray_stack[index],
+        }
+        for index in range(len(frame_indices))
+    ]
+
+
+def load_precomputed_stage3_art_state_sample_cache_from_movement_evidence_path(
+    movement_evidence_path: Path,
+) -> list[dict[str, object]] | None:
+    debug_stem = infer_debug_stem_from_artifact_path(movement_evidence_path, 'movement_evidence_records', '.json')
+    if debug_stem is None:
+        return None
+    cache_path = build_staged_debug_output_path(debug_stem, 'reusable_stage3_art_state_samples', '.npz')
+    if not cache_path.exists():
+        return None
+    return load_reusable_stage3_art_state_sample_cache(cache_path)
+
+
 def serialize_movement_span(span: MovementSpan) -> dict[str, object]:
     return {
         'span_index': span.span_index,
@@ -2353,6 +4161,8 @@ def serialize_movement_span(span: MovementSpan) -> dict[str, object]:
         'start_time': span.start_time,
         'end_time': span.end_time,
         'footprint': [list(coordinate) for coordinate in sorted(span.footprint)],
+        'footprint_labels': [format_grid_coordinate_label(coordinate) for coordinate in sorted(span.footprint)],
+        'footprint_details': [serialize_grid_coordinate(coordinate) for coordinate in sorted(span.footprint)],
         'footprint_size': span.footprint_size,
         'record_indices': list(span.record_indices),
     }
@@ -2368,6 +4178,8 @@ def serialize_candidate_union(candidate_union: CandidateUnion) -> dict[str, obje
         'end_time': candidate_union.end_time,
         'member_movement_span_indices': [span.span_index for span in candidate_union.member_movement_spans],
         'union_footprint': [list(coordinate) for coordinate in sorted(candidate_union.union_footprint)],
+        'union_footprint_labels': [format_grid_coordinate_label(coordinate) for coordinate in sorted(candidate_union.union_footprint)],
+        'union_footprint_details': [serialize_grid_coordinate(coordinate) for coordinate in sorted(candidate_union.union_footprint)],
         'union_footprint_size': candidate_union.union_footprint_size,
     }
 
@@ -2418,6 +4230,22 @@ def serialize_screened_candidate_union(screened_union: ScreenedCandidateUnion) -
 
 
 
+def serialize_stage3_screening_trace(screened_union: ScreenedCandidateUnion) -> dict[str, object]:
+    if screened_union.stage3_debug_trace is None:
+        return {
+            'candidate_union_index': screened_union.candidate_union.union_index,
+            'final_stage3_outcome': {
+                'screening_result': screened_union.screening_result,
+                'surviving': screened_union.surviving,
+                'reason': screened_union.reason,
+                'mode': screened_union.stage3_mode,
+                'alignment_mode': screened_union.stage3_alignment_mode,
+            },
+        }
+    return screened_union.stage3_debug_trace
+
+
+
 def serialize_classified_time_slice(time_slice: ClassifiedTimeSlice) -> dict[str, object]:
     return {
         'slice_index': time_slice.slice_index,
@@ -2428,6 +4256,8 @@ def serialize_classified_time_slice(time_slice: ClassifiedTimeSlice) -> dict[str
         'start_time': time_slice.start_time,
         'end_time': time_slice.end_time,
         'footprint': [list(coordinate) for coordinate in sorted(time_slice.footprint)],
+        'footprint_labels': [format_grid_coordinate_label(coordinate) for coordinate in sorted(time_slice.footprint)],
+        'footprint_details': [serialize_grid_coordinate(coordinate) for coordinate in sorted(time_slice.footprint)],
         'footprint_size': time_slice.footprint_size,
         'within_slice_record_count': time_slice.within_slice_record_count,
         'classification': time_slice.classification,
@@ -2487,7 +4317,7 @@ def format_final_range_source_description(source_classifications: Iterable[objec
 
 
 
-def build_staged_debug_summary_lines(debug_payload: dict[str, list[dict[str, object]]]) -> list[str]:
+def build_staged_debug_summary_lines(debug_payload: dict[str, object]) -> list[str]:
     records = debug_payload.get('movement_evidence_records', [])
     spans = debug_payload.get('movement_spans', [])
     candidate_unions = debug_payload.get('candidate_unions', [])
@@ -2496,6 +4326,7 @@ def build_staged_debug_summary_lines(debug_payload: dict[str, list[dict[str, obj
     refined_sub_slices = debug_payload.get('refined_sub_slices', [])
     final_candidate_ranges = debug_payload.get('final_candidate_ranges', [])
     candidate_clips = debug_payload.get('candidate_clips', [])
+    stage_timings = debug_payload.get('stage_timings', [])
 
     surviving_union_count = sum(
         1 for screened_union in screened_candidate_unions
@@ -2572,6 +4403,16 @@ def build_staged_debug_summary_lines(debug_payload: dict[str, list[dict[str, obj
         f'- Candidate clips produced: {len(candidate_clips)}',
     ])
 
+    if stage_timings:
+        summary_lines.append('')
+        summary_lines.append('Runtime timings')
+        for timing in stage_timings:
+            stage_label = timing.get('stage_label', 'unknown stage')
+            elapsed_hhmmss = timing.get('elapsed_hhmmss', 'unknown')
+            item_count = timing.get('item_count')
+            detail_suffix = '' if item_count is None else f' ({item_count} items)'
+            summary_lines.append(f'- {stage_label}: {elapsed_hhmmss}{detail_suffix}')
+
     if final_candidate_ranges:
         summary_lines.append('')
         summary_lines.append('Final retained ranges')
@@ -2606,59 +4447,237 @@ def detect_staged_activity_ranges(
     chapter_range: ChapterRange,
     settings: DetectorSettings,
     progress_callback: Callable[[int], None] | None = None,
+    status_callback: Callable[[str], None] | None = None,
+    debug_stem: Path | None = None,
     use_stage3_art_state_prototype: bool = False,
-) -> tuple[list[tuple[int, int]], dict[str, list[dict[str, object]]]]:
-    records = detect_movement_evidence_records(
-        video_path=video_path,
-        chapter_range=chapter_range,
-        settings=settings,
-        progress_callback=progress_callback,
-    )
+    precomputed_movement_evidence_path: Path | None = None,
+) -> tuple[list[tuple[int, int]], dict[str, object]]:
+    stage_timings: list[dict[str, object]] = []
+    total_started_at = time.perf_counter()
+
+    def flush_debug_payload(debug_payload: dict[str, object]) -> None:
+        if debug_stem is None:
+            return
+        write_staged_debug_artifacts(debug_stem, debug_payload)
+
+    if precomputed_movement_evidence_path is None:
+        emit_stage_status(status_callback, 'Runtime Stage 1A - Scanning chapter for movement evidence started')
+    else:
+        emit_stage_status(status_callback, f"Runtime Stage 1A - Loading precomputed movement evidence started ({precomputed_movement_evidence_path})")
+    stage_started_at = time.perf_counter()
+    if precomputed_movement_evidence_path is None:
+        records, retained_stage3_samples = detect_movement_evidence_records(
+            video_path=video_path,
+            chapter_range=chapter_range,
+            settings=settings,
+            progress_callback=progress_callback,
+        )
+    else:
+        records = load_precomputed_movement_evidence_records(precomputed_movement_evidence_path)
+        retained_stage3_samples = load_precomputed_stage3_art_state_sample_cache_from_movement_evidence_path(
+            precomputed_movement_evidence_path
+        )
+    elapsed_seconds = time.perf_counter() - stage_started_at
+    stage_timings.append(build_stage_timing_entry('runtime_stage_1a_movement_evidence', 'Runtime Stage 1A - Scanning chapter for movement evidence', elapsed_seconds, len(records)))
+    if precomputed_movement_evidence_path is None:
+        emit_stage_status(status_callback, f"Runtime Stage 1A - Scanning chapter for movement evidence complete in {format_stage_elapsed(elapsed_seconds)} ({len(records)} movement evidence records)")
+    else:
+        emit_stage_status(status_callback, f"Runtime Stage 1A - Loading precomputed movement evidence complete in {format_stage_elapsed(elapsed_seconds)} ({len(records)} movement evidence records)")
+    serialized_records = [serialize_movement_evidence_record(record) for record in records]
+    flush_debug_payload({
+        'movement_evidence_records': serialized_records,
+        'stage_timings': stage_timings,
+    })
+
+    emit_stage_status(status_callback, 'Runtime Stage 1B - Building movement spans started')
+    stage_started_at = time.perf_counter()
     movement_spans = build_stage1_movement_spans(records, settings)
+    elapsed_seconds = time.perf_counter() - stage_started_at
+    stage_timings.append(build_stage_timing_entry('runtime_stage_1b_movement_spans', 'Runtime Stage 1B - Building movement spans', elapsed_seconds, len(movement_spans)))
+    emit_stage_status(status_callback, f"Runtime Stage 1B - Building movement spans complete in {format_stage_elapsed(elapsed_seconds)} ({len(movement_spans)} movement spans)")
+    serialized_movement_spans = [serialize_movement_span(span) for span in movement_spans]
+    flush_debug_payload({
+        'movement_evidence_records': serialized_records,
+        'movement_spans': serialized_movement_spans,
+        'stage_timings': stage_timings,
+    })
+
+    emit_stage_status(status_callback, 'Runtime Stage 2A - Building candidate unions started')
+    stage_started_at = time.perf_counter()
     candidate_unions = build_stage2_candidate_unions(movement_spans)
+    elapsed_seconds = time.perf_counter() - stage_started_at
+    stage_timings.append(build_stage_timing_entry('runtime_stage_2a_candidate_unions', 'Runtime Stage 2A - Building candidate unions', elapsed_seconds, len(candidate_unions)))
+    emit_stage_status(status_callback, f"Runtime Stage 2A - Building candidate unions complete in {format_stage_elapsed(elapsed_seconds)} ({len(candidate_unions)} candidate unions)")
+    serialized_candidate_unions = [serialize_candidate_union(candidate_union) for candidate_union in candidate_unions]
+    flush_debug_payload({
+        'movement_evidence_records': serialized_records,
+        'movement_spans': serialized_movement_spans,
+        'candidate_unions': serialized_candidate_unions,
+        'stage_timings': stage_timings,
+    })
+
+    reuse_source_description: str | None = None
+    if retained_stage3_samples is not None:
+        reuse_source_description = (
+            'reusing in-memory Stage 1 sampled frames from this run'
+            if precomputed_movement_evidence_path is None
+            else 'reusing Stage 1C cached frame payload'
+        )
+
+    emit_stage_status(status_callback, 'Runtime Stage 2B - Collecting Stage 3 art-state samples started')
+    stage_started_at = time.perf_counter()
     stage3_art_state_samples = collect_stage3_art_state_samples(
         video_path=video_path,
         chapter_range=chapter_range,
         settings=settings,
+        status_callback=status_callback,
+        precomputed_samples=retained_stage3_samples,
+        reuse_source_description=reuse_source_description,
     )
+    elapsed_seconds = time.perf_counter() - stage_started_at
+    stage_timings.append(build_stage_timing_entry('runtime_stage_2b_art_state_samples', 'Runtime Stage 2B - Collecting Stage 3 art-state samples', elapsed_seconds, len(stage3_art_state_samples)))
+    emit_stage_status(status_callback, f"Runtime Stage 2B - Collecting Stage 3 art-state samples complete in {format_stage_elapsed(elapsed_seconds)} ({len(stage3_art_state_samples)} sampled frames)")
+    if debug_stem is not None:
+        emit_stage_status(status_callback, 'Runtime Stage 1C - Writing reusable Stage 2B frame payload started')
+        stage_started_at = time.perf_counter()
+        write_reusable_stage3_art_state_sample_cache(debug_stem, stage3_art_state_samples)
+        elapsed_seconds = time.perf_counter() - stage_started_at
+        stage_timings.append(
+            build_stage_timing_entry(
+                'runtime_stage_1c_reusable_frame_payload',
+                'Runtime Stage 1C - Writing reusable Stage 2B frame payload',
+                elapsed_seconds,
+                len(stage3_art_state_samples),
+            )
+        )
+        emit_stage_status(
+            status_callback,
+            f"Runtime Stage 1C - Writing reusable Stage 2B frame payload complete in {format_stage_elapsed(elapsed_seconds)} ({len(stage3_art_state_samples)} sampled frames)",
+        )
+    flush_debug_payload({
+        'movement_evidence_records': serialized_records,
+        'movement_spans': serialized_movement_spans,
+        'candidate_unions': serialized_candidate_unions,
+        'stage_timings': stage_timings,
+    })
+
+    def flush_stage5_progress(current_screened_unions: list[ScreenedCandidateUnion]) -> None:
+        flush_debug_payload({
+            'movement_evidence_records': serialized_records,
+            'movement_spans': serialized_movement_spans,
+            'candidate_unions': serialized_candidate_unions,
+            'screened_candidate_unions': [serialize_screened_candidate_union(screened_union) for screened_union in current_screened_unions],
+            'stage3_screening_traces': [serialize_stage3_screening_trace(screened_union) for screened_union in current_screened_unions],
+            'stage_timings': stage_timings,
+        })
+
+    emit_stage_status(status_callback, 'Runtime Stage 3A - Screening candidate unions started')
+    stage_started_at = time.perf_counter()
     screened_candidate_unions = screen_stage3_candidate_unions(
         candidate_unions,
         records,
         sampled_frames=stage3_art_state_samples,
         chapter_range=chapter_range,
         settings=settings,
+        status_callback=status_callback,
+        union_complete_callback=flush_stage5_progress,
     )
-    classified_time_slices = classify_stage4_time_slices(screened_candidate_unions, records, sampled_frames=stage3_art_state_samples, settings=settings)
-    refined_sub_slices = refine_stage5_sub_slices(screened_candidate_unions, classified_time_slices, records, sampled_frames=stage3_art_state_samples, settings=settings)
-    final_candidate_ranges = assemble_stage6_candidate_ranges(refined_sub_slices)
+    elapsed_seconds = time.perf_counter() - stage_started_at
+    stage_timings.append(build_stage_timing_entry('runtime_stage_3a_union_screening', 'Runtime Stage 3A - Screening candidate unions', elapsed_seconds, len(screened_candidate_unions)))
+    emit_stage_status(status_callback, f"Runtime Stage 3A - Screening candidate unions complete in {format_stage_elapsed(elapsed_seconds)} ({len(screened_candidate_unions)} screened unions)")
+    serialized_screened_candidate_unions = [serialize_screened_candidate_union(screened_union) for screened_union in screened_candidate_unions]
+    serialized_stage3_screening_traces = [serialize_stage3_screening_trace(screened_union) for screened_union in screened_candidate_unions]
+    flush_debug_payload({
+        'movement_evidence_records': serialized_records,
+        'movement_spans': serialized_movement_spans,
+        'candidate_unions': serialized_candidate_unions,
+        'screened_candidate_unions': serialized_screened_candidate_unions,
+        'stage3_screening_traces': serialized_stage3_screening_traces,
+        'stage_timings': stage_timings,
+    })
 
-    debug_payload = {
-        'movement_evidence_records': [serialize_movement_evidence_record(record) for record in records],
-        'movement_spans': [serialize_movement_span(span) for span in movement_spans],
-        'candidate_unions': [serialize_candidate_union(candidate_union) for candidate_union in candidate_unions],
-        'screened_candidate_unions': [serialize_screened_candidate_union(screened_union) for screened_union in screened_candidate_unions],
-        'classified_time_slices': [serialize_classified_time_slice(time_slice) for time_slice in classified_time_slices],
-        'refined_sub_slices': [serialize_classified_time_slice(time_slice) for time_slice in refined_sub_slices],
-        'final_candidate_ranges': [serialize_final_candidate_range(final_range) for final_range in final_candidate_ranges],
+    emit_stage_status(status_callback, 'Runtime Stage 4 - Classifying top-level time slices started')
+    stage_started_at = time.perf_counter()
+    classified_time_slices = classify_stage4_time_slices(screened_candidate_unions, records, sampled_frames=stage3_art_state_samples, settings=settings)
+    elapsed_seconds = time.perf_counter() - stage_started_at
+    stage_timings.append(build_stage_timing_entry('runtime_stage_4_time_slice_classification', 'Runtime Stage 4 - Classifying top-level time slices', elapsed_seconds, len(classified_time_slices)))
+    emit_stage_status(status_callback, f"Runtime Stage 4 - Classifying top-level time slices complete in {format_stage_elapsed(elapsed_seconds)} ({len(classified_time_slices)} slices)")
+    serialized_classified_time_slices = [serialize_classified_time_slice(time_slice) for time_slice in classified_time_slices]
+    flush_debug_payload({
+        'movement_evidence_records': serialized_records,
+        'movement_spans': serialized_movement_spans,
+        'candidate_unions': serialized_candidate_unions,
+        'screened_candidate_unions': serialized_screened_candidate_unions,
+        'stage3_screening_traces': serialized_stage3_screening_traces,
+        'classified_time_slices': serialized_classified_time_slices,
+        'stage_timings': stage_timings,
+    })
+
+    emit_stage_status(status_callback, 'Runtime Stage 5 - Running recursive refinement started')
+    stage_started_at = time.perf_counter()
+    refined_sub_slices = refine_stage5_sub_slices(screened_candidate_unions, classified_time_slices, records, sampled_frames=stage3_art_state_samples, settings=settings)
+    elapsed_seconds = time.perf_counter() - stage_started_at
+    stage_timings.append(build_stage_timing_entry('runtime_stage_5_recursive_refinement', 'Runtime Stage 5 - Running recursive refinement', elapsed_seconds, len(refined_sub_slices)))
+    emit_stage_status(status_callback, f"Runtime Stage 5 - Running recursive refinement complete in {format_stage_elapsed(elapsed_seconds)} ({len(refined_sub_slices)} refined slices)")
+    serialized_refined_sub_slices = [serialize_classified_time_slice(time_slice) for time_slice in refined_sub_slices]
+    flush_debug_payload({
+        'movement_evidence_records': serialized_records,
+        'movement_spans': serialized_movement_spans,
+        'candidate_unions': serialized_candidate_unions,
+        'screened_candidate_unions': serialized_screened_candidate_unions,
+        'stage3_screening_traces': serialized_stage3_screening_traces,
+        'classified_time_slices': serialized_classified_time_slices,
+        'refined_sub_slices': serialized_refined_sub_slices,
+        'stage_timings': stage_timings,
+    })
+
+    emit_stage_status(status_callback, 'Runtime Stage 6 - Assembling final retained ranges started')
+    stage_started_at = time.perf_counter()
+    final_candidate_ranges = assemble_stage6_candidate_ranges(refined_sub_slices)
+    elapsed_seconds = time.perf_counter() - stage_started_at
+    stage_timings.append(build_stage_timing_entry('runtime_stage_6_final_ranges', 'Runtime Stage 6 - Assembling final retained ranges', elapsed_seconds, len(final_candidate_ranges)))
+    emit_stage_status(status_callback, f"Runtime Stage 6 - Assembling final retained ranges complete in {format_stage_elapsed(elapsed_seconds)} ({len(final_candidate_ranges)} retained ranges)")
+    serialized_final_candidate_ranges = [serialize_final_candidate_range(final_range) for final_range in final_candidate_ranges]
+
+    total_elapsed_seconds = time.perf_counter() - total_started_at
+    stage_timings.append(build_stage_timing_entry('stage_total', 'Total staged detector time', total_elapsed_seconds))
+    emit_stage_status(status_callback, 'Staged detector timing summary:')
+    for timing in stage_timings:
+        stage_label = timing['stage_label']
+        elapsed_hhmmss = timing['elapsed_hhmmss']
+        item_count = timing.get('item_count')
+        detail_suffix = '' if item_count is None else f' ({item_count} items)'
+        emit_stage_status(status_callback, f"- {stage_label}: {elapsed_hhmmss}{detail_suffix}")
+
+    debug_payload: dict[str, object] = {
+        'movement_evidence_records': serialized_records,
+        'movement_spans': serialized_movement_spans,
+        'candidate_unions': serialized_candidate_unions,
+        'screened_candidate_unions': serialized_screened_candidate_unions,
+        'stage3_screening_traces': serialized_stage3_screening_traces,
+        'classified_time_slices': serialized_classified_time_slices,
+        'refined_sub_slices': serialized_refined_sub_slices,
+        'final_candidate_ranges': serialized_final_candidate_ranges,
+        'stage_timings': stage_timings,
     }
+    flush_debug_payload(debug_payload)
     final_ranges = [(final_range.start_frame, final_range.end_frame) for final_range in final_candidate_ranges]
     return final_ranges, debug_payload
-
-
-
 def build_staged_debug_output_path(debug_stem: Path, artifact_key: str, suffix: str) -> Path:
     artifact_title = DEBUG_SUMMARY_TITLE if artifact_key == 'summary' else DEBUG_ARTIFACT_TITLES.get(artifact_key, artifact_key)
     return debug_stem.with_name(f'{debug_stem.name} - {artifact_title}{suffix}')
 
 
-
-def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, list[dict[str, object]]]) -> dict[str, Path]:
+def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, object]) -> dict[str, Path]:
     debug_stem.parent.mkdir(parents=True, exist_ok=True)
     output_paths: dict[str, Path] = {}
     for section_name, items in debug_payload.items():
         output_path = build_staged_debug_output_path(debug_stem, section_name, '.json')
         output_path.write_text(json.dumps(items, indent=2), encoding='utf-8')
         output_paths[section_name] = output_path
+    reusable_sample_cache_path = build_staged_debug_output_path(debug_stem, 'reusable_stage3_art_state_samples', '.npz')
+    if reusable_sample_cache_path.exists():
+        output_paths['reusable_stage3_art_state_samples'] = reusable_sample_cache_path
     summary_output_path = build_staged_debug_output_path(debug_stem, 'summary', '.txt')
     summary_output_path.write_text(
         "\n".join(build_staged_debug_summary_lines(debug_payload)) + "\n",
@@ -2666,3 +4685,60 @@ def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, list
     )
     output_paths['summary'] = summary_output_path
     return output_paths
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

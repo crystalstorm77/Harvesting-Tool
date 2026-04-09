@@ -26,11 +26,14 @@ from harvesting_tool.staged_detection import (
     build_stage1_movement_spans,
     build_stage2_candidate_unions,
     build_staged_debug_summary_lines,
+    load_precomputed_stage3_art_state_sample_cache_from_movement_evidence_path,
+    load_reusable_stage3_art_state_sample_cache,
     classify_stage4_time_slices,
     classify_stage5_minimum_size_leaf,
     refine_stage5_sub_slices,
     screen_stage3_candidate_unions,
     select_stage3_art_state_reference_window,
+    write_reusable_stage3_art_state_sample_cache,
     write_staged_debug_artifacts,
 )
 
@@ -277,7 +280,36 @@ class CandidateUnionConstructionTests(unittest.TestCase):
         self.assertEqual(unions[0].member_movement_spans, tuple(spans))
         self.assertEqual(unions[0].union_footprint_size, 2)
 
-    def test_stage2_candidate_unions_split_on_short_temporal_gap_without_spatial_support(self) -> None:
+    def test_stage2_candidate_unions_auto_merge_on_strong_continuity_gap_without_spatial_support(self) -> None:
+        spans = [
+            MovementSpan(
+                span_index=1,
+                start_frame=300,
+                end_frame=330,
+                start_time="00:00:10:00",
+                end_time="00:00:11:00",
+                footprint=frozenset({(1, 1)}),
+                footprint_size=1,
+                record_indices=(1, 2),
+            ),
+            MovementSpan(
+                span_index=2,
+                start_frame=338,
+                end_frame=360,
+                start_time="00:00:11:08",
+                end_time="00:00:12:00",
+                footprint=frozenset({(10, 10)}),
+                footprint_size=1,
+                record_indices=(3, 4),
+            ),
+        ]
+
+        unions = build_stage2_candidate_unions(spans)
+
+        self.assertEqual(len(unions), 1)
+        self.assertEqual(unions[0].member_movement_spans, tuple(spans))
+
+    def test_stage2_candidate_unions_split_without_spatial_support_outside_strong_continuity_gap(self) -> None:
         spans = [
             MovementSpan(
                 span_index=1,
@@ -291,9 +323,9 @@ class CandidateUnionConstructionTests(unittest.TestCase):
             ),
             MovementSpan(
                 span_index=2,
-                start_frame=336,
+                start_frame=348,
                 end_frame=360,
-                start_time="00:00:11:06",
+                start_time="00:00:11:18",
                 end_time="00:00:12:00",
                 footprint=frozenset({(8, 8)}),
                 footprint_size=1,
@@ -405,7 +437,7 @@ class CandidateUnionConstructionTests(unittest.TestCase):
         self.assertEqual(len(unions), 1)
         self.assertEqual(unions[0].member_movement_spans, tuple(spans))
 
-    def test_stage2_candidate_unions_split_on_large_footprint_expansion_jump(self) -> None:
+    def test_stage2_candidate_unions_allow_large_growth_when_new_cells_remain_well_attached(self) -> None:
         spans = [
             MovementSpan(
                 span_index=1,
@@ -441,6 +473,45 @@ class CandidateUnionConstructionTests(unittest.TestCase):
 
         unions = build_stage2_candidate_unions(spans)
 
+        self.assertEqual(len(unions), 1)
+        self.assertEqual(unions[0].member_movement_spans, tuple(spans))
+
+    def test_stage2_candidate_unions_split_when_weak_path_growth_is_large_and_poorly_attached(self) -> None:
+        spans = [
+            MovementSpan(
+                span_index=1,
+                start_frame=300,
+                end_frame=330,
+                start_time="00:00:10:00",
+                end_time="00:00:11:00",
+                footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
+                footprint_size=4,
+                record_indices=(1, 2),
+            ),
+            MovementSpan(
+                span_index=2,
+                start_frame=348,
+                end_frame=378,
+                start_time="00:00:11:18",
+                end_time="00:00:12:18",
+                footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
+                footprint_size=4,
+                record_indices=(3, 4),
+            ),
+            MovementSpan(
+                span_index=3,
+                start_frame=402,
+                end_frame=432,
+                start_time="00:00:13:12",
+                end_time="00:00:14:12",
+                footprint=frozenset({(5, 5), (9, 9), (9, 10), (10, 9), (10, 10), (11, 9), (11, 10)}),
+                footprint_size=7,
+                record_indices=(5, 6),
+            ),
+        ]
+
+        unions = build_stage2_candidate_unions(spans)
+
         self.assertEqual(len(unions), 2)
         self.assertEqual(unions[0].member_movement_spans, (spans[0], spans[1]))
         self.assertEqual(unions[1].member_movement_spans, (spans[2],))
@@ -450,33 +521,6 @@ class CandidateUnionConstructionTests(unittest.TestCase):
 
 
 class CandidateUnionScreeningTests(unittest.TestCase):
-    def test_stage3_candidate_union_survives_with_strong_union_activity_and_quiet_references(self) -> None:
-        candidate_union = CandidateUnion(
-            union_index=1,
-            start_frame=300,
-            end_frame=330,
-            start_time="00:00:10:00",
-            end_time="00:00:11:00",
-            member_movement_spans=(),
-            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
-            union_footprint_size=4,
-        )
-        records = [
-            make_record(1, 292, movement_present=False, movement_strength_score=0.02, temporal_persistence_score=0.02),
-            make_record(2, 298, movement_present=False, movement_strength_score=0.03, temporal_persistence_score=0.02),
-            make_record(3, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5),
-            make_record(4, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.6, spatial_extent_score=0.5),
-            make_record(5, 332, movement_present=False, movement_strength_score=0.01, temporal_persistence_score=0.01),
-            make_record(6, 338, movement_present=False, movement_strength_score=0.02, temporal_persistence_score=0.01),
-        ]
-
-        screened = screen_stage3_candidate_unions([candidate_union], records)
-
-        self.assertEqual(len(screened), 1)
-        self.assertEqual(screened[0].screening_result, "surviving")
-        self.assertTrue(screened[0].surviving)
-        self.assertFalse(screened[0].provisional_survival)
-
     def test_stage3_candidate_union_rejects_weak_union_activity(self) -> None:
         candidate_union = CandidateUnion(
             union_index=1,
@@ -500,56 +544,7 @@ class CandidateUnionScreeningTests(unittest.TestCase):
         self.assertEqual(screened[0].screening_result, "rejected")
         self.assertEqual(screened[0].reason, "weak_union_activity")
 
-    def test_stage3_candidate_union_survives_provisionally_when_reference_windows_are_unreliable(self) -> None:
-        candidate_union = CandidateUnion(
-            union_index=1,
-            start_frame=300,
-            end_frame=330,
-            start_time="00:00:10:00",
-            end_time="00:00:11:00",
-            member_movement_spans=(),
-            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
-            union_footprint_size=4,
-        )
-        records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.65, temporal_persistence_score=0.6, spatial_extent_score=0.55),
-            make_record(2, 316, movement_present=True, movement_strength_score=0.68, temporal_persistence_score=0.62, spatial_extent_score=0.55),
-            make_record(3, 336, movement_present=False, movement_strength_score=0.02, temporal_persistence_score=0.01),
-        ]
-
-        screened = screen_stage3_candidate_unions([candidate_union], records)
-
-        self.assertEqual(screened[0].screening_result, "provisional_surviving")
-        self.assertTrue(screened[0].provisional_survival)
-        self.assertTrue(screened[0].surviving)
-
-    def test_stage3_candidate_union_rejects_when_reference_windows_are_too_active(self) -> None:
-        candidate_union = CandidateUnion(
-            union_index=1,
-            start_frame=300,
-            end_frame=330,
-            start_time="00:00:10:00",
-            end_time="00:00:11:00",
-            member_movement_spans=(),
-            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
-            union_footprint_size=4,
-        )
-        records = [
-            make_record(1, 292, movement_present=True, movement_strength_score=0.42, temporal_persistence_score=0.4),
-            make_record(2, 298, movement_present=True, movement_strength_score=0.4, temporal_persistence_score=0.38),
-            make_record(3, 304, movement_present=True, movement_strength_score=0.38, temporal_persistence_score=0.36, spatial_extent_score=0.35),
-            make_record(4, 316, movement_present=True, movement_strength_score=0.37, temporal_persistence_score=0.35, spatial_extent_score=0.35),
-            make_record(5, 332, movement_present=True, movement_strength_score=0.42, temporal_persistence_score=0.40),
-            make_record(6, 338, movement_present=True, movement_strength_score=0.43, temporal_persistence_score=0.41),
-        ]
-
-        screened = screen_stage3_candidate_unions([candidate_union], records)
-
-        self.assertEqual(screened[0].screening_result, "rejected")
-        self.assertEqual(screened[0].reason, "reference_windows_too_active")
-
-
-    def test_stage3_art_state_screening_survives_real_before_after_change(self) -> None:
+    def test_stage3_step1_clear_survival_uses_full_footprint_comparison(self) -> None:
         candidate_union = CandidateUnion(
             union_index=1,
             start_frame=300,
@@ -561,11 +556,12 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             union_footprint_size=4,
         )
         records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5),
-            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5),
+            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(3, 338, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.10, touched_grid_coordinates=((0, 0),)),
         ]
         chapter_range = ChapterRange(
-            start=Timecode.from_hhmmssff('00:00:00:00'),
+            start=Timecode.from_hhmmssff('00:00:09:00'),
             end=Timecode.from_hhmmssff('00:00:20:00'),
         )
         sampled_frames = [
@@ -573,122 +569,6 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             make_stage3_art_state_sample(290, changed=False),
             make_stage3_art_state_sample(336, changed=True),
             make_stage3_art_state_sample(340, changed=True),
-            make_stage3_art_state_sample(348, changed=True),
-            make_stage3_art_state_sample(352, changed=True),
-        ]
-
-        screened = screen_stage3_candidate_unions(
-            [candidate_union],
-            records,
-            sampled_frames=sampled_frames,
-            chapter_range=chapter_range,
-            settings=make_settings(),
-        )
-
-        self.assertEqual(len(screened), 1)
-        self.assertEqual(screened[0].screening_result, 'surviving', msg=repr(screened[0]))
-        self.assertEqual(screened[0].reason, 'art_state_change_supported')
-        self.assertEqual(screened[0].stage3_mode, 'art_state')
-        self.assertGreater(screened[0].stage3_persistent_difference_score, 0.0)
-        self.assertGreater(screened[0].stage3_footprint_support_score, 0.0)
-        self.assertGreater(screened[0].stage3_after_window_persistence_score, 0.0)
-        self.assertGreater(screened[0].stage3_reveal_window_hold_score, 0.0)
-
-    def test_stage3_window_selector_prefers_stable_fallback_window(self) -> None:
-        records = [
-            make_record(1, 334, movement_present=True, movement_strength_score=0.18, temporal_persistence_score=0.16, spatial_extent_score=0.1),
-            make_record(2, 336, movement_present=True, movement_strength_score=0.20, temporal_persistence_score=0.18, spatial_extent_score=0.1),
-        ]
-        sampled_frames = [
-            make_stage3_art_state_sample(334, changed=False),
-            make_stage3_art_state_sample(336, changed=True),
-            make_stage3_art_state_sample(346, changed=True),
-            make_stage3_art_state_sample(348, changed=True),
-            make_stage3_art_state_sample(350, changed=True),
-            make_stage3_art_state_sample(352, changed=True),
-        ]
-
-        selected_window, candidate_count = select_stage3_art_state_reference_window(
-            search_start=333,
-            search_end=353,
-            union_anchor_frame=330,
-            records=records,
-            sampled_frames=sampled_frames,
-            settings=make_settings(),
-            cv2=cv2,
-        )
-
-        self.assertIsNotNone(selected_window)
-        self.assertGreater(candidate_count, 1)
-        self.assertEqual(selected_window['window_start'], 339)
-        self.assertEqual(selected_window['tier'], 'local')
-
-    def test_stage3_art_state_screening_rejects_when_before_after_state_is_unchanged(self) -> None:
-        candidate_union = CandidateUnion(
-            union_index=1,
-            start_frame=300,
-            end_frame=330,
-            start_time='00:00:10:00',
-            end_time='00:00:11:00',
-            member_movement_spans=(),
-            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
-            union_footprint_size=4,
-        )
-        records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5),
-            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5),
-        ]
-        chapter_range = ChapterRange(
-            start=Timecode.from_hhmmssff('00:00:00:00'),
-            end=Timecode.from_hhmmssff('00:00:20:00'),
-        )
-        sampled_frames = [
-            make_stage3_art_state_sample(285, changed=False),
-            make_stage3_art_state_sample(290, changed=False),
-            make_stage3_art_state_sample(336, changed=False),
-            make_stage3_art_state_sample(340, changed=False),
-            make_stage3_art_state_sample(348, changed=False),
-            make_stage3_art_state_sample(352, changed=False),
-        ]
-
-        screened = screen_stage3_candidate_unions(
-            [candidate_union],
-            records,
-            sampled_frames=sampled_frames,
-            chapter_range=chapter_range,
-            settings=make_settings(),
-        )
-
-        self.assertEqual(screened[0].screening_result, 'rejected')
-        self.assertEqual(screened[0].reason, 'weak_union_activity')
-        self.assertEqual(screened[0].stage3_mode, 'art_state')
-
-    def test_stage3_art_state_screening_rejects_when_reveal_window_loses_post_state(self) -> None:
-        candidate_union = CandidateUnion(
-            union_index=1,
-            start_frame=300,
-            end_frame=330,
-            start_time='00:00:10:00',
-            end_time='00:00:11:00',
-            member_movement_spans=(),
-            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
-            union_footprint_size=4,
-        )
-        records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5),
-            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5),
-        ]
-        chapter_range = ChapterRange(
-            start=Timecode.from_hhmmssff('00:00:00:00'),
-            end=Timecode.from_hhmmssff('00:00:20:00'),
-        )
-        sampled_frames = [
-            make_stage3_art_state_sample(285, changed=False),
-            make_stage3_art_state_sample(290, changed=False),
-            make_stage3_art_state_sample(336, changed=True),
-            make_stage3_art_state_sample(340, changed=True),
-            make_stage3_art_state_sample(348, changed=False),
-            make_stage3_art_state_sample(352, changed=False),
         ]
 
         screened = screen_stage3_candidate_unions(
@@ -700,11 +580,12 @@ class CandidateUnionScreeningTests(unittest.TestCase):
         )
 
         self.assertEqual(screened[0].screening_result, 'surviving')
-        self.assertEqual(screened[0].reason, 'art_state_change_supported')
-        self.assertEqual(screened[0].stage3_mode, 'art_state')
-        self.assertLess(screened[0].stage3_reveal_window_hold_score, 0.45)
+        self.assertEqual(screened[0].reason, 'step1_clear_survival')
+        self.assertEqual(screened[0].stage3_mode, 'step1')
+        self.assertEqual(screened[0].stage3_alignment_mode, 'full_footprint')
+        self.assertGreaterEqual(screened[0].lasting_change_evidence_score, 0.10)
 
-    def test_stage3_art_state_screening_rejects_when_footprint_support_is_too_small(self) -> None:
+    def test_stage3_step1_clear_rejection_rejects_unchanged_union(self) -> None:
         candidate_union = CandidateUnion(
             union_index=1,
             start_frame=300,
@@ -712,71 +593,23 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             start_time='00:00:10:00',
             end_time='00:00:11:00',
             member_movement_spans=(),
-            union_footprint=frozenset({(row_index, column_index) for row_index in range(12) for column_index in range(12)}),
-            union_footprint_size=144,
+            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
+            union_footprint_size=4,
         )
         records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5),
-            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5),
+            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(3, 338, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.10, touched_grid_coordinates=((0, 0),)),
         ]
         chapter_range = ChapterRange(
-            start=Timecode.from_hhmmssff('00:00:00:00'),
+            start=Timecode.from_hhmmssff('00:00:09:00'),
             end=Timecode.from_hhmmssff('00:00:20:00'),
-        )
-        def make_tiny_sample(frame_index: int, *, changed: bool) -> dict[str, object]:
-            canvas_gray = np.zeros((120, 120), dtype=np.uint8)
-            if changed:
-                canvas_gray[58:62, 58:62] = 255
-            return {
-                'frame_index': frame_index,
-                'canvas_gray': canvas_gray,
-                'art_gray': extract_art_state_region(canvas_gray),
-            }
-        sampled_frames = [
-            make_tiny_sample(285, changed=False),
-            make_tiny_sample(290, changed=False),
-            make_tiny_sample(336, changed=True),
-            make_tiny_sample(340, changed=True),
-            make_tiny_sample(348, changed=True),
-            make_tiny_sample(352, changed=True),
-        ]
-
-        screened = screen_stage3_candidate_unions(
-            [candidate_union],
-            records,
-            sampled_frames=sampled_frames,
-            chapter_range=chapter_range,
-            settings=make_settings(),
-        )
-
-        self.assertEqual(screened[0].screening_result, 'rejected')
-        self.assertEqual(screened[0].reason, 'weak_union_activity')
-        self.assertLess(screened[0].stage3_footprint_support_score, 0.10)
-
-    def test_stage3_art_state_screening_rejects_small_fallback_post_reference_without_reveal(self) -> None:
-        candidate_union = CandidateUnion(
-            union_index=1,
-            start_frame=300,
-            end_frame=330,
-            start_time='00:00:10:00',
-            end_time='00:00:11:00',
-            member_movement_spans=(),
-            union_footprint=frozenset({(1, 8), (1, 9), (2, 8), (2, 9), (3, 6), (3, 7), (3, 8), (3, 9), (4, 6), (4, 7)}),
-            union_footprint_size=10,
-        )
-        records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5),
-            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5),
-        ]
-        chapter_range = ChapterRange(
-            start=Timecode.from_hhmmssff('00:00:00:00'),
-            end=Timecode.from_hhmmssff('00:00:12:16'),
         )
         sampled_frames = [
             make_stage3_art_state_sample(285, changed=False),
             make_stage3_art_state_sample(290, changed=False),
-            make_stage3_art_state_sample(370, changed=True),
-            make_stage3_art_state_sample(374, changed=True),
+            make_stage3_art_state_sample(336, changed=False),
+            make_stage3_art_state_sample(340, changed=False),
         ]
 
         screened = screen_stage3_candidate_unions(
@@ -788,9 +621,280 @@ class CandidateUnionScreeningTests(unittest.TestCase):
         )
 
         self.assertEqual(screened[0].screening_result, 'rejected')
-        self.assertEqual(screened[0].reason, 'fallback_post_reference_too_small')
-        self.assertEqual(screened[0].stage3_after_window_tier, 'fallback')
-        self.assertEqual(screened[0].stage3_reveal_sample_count, 0)
+        self.assertEqual(screened[0].reason, 'step1_clear_rejection')
+        self.assertEqual(screened[0].stage3_mode, 'step1')
+
+    def test_stage3_step1_endpoint_cells_do_not_accept_idle_after_window_without_external_movement(self) -> None:
+        candidate_union = CandidateUnion(
+            union_index=1,
+            start_frame=300,
+            end_frame=330,
+            start_time='00:00:10:00',
+            end_time='00:00:11:00',
+            member_movement_spans=(),
+            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
+            union_footprint_size=4,
+        )
+        records = [
+            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+        ]
+        chapter_range = ChapterRange(
+            start=Timecode.from_hhmmssff('00:00:09:00'),
+            end=Timecode.from_hhmmssff('00:00:20:00'),
+        )
+        sampled_frames = [
+            make_stage3_art_state_sample(285, changed=False),
+            make_stage3_art_state_sample(290, changed=False),
+            make_stage3_art_state_sample(336, changed=True),
+            make_stage3_art_state_sample(340, changed=True),
+        ]
+
+        screened = screen_stage3_candidate_unions(
+            [candidate_union],
+            records,
+            sampled_frames=sampled_frames,
+            chapter_range=chapter_range,
+            settings=make_settings(),
+        )
+
+        self.assertEqual(screened[0].screening_result, 'rejected')
+        self.assertEqual(screened[0].reason, 'rejected_after_rescue_failure')
+        self.assertEqual(screened[0].stage3_mode, 'snapshot_rescue')
+
+    def test_stage3_step1_endpoint_cells_accept_after_window_when_movement_continues_elsewhere(self) -> None:
+        candidate_union = CandidateUnion(
+            union_index=1,
+            start_frame=300,
+            end_frame=330,
+            start_time='00:00:10:00',
+            end_time='00:00:11:00',
+            member_movement_spans=(),
+            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
+            union_footprint_size=4,
+        )
+        records = [
+            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(3, 338, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.10, touched_grid_coordinates=((0, 0),)),
+        ]
+        chapter_range = ChapterRange(
+            start=Timecode.from_hhmmssff('00:00:09:00'),
+            end=Timecode.from_hhmmssff('00:00:20:00'),
+        )
+        sampled_frames = [
+            make_stage3_art_state_sample(285, changed=False),
+            make_stage3_art_state_sample(290, changed=False),
+            make_stage3_art_state_sample(336, changed=True),
+            make_stage3_art_state_sample(340, changed=True),
+        ]
+
+        screened = screen_stage3_candidate_unions(
+            [candidate_union],
+            records,
+            sampled_frames=sampled_frames,
+            chapter_range=chapter_range,
+            settings=make_settings(),
+        )
+
+        self.assertEqual(screened[0].screening_result, 'surviving')
+        self.assertEqual(screened[0].reason, 'step1_clear_survival')
+        self.assertEqual(screened[0].stage3_mode, 'step1')
+
+    def test_stage3_snapshot_rescue_stitches_composite_before_state(self) -> None:
+        candidate_union = CandidateUnion(
+            union_index=1,
+            start_frame=300,
+            end_frame=330,
+            start_time='00:00:10:00',
+            end_time='00:00:11:00',
+            member_movement_spans=(),
+            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
+            union_footprint_size=4,
+        )
+        records = [
+            make_record(1, 278, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.20, touched_grid_coordinates=((4, 4), (4, 5))),
+            make_record(2, 288, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.20, touched_grid_coordinates=((5, 4), (5, 5))),
+            make_record(3, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(4, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(5, 338, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.10, touched_grid_coordinates=((0, 0),)),
+        ]
+        chapter_range = ChapterRange(
+            start=Timecode.from_hhmmssff('00:00:09:02'),
+            end=Timecode.from_hhmmssff('00:00:20:00'),
+        )
+        sampled_frames = [
+            make_stage3_art_state_sample(272, changed=False),
+            make_stage3_art_state_sample(276, changed=False),
+            make_stage3_art_state_sample(280, changed=False),
+            make_stage3_art_state_sample(284, changed=False),
+            make_stage3_art_state_sample(288, changed=False),
+            make_stage3_art_state_sample(292, changed=False),
+            make_stage3_art_state_sample(336, changed=True),
+            make_stage3_art_state_sample(340, changed=True),
+        ]
+
+        screened = screen_stage3_candidate_unions(
+            [candidate_union],
+            records,
+            sampled_frames=sampled_frames,
+            chapter_range=chapter_range,
+            settings=make_settings(),
+        )
+
+        self.assertEqual(screened[0].screening_result, 'surviving')
+        self.assertEqual(screened[0].reason, 'step1_clear_survival')
+        self.assertEqual(screened[0].stage3_mode, 'step1')
+        self.assertEqual(screened[0].stage3_alignment_mode, 'partial_footprint')
+        self.assertGreaterEqual(screened[0].stage3_footprint_support_score, 0.80)
+
+    def test_stage3_snapshot_rescue_can_survive_with_bounded_ambiguity(self) -> None:
+        candidate_union = CandidateUnion(
+            union_index=1,
+            start_frame=300,
+            end_frame=330,
+            start_time='00:00:10:00',
+            end_time='00:00:11:00',
+            member_movement_spans=(),
+            union_footprint=frozenset({(4, 4), (4, 5), (4, 6), (4, 7), (5, 4), (5, 5), (5, 6), (5, 7), (6, 4), (6, 5)}),
+            union_footprint_size=10,
+        )
+        records = [
+            make_record(1, 286, movement_present=True, movement_strength_score=0.20, temporal_persistence_score=0.18, spatial_extent_score=0.10, touched_grid_coordinates=((0, 0),)),
+            make_record(2, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (4, 6), (4, 7), (5, 4), (5, 5), (5, 6), (5, 7), (6, 4), (6, 5))),
+            make_record(3, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (4, 6), (4, 7), (5, 4), (5, 5), (5, 6), (5, 7), (6, 4), (6, 5))),
+            make_record(4, 342, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.10, touched_grid_coordinates=((6, 5),)),
+            make_record(5, 346, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.10, touched_grid_coordinates=((0, 0),)),
+        ]
+        chapter_range = ChapterRange(
+            start=Timecode.from_hhmmssff('00:00:09:00'),
+            end=Timecode.from_hhmmssff('00:00:11:20'),
+        )
+        sampled_frames = [
+            make_stage3_art_state_sample(285, changed=False),
+            make_stage3_art_state_sample(290, changed=False),
+            make_stage3_art_state_sample(336, changed=False),
+            make_stage3_art_state_sample(340, changed=False),
+            make_stage3_art_state_sample(344, changed=False),
+            make_stage3_art_state_sample(348, changed=False),
+        ]
+
+        screened = screen_stage3_candidate_unions(
+            [candidate_union],
+            records,
+            sampled_frames=sampled_frames,
+            chapter_range=chapter_range,
+            settings=make_settings(),
+        )
+
+        self.assertEqual(screened[0].screening_result, 'surviving')
+        self.assertEqual(screened[0].reason, 'survived_by_bounded_ambiguity')
+        self.assertEqual(screened[0].stage3_mode, 'step1')
+        self.assertLessEqual(1.0 - screened[0].stage3_after_window_persistence_score, 0.10)
+
+    def test_stage3_snapshot_rescue_can_use_union_internal_after_state_when_post_union_windows_are_blocked(self) -> None:
+        first_union = CandidateUnion(
+            union_index=1,
+            start_frame=300,
+            end_frame=330,
+            start_time='00:00:10:00',
+            end_time='00:00:11:00',
+            member_movement_spans=(),
+            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
+            union_footprint_size=4,
+        )
+        second_union = CandidateUnion(
+            union_index=2,
+            start_frame=332,
+            end_frame=360,
+            start_time='00:00:11:02',
+            end_time='00:00:12:00',
+            member_movement_spans=(),
+            union_footprint=frozenset({(0, 0)}),
+            union_footprint_size=1,
+        )
+        records = [
+            make_record(1, 285, movement_present=True, movement_strength_score=0.20, temporal_persistence_score=0.18, spatial_extent_score=0.10, touched_grid_coordinates=((0, 1),)),
+            make_record(2, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5))),
+            make_record(3, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((5, 4), (5, 5))),
+            make_record(4, 336, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.10, touched_grid_coordinates=((0, 0),)),
+        ]
+        chapter_range = ChapterRange(
+            start=Timecode.from_hhmmssff('00:00:09:00'),
+            end=Timecode.from_hhmmssff('00:00:20:00'),
+        )
+        sampled_frames = [
+            make_stage3_art_state_sample(285, changed=False),
+            make_stage3_art_state_sample(290, changed=False),
+            make_stage3_art_state_sample(308, changed=True),
+            make_stage3_art_state_sample(312, changed=True),
+            make_stage3_art_state_sample(336, changed=True),
+            make_stage3_art_state_sample(340, changed=True),
+        ]
+
+        screened = screen_stage3_candidate_unions(
+            [first_union, second_union],
+            records,
+            sampled_frames=sampled_frames,
+            chapter_range=chapter_range,
+            settings=make_settings(),
+        )
+
+        self.assertEqual(screened[0].screening_result, 'surviving')
+        self.assertEqual(screened[0].reason, 'survived_by_changed_evidence')
+        self.assertEqual(screened[0].stage3_mode, 'snapshot_rescue')
+        self.assertEqual(screened[0].stage3_alignment_mode, 'composite_before_after')
+    def test_stage3_anti_borrowing_blocks_later_union_from_validating_current_union(self) -> None:
+        first_union = CandidateUnion(
+            union_index=1,
+            start_frame=300,
+            end_frame=330,
+            start_time='00:00:10:00',
+            end_time='00:00:11:00',
+            member_movement_spans=(),
+            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
+            union_footprint_size=4,
+        )
+        second_union = CandidateUnion(
+            union_index=2,
+            start_frame=360,
+            end_frame=390,
+            start_time='00:00:12:00',
+            end_time='00:00:13:00',
+            member_movement_spans=(),
+            union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}),
+            union_footprint_size=4,
+        )
+        records = [
+            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(3, 364, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(4, 376, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+        ]
+        chapter_range = ChapterRange(
+            start=Timecode.from_hhmmssff('00:00:09:00'),
+            end=Timecode.from_hhmmssff('00:00:14:00'),
+        )
+        sampled_frames = [
+            make_stage3_art_state_sample(285, changed=False),
+            make_stage3_art_state_sample(290, changed=False),
+            make_stage3_art_state_sample(366, changed=True),
+            make_stage3_art_state_sample(370, changed=True),
+        ]
+
+        screened = screen_stage3_candidate_unions(
+            [first_union, second_union],
+            records,
+            sampled_frames=sampled_frames,
+            chapter_range=chapter_range,
+            settings=make_settings(),
+        )
+
+        self.assertEqual(screened[0].screening_result, 'rejected')
+        self.assertEqual(screened[0].reason, 'rejected_after_rescue_failure')
+        self.assertEqual(screened[0].stage3_mode, 'snapshot_rescue')
+
+# ============================================================
 # ============================================================
 # SECTION F - Stage 4 Time Slice Classification Tests
 # ============================================================
@@ -841,6 +945,26 @@ class TimeSliceClassificationTests(unittest.TestCase):
         self.assertEqual(slices[0].classification, 'invalid')
         self.assertEqual(slices[0].reason, 'weak_slice_activity')
 
+    def test_stage4_marks_low_footprint_slice_invalid_when_no_unsettled_activity_remains(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=330)
+        records = [
+            make_record(1, 304, movement_present=True, movement_strength_score=0.84, temporal_persistence_score=0.82, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_record(2, 310, movement_present=True, movement_strength_score=0.83, temporal_persistence_score=0.81, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6), (0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1))),
+        ]
+        sampled_frames = [
+            make_stage3_art_state_sample(288, changed=False),
+            make_stage3_art_state_sample(294, changed=False),
+            make_stage3_art_state_sample(318, changed=True),
+            make_stage3_art_state_sample(324, changed=True),
+            make_stage3_art_state_sample(332, changed=True),
+        ]
+
+        slices = classify_stage4_time_slices([screened_union], records, sampled_frames=sampled_frames, settings=make_settings())
+
+        self.assertEqual(len(slices), 2)
+        self.assertEqual(slices[0].classification, 'invalid')
+        self.assertEqual(slices[0].reason, 'weak_slice_activity')
+
     def test_stage4_marks_slice_undetermined_when_local_reference_windows_cannot_be_formed(self) -> None:
         screened_union = make_screened_union(start_frame=300, end_frame=330)
         records = [
@@ -850,6 +974,28 @@ class TimeSliceClassificationTests(unittest.TestCase):
         sampled_frames = [
             make_stage3_art_state_sample(288, changed=False),
             make_stage3_art_state_sample(294, changed=False),
+        ]
+
+        slices = classify_stage4_time_slices([screened_union], records, sampled_frames=sampled_frames, settings=make_settings())
+
+        self.assertEqual(len(slices), 2)
+        self.assertEqual(slices[0].classification, 'undetermined')
+        self.assertEqual(slices[0].reason, 'reference_windows_unreliable')
+
+    def test_stage4_marks_slice_undetermined_when_after_state_is_still_unsettled(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=330)
+        records = [
+            make_record(1, 304, movement_present=True, movement_strength_score=0.84, temporal_persistence_score=0.82, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_record(2, 310, movement_present=True, movement_strength_score=0.83, temporal_persistence_score=0.81, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_record(3, 318, movement_present=True, movement_strength_score=0.80, temporal_persistence_score=0.78, spatial_extent_score=0.86, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_record(4, 324, movement_present=True, movement_strength_score=0.79, temporal_persistence_score=0.77, spatial_extent_score=0.85, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+        ]
+        sampled_frames = [
+            make_stage3_art_state_sample(288, changed=False),
+            make_stage3_art_state_sample(294, changed=False),
+            make_stage3_art_state_sample(318, changed=True),
+            make_stage3_art_state_sample(324, changed=True),
+            make_stage3_art_state_sample(332, changed=True),
         ]
 
         slices = classify_stage4_time_slices([screened_union], records, sampled_frames=sampled_frames, settings=make_settings())
@@ -866,8 +1012,6 @@ class TimeSliceClassificationTests(unittest.TestCase):
 
         slices = classify_stage4_time_slices([rejected_union], records, sampled_frames=[], settings=make_settings())
         self.assertEqual(slices, [])
-
-
 # ============================================================
 # SECTION G - Stage 5 Recursive Sub-Slice Refinement Tests
 # ============================================================
@@ -991,6 +1135,71 @@ class SubSliceRefinementTests(unittest.TestCase):
         self.assertEqual(len(refined), 1)
         self.assertEqual(refined[0].classification, 'invalid')
         self.assertEqual(refined[0].reason, 'minimum_subdivision_size_reached')
+
+    def test_stage5_frontier_resolution_does_not_propagate_boundary_through_undetermined_neighbors(self) -> None:
+        first_leaf = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=3,
+            start_frame=300,
+            end_frame=315,
+            start_time='00:00:10:00',
+            end_time='00:00:10:15',
+            footprint=frozenset({(2, 2)}),
+            footprint_size=8,
+            within_slice_record_count=1,
+            classification='undetermined',
+            reason='minimum_subdivision_size_reached',
+            lasting_change_evidence_score=0.58,
+            before_reference_activity=0.10,
+            after_reference_activity=0.10,
+            reference_windows_reliable=True,
+        )
+        second_leaf = ClassifiedTimeSlice(
+            slice_index=2,
+            parent_union_index=1,
+            slice_level=3,
+            start_frame=315,
+            end_frame=330,
+            start_time='00:00:10:15',
+            end_time='00:00:11:00',
+            footprint=frozenset({(2, 3)}),
+            footprint_size=8,
+            within_slice_record_count=1,
+            classification='undetermined',
+            reason='minimum_subdivision_size_reached',
+            lasting_change_evidence_score=0.59,
+            before_reference_activity=0.10,
+            after_reference_activity=0.10,
+            reference_windows_reliable=True,
+            parent_range=(300, 330),
+        )
+        valid_leaf = ClassifiedTimeSlice(
+            slice_index=3,
+            parent_union_index=1,
+            slice_level=3,
+            start_frame=330,
+            end_frame=345,
+            start_time='00:00:11:00',
+            end_time='00:00:11:15',
+            footprint=frozenset({(2, 4)}),
+            footprint_size=8,
+            within_slice_record_count=1,
+            classification='valid',
+            reason='slice_activity_supported',
+            lasting_change_evidence_score=0.81,
+            before_reference_activity=0.02,
+            after_reference_activity=0.02,
+            reference_windows_reliable=True,
+            parent_range=(300, 330),
+        )
+
+        refined = refine_stage5_sub_slices([], [first_leaf, second_leaf, valid_leaf], [], sampled_frames=[], settings=make_settings(), minimum_subdivision_frames=15)
+        first_resolved = next(slice_info for slice_info in refined if slice_info.start_frame == 300)
+        second_resolved = next(slice_info for slice_info in refined if slice_info.start_frame == 315)
+
+        self.assertEqual(first_resolved.classification, 'invalid')
+        self.assertEqual(second_resolved.classification, 'boundary')
 
     def test_stage5_stops_at_minimum_subdivision_size(self) -> None:
         screened_union = make_screened_union(start_frame=300, end_frame=312)
@@ -1266,7 +1475,7 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         final_ranges = assemble_stage6_candidate_ranges(refined_slices)
         self.assertEqual(final_ranges, [])
 
-    def test_stage6_does_not_merge_low_overlap_boundary_slice_into_valid_boundary(self) -> None:
+    def test_stage6_merges_low_overlap_boundary_slice_into_valid_boundary_when_gap_is_small(self) -> None:
         refined_slices = [
             ClassifiedTimeSlice(
                 slice_index=1,
@@ -1309,8 +1518,9 @@ class FinalCandidateRangeAssemblyTests(unittest.TestCase):
         final_ranges = assemble_stage6_candidate_ranges(refined_slices)
 
         self.assertEqual(len(final_ranges), 1)
-        self.assertEqual(final_ranges[0].start_frame, 1024)
-        self.assertEqual(final_ranges[0].source_classifications, ("valid",))
+        self.assertEqual(final_ranges[0].start_frame, 1000)
+        self.assertEqual(final_ranges[0].end_frame, 1036)
+        self.assertEqual(final_ranges[0].source_classifications, ("boundary", "valid"))
 
     def test_stage6_merges_contiguous_valid_ranges_across_union_boundaries(self) -> None:
         refined_slices = [
@@ -1410,6 +1620,17 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
                     'activity_end': '00:00:11:00',
                 }
             ],
+            'stage_timings': [
+                {
+                    'stage_label': 'Stage 4/8 - Collecting Stage 3 art-state samples',
+                    'elapsed_hhmmss': '07:12',
+                    'item_count': 6568,
+                },
+                {
+                    'stage_label': 'Total staged detector time',
+                    'elapsed_hhmmss': '52:30',
+                }
+            ],
         }
 
         summary_lines = build_staged_debug_summary_lines(debug_payload)
@@ -1452,6 +1673,7 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
             'movement_spans': [],
             'candidate_unions': [],
             'screened_candidate_unions': [],
+            'stage3_screening_traces': [],
             'classified_time_slices': [],
             'refined_sub_slices': [],
             'final_candidate_ranges': [],
@@ -1460,17 +1682,22 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             debug_stem = Path(tmpdir) / 'Backpack'
+            stage3_samples = [make_stage3_art_state_sample(12, changed=True), make_stage3_art_state_sample(14)]
+            cache_path = write_reusable_stage3_art_state_sample_cache(debug_stem, stage3_samples)
             output_paths = write_staged_debug_artifacts(debug_stem, debug_payload)
 
             self.assertEqual(output_paths['movement_evidence_records'].name, 'Backpack - Stage 1A - Movement Evidence Record.json')
             self.assertEqual(output_paths['movement_spans'].name, 'Backpack - Stage 1B - Movement Spans.json')
+            self.assertEqual(output_paths['reusable_stage3_art_state_samples'].name, 'Backpack - Stage 1C - Reusable Stage 2B Frame Payload.npz')
             self.assertEqual(output_paths['candidate_unions'].name, 'Backpack - Stage 2A - Candidate Union Record.json')
-            self.assertEqual(output_paths['screened_candidate_unions'].name, 'Backpack - Stage 2B - Union Classifications.json')
+            self.assertEqual(output_paths['screened_candidate_unions'].name, 'Backpack - Stage 3A - Union Screening.json')
+            self.assertEqual(output_paths['stage3_screening_traces'].name, 'Backpack - Stage 3B - Screening Trace [Step 1 + Snapshot Rescue].json')
             self.assertEqual(output_paths['classified_time_slices'].name, 'Backpack - Stage 4 - Time Slice Classifications.json')
             self.assertEqual(output_paths['refined_sub_slices'].name, 'Backpack - Stage 5 - Recursive Sub-Time Slice Classifications.json')
             self.assertEqual(output_paths['final_candidate_ranges'].name, 'Backpack - Stage 6A - Candidate Ranges [Pre-Filters].json')
             self.assertEqual(output_paths['candidate_clips'].name, 'Backpack - Stage 6B - Candidate Pre-Clips [Post-Filters].json')
             self.assertEqual(output_paths['summary'].name, 'Backpack - Debug Summary.txt')
+            self.assertTrue(cache_path.exists())
 
             summary_path = output_paths['summary']
             self.assertTrue(summary_path.exists())
@@ -1479,6 +1706,41 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
             self.assertIn('Stage 6 - Final retained ranges', summary_text)
             self.assertIn('- Final retained ranges built from valid material: 0', summary_text)
 
+    def test_reusable_stage3_art_state_sample_cache_round_trips_from_movement_evidence_path(self) -> None:
+        stage3_samples = [make_stage3_art_state_sample(12, changed=True), make_stage3_art_state_sample(14)]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            debug_stem = Path(tmpdir) / 'Backpack'
+            movement_evidence_path = debug_stem.with_name('Backpack - Stage 1A - Movement Evidence Record.json')
+            movement_evidence_path.write_text('[]', encoding='utf-8')
+            write_reusable_stage3_art_state_sample_cache(debug_stem, stage3_samples)
+
+            loaded_from_cache = load_reusable_stage3_art_state_sample_cache(
+                debug_stem.with_name('Backpack - Stage 1C - Reusable Stage 2B Frame Payload.npz')
+            )
+            loaded_from_movement_evidence_path = load_precomputed_stage3_art_state_sample_cache_from_movement_evidence_path(
+                movement_evidence_path
+            )
+
+            self.assertEqual(len(loaded_from_cache), 2)
+            self.assertEqual([sample['frame_index'] for sample in loaded_from_cache], [12, 14])
+            self.assertIsNotNone(loaded_from_movement_evidence_path)
+            self.assertEqual([sample['frame_index'] for sample in loaded_from_movement_evidence_path], [12, 14])
+            self.assertTrue(np.array_equal(loaded_from_cache[0]['canvas_gray'], stage3_samples[0]['canvas_gray']))
+            self.assertTrue(np.array_equal(loaded_from_cache[0]['art_gray'], stage3_samples[0]['art_gray']))
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 # ============================================================
 # SECTION A - Imports And Helpers
@@ -34,7 +34,7 @@ def make_clip() -> CandidateClip:
 
 
 class CliRoutingTests(unittest.TestCase):
-    def test_parser_accepts_use_staged_detector_flag(self) -> None:
+    def test_parser_accepts_use_legacy_detector_flag(self) -> None:
         parser = build_parser()
         args = parser.parse_args(
             [
@@ -44,16 +44,17 @@ class CliRoutingTests(unittest.TestCase):
                 '--min-harvest', '00:00:05:00',
                 '--max-harvest', '00:01:00:00',
                 '--output-stem', 'out/sample',
-                '--use-staged-detector',
+                '--precomputed-movement-evidence-json', 'out/movement_evidence.json',
+                '--use-legacy-detector',
                 '--staged-stage3-art-state-prototype',
             ]
         )
 
-        self.assertTrue(args.use_staged_detector)
+        self.assertEqual(args.precomputed_movement_evidence_json, Path('out/movement_evidence.json'))
+        self.assertTrue(args.use_legacy_detector)
         self.assertTrue(args.staged_stage3_art_state_prototype)
 
-
-    def test_build_settings_uses_per_frame_default_for_staged_detector(self) -> None:
+    def test_build_settings_uses_per_frame_default_for_v3_pipeline(self) -> None:
         parser = build_parser()
         args = parser.parse_args(
             [
@@ -63,7 +64,6 @@ class CliRoutingTests(unittest.TestCase):
                 '--min-harvest', '00:00:05:00',
                 '--max-harvest', '00:01:00:00',
                 '--output-stem', 'out/sample',
-                '--use-staged-detector',
             ]
         )
 
@@ -71,7 +71,7 @@ class CliRoutingTests(unittest.TestCase):
 
         self.assertEqual(settings.sample_stride, 1)
 
-    def test_build_settings_preserves_explicit_nondefault_stride_for_staged_detector(self) -> None:
+    def test_build_settings_preserves_explicit_nondefault_stride_for_v3_pipeline(self) -> None:
         parser = build_parser()
         args = parser.parse_args(
             [
@@ -81,7 +81,6 @@ class CliRoutingTests(unittest.TestCase):
                 '--min-harvest', '00:00:05:00',
                 '--max-harvest', '00:01:00:00',
                 '--output-stem', 'out/sample',
-                '--use-staged-detector',
                 '--sample-stride', '2',
             ]
         )
@@ -89,7 +88,8 @@ class CliRoutingTests(unittest.TestCase):
         settings = build_settings(args)
 
         self.assertEqual(settings.sample_stride, 2)
-    def test_run_uses_staged_detector_path_when_flag_is_enabled(self) -> None:
+
+    def test_run_uses_staged_detector_path_by_default(self) -> None:
         parser = build_parser()
         with tempfile.TemporaryDirectory() as tmpdir:
             output_stem = Path(tmpdir) / 'cut_list'
@@ -103,7 +103,6 @@ class CliRoutingTests(unittest.TestCase):
                     '--max-harvest', '00:01:00:00',
                     '--output-stem', str(output_stem),
                     '--debug-stem', str(debug_stem),
-                    '--use-staged-detector',
                     '--staged-stage3-art-state-prototype',
                 ]
             )
@@ -116,7 +115,7 @@ class CliRoutingTests(unittest.TestCase):
                 patch('harvesting_tool.cli.build_candidate_clips', return_value=[make_clip()]) as build_clips_mock, \
                 patch('harvesting_tool.cli.write_cut_lists', return_value=(output_stem.with_suffix('.txt'), output_stem.with_suffix('.json'))) as write_cut_lists_mock, \
                 patch('harvesting_tool.cli.write_staged_debug_artifacts', return_value=fake_debug_paths) as write_staged_debug_mock, \
-                patch('harvesting_tool.cli.detect_candidate_clips') as default_detect_mock:
+                patch('harvesting_tool.cli.detect_candidate_clips') as legacy_detect_mock:
                 text_path, json_path, debug_paths, review_result = run(args)
 
         staged_detect_mock.assert_called_once_with(
@@ -124,12 +123,15 @@ class CliRoutingTests(unittest.TestCase):
             chapter_range=unittest.mock.ANY,
             settings=unittest.mock.ANY,
             progress_callback=unittest.mock.ANY,
+            status_callback=unittest.mock.ANY,
+            debug_stem=args.debug_stem,
             use_stage3_art_state_prototype=True,
+            precomputed_movement_evidence_path=None,
         )
         build_clips_mock.assert_called_once()
         write_cut_lists_mock.assert_called_once()
         write_staged_debug_mock.assert_called_once()
-        default_detect_mock.assert_not_called()
+        legacy_detect_mock.assert_not_called()
         self.assertEqual(text_path, output_stem.with_suffix('.txt'))
         self.assertEqual(json_path, output_stem.with_suffix('.json'))
         self.assertEqual(debug_paths, fake_debug_paths)
@@ -138,3 +140,6 @@ class CliRoutingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+

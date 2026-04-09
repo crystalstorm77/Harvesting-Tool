@@ -18,11 +18,12 @@ param(
     [string]$OutputStem = "A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\hb_test_harvest",
     [string]$DebugStem = "A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\hb_test_harvest_debug",
     [int]$SampleStride = 1,
+    [string]$PrecomputedMovementEvidenceJson = "",
     [double]$ActivityThreshold = 8.0,
     [double]$ActivePixelRatio = 0.0015,
     [string]$MinBurst = "00:00:00:06",
     [string]$ResolveTimelineName = "Harvest Review",
-    [switch]$UseStagedDetector,
+    [switch]$UseLegacyDetector,
     [switch]$StagedStage3ArtStatePrototype
 )
 
@@ -44,8 +45,11 @@ Write-Host "Chapter: $ChapterStart -> $ChapterEnd"
 Write-Host "Output: $outputTextPath and $outputJsonPath"
 Write-Host "Debug: $DebugStem"
 Write-Host "Resolve timeline name: $ResolveTimelineName"
-Write-Host "Use staged detector: $UseStagedDetector"
+Write-Host "Use legacy detector: $UseLegacyDetector"
 Write-Host ""
+
+
+# ============================================================
 # SECTION C - Harvesting Tool Execution
 # ============================================================
 
@@ -71,8 +75,12 @@ $cliArgs = @(
     '--min-burst', $MinBurst
 )
 
-if ($UseStagedDetector) {
-    $cliArgs += '--use-staged-detector'
+if (-not [string]::IsNullOrWhiteSpace($PrecomputedMovementEvidenceJson)) {
+    $cliArgs += '--precomputed-movement-evidence-json'
+    $cliArgs += $PrecomputedMovementEvidenceJson
+}
+if ($UseLegacyDetector) {
+    $cliArgs += '--use-legacy-detector'
 }
 if ($StagedStage3ArtStatePrototype) {
     $cliArgs += '--staged-stage3-art-state-prototype'
@@ -99,3 +107,5 @@ if ($exitCode -eq 0) {
     Write-Host "Harvesting tool run failed with exit code $exitCode." -ForegroundColor Red
     exit $exitCode
 }
+
+

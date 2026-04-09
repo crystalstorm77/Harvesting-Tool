@@ -99,11 +99,17 @@ Start: 00:03:03:22
 End: 00:03:13:06
 Notes: Cursor movement without a lasting canvas update.
 
-Zone 17 - Undo and Move Canvas
+Zone 17A - Undo
 Valid: Yes
 Start: 00:03:13:12
+End: 00:03:14:00
+Notes: Undo causing a lasting canvas change. This undo occurs over one frame at specifically 3 minutes, 13 seconds, 13 frames. Since it is a one frame change, the start and end times for zone 17A are a bit arbitrary, just to surround the specific frame where change occurs.
+
+Zone 17B - Move Canvas
+Valid: Yes
+Start: 00:03:14:26
 End: 00:03:19:21
-Notes: Undo and canvas movement activity causing a lasting canvas change.
+Notes: Canvas movement activity causing a lasting canvas change.
 
 Zone 18 - Real Drawing C
 Valid: Yes

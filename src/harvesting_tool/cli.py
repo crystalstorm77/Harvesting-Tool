@@ -1,10 +1,11 @@
-# ============================================================
+﻿# ============================================================
 # SECTION A - Imports And Argument Parsing
 # ============================================================
 
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -39,14 +40,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tail-after-frames", type=int, default=4, help="Tail-after frames at 30 FPS.")
     parser.add_argument("--output-stem", type=Path, required=True, help="Output path stem used for .txt and .json cut lists.")
     parser.add_argument("--debug-stem", type=Path, help="Optional output path stem for detector diagnostic files.")
+    parser.add_argument("--precomputed-movement-evidence-json", type=Path, help="Optional path to a previously created Stage 1A movement evidence JSON file. When provided, the staged detector reuses that record instead of rescanning the chapter for movement evidence.")
     parser.add_argument("--sample-stride", type=int, default=3, help="Analyze every Nth frame for first-pass activity detection.")
     parser.add_argument("--activity-threshold", type=float, default=12.0, help="Per-pixel delta threshold for activity.")
     parser.add_argument("--active-pixel-ratio", type=float, default=0.015, help="Fraction of changed pixels needed to mark activity.")
     parser.add_argument("--min-burst", default="00:00:00:10", help="Minimum burst length in HH:MM:SS:FF.")
     parser.add_argument(
-        "--use-staged-detector",
+        "--use-legacy-detector",
         action="store_true",
-        help="Run the new staged detector path instead of the current default detector. This is intended for side-by-side benchmarking while the staged detector is still being evaluated.",
+        help="Run the old pre-V3 detector path instead of the default staged V3 detector.",
     )
     parser.add_argument(
         "--staged-stage3-art-state-prototype",
@@ -72,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
 def build_settings(args: argparse.Namespace) -> DetectorSettings:
     # The staged detector now defaults to per-frame evaluation when the user leaves
     # the legacy sample-stride default in place.
-    effective_sample_stride = 1 if args.use_staged_detector and args.sample_stride == 3 else args.sample_stride
+    effective_sample_stride = 1 if not args.use_legacy_detector and args.sample_stride == 3 else args.sample_stride
     return DetectorSettings(
         lead_in=Timecode.from_seconds_and_frames(args.lead_in_seconds, args.lead_in_frames),
         tail_after=Timecode.from_seconds_and_frames(args.tail_after_seconds, args.tail_after_frames),
@@ -89,15 +91,36 @@ def build_settings(args: argparse.Namespace) -> DetectorSettings:
 
 
 
+def format_elapsed(seconds: float) -> str:
+    whole_seconds = max(0, int(seconds))
+    hours = whole_seconds // 3600
+    minutes = (whole_seconds % 3600) // 60
+    remaining_seconds = whole_seconds % 60
+    if hours > 0:
+        return f"{hours:02}:{minutes:02}:{remaining_seconds:02}"
+    return f"{minutes:02}:{remaining_seconds:02}"
+
+
+
 def build_progress_reporter() -> Callable[[int], None]:
     last_reported_percent = -1
+    scan_started_at = time.perf_counter()
 
     def report(percent_complete: int) -> None:
         nonlocal last_reported_percent
         if percent_complete == last_reported_percent:
             return
-        print(f"Scanning chapter: {percent_complete}%")
+        elapsed = format_elapsed(time.perf_counter() - scan_started_at)
+        print(f"Stage 1/8 - Scanning chapter for movement evidence: {percent_complete}% (elapsed {elapsed})")
         last_reported_percent = percent_complete
+
+    return report
+
+
+
+def build_status_reporter() -> Callable[[str], None]:
+    def report(message: str) -> None:
+        print(message)
 
     return report
 
@@ -117,14 +140,18 @@ def run(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Path], ResolveR
     chapter_range = parse_chapter_range(args.chapter_start, args.chapter_end)
     settings = build_settings(args)
     progress_reporter = build_progress_reporter()
+    status_reporter = build_status_reporter()
 
-    if args.use_staged_detector:
+    if not args.use_legacy_detector:
         final_ranges, staged_debug_payload = detect_staged_activity_ranges(
             video_path=args.video_path,
             chapter_range=chapter_range,
             settings=settings,
             progress_callback=progress_reporter,
+            status_callback=status_reporter,
+            debug_stem=args.debug_stem,
             use_stage3_art_state_prototype=args.staged_stage3_art_state_prototype,
+            precomputed_movement_evidence_path=args.precomputed_movement_evidence_json,
         )
         clips = build_candidate_clips(
             str(args.video_path),
@@ -204,3 +231,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
+
