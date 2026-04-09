@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 # ============================================================
 # SECTION A - Imports And Helpers
@@ -26,6 +26,7 @@ from harvesting_tool.staged_detection import (
     build_stage1_movement_spans,
     build_stage2_candidate_unions,
     build_staged_debug_summary_lines,
+    decide_stage3_bucket_outcome,
     load_precomputed_stage3_art_state_sample_cache_from_movement_evidence_path,
     load_reusable_stage3_art_state_sample_cache,
     classify_stage4_time_slices,
@@ -33,6 +34,7 @@ from harvesting_tool.staged_detection import (
     refine_stage5_sub_slices,
     screen_stage3_candidate_unions,
     select_stage3_art_state_reference_window,
+    serialize_movement_evidence_record,
     write_reusable_stage3_art_state_sample_cache,
     write_staged_debug_artifacts,
 )
@@ -47,7 +49,7 @@ def make_stage3_art_state_sample(
         canvas_gray[40:70, 40:70] = 255
     return {
         'frame_index': frame_index,
-        'canvas_gray': canvas_gray,
+        'canvas_shape': tuple(int(dimension) for dimension in canvas_gray.shape),
         'art_gray': extract_art_state_region(canvas_gray),
     }
 
@@ -521,6 +523,46 @@ class CandidateUnionConstructionTests(unittest.TestCase):
 
 
 class CandidateUnionScreeningTests(unittest.TestCase):
+    def test_stage3_bucket_outcome_survives_diluted_union_via_local_changed_cluster(self) -> None:
+        screening_result, surviving, reason, bounded_ambiguity = decide_stage3_bucket_outcome(
+            coverage_summary={
+                'total_footprint_cells': 64,
+                'resolved_changed_coverage': 0.078125,
+                'resolved_unchanged_coverage': 0.671875,
+                'resolved_ambiguous_coverage': 0.25,
+                'largest_changed_cluster_size': 5,
+                'largest_changed_cluster_coverage': 0.078125,
+                'ambiguous_cluster_count': 2,
+            },
+            reconstructed_before_coverage=0.92,
+            mode='snapshot_rescue',
+        )
+
+        self.assertEqual(screening_result, 'surviving')
+        self.assertTrue(surviving)
+        self.assertEqual(reason, 'survived_by_local_changed_cluster')
+        self.assertFalse(bounded_ambiguity)
+
+    def test_stage3_bucket_outcome_does_not_rescue_tiny_changed_cluster(self) -> None:
+        screening_result, surviving, reason, bounded_ambiguity = decide_stage3_bucket_outcome(
+            coverage_summary={
+                'total_footprint_cells': 64,
+                'resolved_changed_coverage': 0.03125,
+                'resolved_unchanged_coverage': 0.76875,
+                'resolved_ambiguous_coverage': 0.20,
+                'largest_changed_cluster_size': 2,
+                'largest_changed_cluster_coverage': 0.03125,
+                'ambiguous_cluster_count': 2,
+            },
+            reconstructed_before_coverage=0.92,
+            mode='snapshot_rescue',
+        )
+
+        self.assertEqual(screening_result, 'rejected')
+        self.assertFalse(surviving)
+        self.assertEqual(reason, 'rejected_after_rescue_failure')
+        self.assertFalse(bounded_ambiguity)
+
     def test_stage3_candidate_union_rejects_weak_union_activity(self) -> None:
         candidate_union = CandidateUnion(
             union_index=1,
@@ -1726,12 +1768,17 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
             self.assertEqual([sample['frame_index'] for sample in loaded_from_cache], [12, 14])
             self.assertIsNotNone(loaded_from_movement_evidence_path)
             self.assertEqual([sample['frame_index'] for sample in loaded_from_movement_evidence_path], [12, 14])
-            self.assertTrue(np.array_equal(loaded_from_cache[0]['canvas_gray'], stage3_samples[0]['canvas_gray']))
+            self.assertEqual(loaded_from_cache[0]['canvas_shape'], stage3_samples[0]['canvas_shape'])
             self.assertTrue(np.array_equal(loaded_from_cache[0]['art_gray'], stage3_samples[0]['art_gray']))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+
+
 
 
 

@@ -1,0 +1,58 @@
+[
+  {
+    "clip_index": 1,
+    "clip_start": "00:00:07:10",
+    "clip_end": "00:00:21:21",
+    "activity_start": "00:00:07:12",
+    "activity_end": "00:00:21:17",
+    "duration": "00:00:14:11"
+  },
+  {
+    "clip_index": 2,
+    "clip_start": "00:01:16:01",
+    "clip_end": "00:01:27:16",
+    "activity_start": "00:01:16:03",
+    "activity_end": "00:01:27:12",
+    "duration": "00:00:11:15"
+  },
+  {
+    "clip_index": 3,
+    "clip_start": "00:02:12:22",
+    "clip_end": "00:02:19:10",
+    "activity_start": "00:02:12:24",
+    "activity_end": "00:02:19:06",
+    "duration": "00:00:06:18"
+  },
+  {
+    "clip_index": 4,
+    "clip_start": "00:02:28:21",
+    "clip_end": "00:02:35:00",
+    "activity_start": "00:02:28:23",
+    "activity_end": "00:02:34:26",
+    "duration": "00:00:06:09"
+  },
+  {
+    "clip_index": 5,
+    "clip_start": "00:02:36:10",
+    "clip_end": "00:02:46:01",
+    "activity_start": "00:02:36:12",
+    "activity_end": "00:02:45:27",
+    "duration": "00:00:09:21"
+  },
+  {
+    "clip_index": 6,
+    "clip_start": "00:02:53:07",
+    "clip_end": "00:02:56:04",
+    "activity_start": "00:02:53:09",
+    "activity_end": "00:02:56:00",
+    "duration": "00:00:02:27"
+  },
+  {
+    "clip_index": 7,
+    "clip_start": "00:02:59:24",
+    "clip_end": "00:03:34:08",
+    "activity_start": "00:02:59:26",
+    "activity_end": "00:03:34:04",
+    "duration": "00:00:34:14"
+  }
+]

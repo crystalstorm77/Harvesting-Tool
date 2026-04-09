@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 # ============================================================
 # SECTION A - Imports And Reused Detection Primitives
@@ -8,6 +8,7 @@ from bisect import bisect_left
 from collections import deque
 from dataclasses import dataclass, replace
 import json
+import os
 import numpy as np
 from pathlib import Path
 from typing import Callable, Iterable
@@ -83,6 +84,9 @@ STAGE3_ART_STATE_MIN_REVEAL_HOLD_SCORE = 0.45
 STAGE3_ART_STATE_MISSING_REVEAL_SCORE = 0.0
 STAGE3_ART_STATE_MIN_FOOTPRINT_SUPPORT_SCORE = 0.10
 STAGE3_ART_STATE_FALLBACK_REFERENCE_MIN_FOOTPRINT = 20
+STAGE3_LOCAL_CHANGED_CLUSTER_MIN_SIZE = 4
+STAGE3_LOCAL_CHANGED_CLUSTER_MIN_COVERAGE = 0.04
+STAGE3_LOCAL_CHANGED_CLUSTER_MAX_AMBIGUOUS_COVERAGE = 0.35
 STAGE3_MIN_REFERENCE_RECORDS = 2
 STAGE3_SURVIVING_THRESHOLD = 0.40
 STAGE3_MAX_REFERENCE_ACTIVITY = 0.15
@@ -440,7 +444,7 @@ def detect_movement_evidence_records(
                 retained_stage3_samples.append(
                     {
                         'frame_index': current_frame,
-                        'canvas_gray': canvas_gray,
+                        'canvas_shape': tuple(int(dimension) for dimension in canvas_gray.shape),
                         'art_gray': extract_art_state_region(canvas_gray),
                     }
                 )
@@ -892,7 +896,7 @@ def collect_stage3_art_state_samples(
                 sampled_frames.append(
                     {
                         'frame_index': current_frame,
-                        'canvas_gray': canvas_gray,
+                        'canvas_shape': tuple(int(dimension) for dimension in canvas_gray.shape),
                         'art_gray': extract_art_state_region(canvas_gray),
                     }
                 )
@@ -2208,10 +2212,12 @@ def evaluate_stage3_bucket_coverages(
     changed_clusters = build_stage3_connected_clusters(changed_cells)
     ambiguous_clusters = build_stage3_connected_clusters(ambiguous_cells)
     return {
+        'total_footprint_cells': total_cells,
         'resolved_changed_coverage': len(changed_cells) / total_cells,
         'resolved_unchanged_coverage': len(unchanged_cells) / total_cells,
         'resolved_ambiguous_coverage': len(ambiguous_cells) / total_cells,
         'largest_changed_cluster_size': max((len(cluster) for cluster in changed_clusters), default=0),
+        'largest_changed_cluster_coverage': max((len(cluster) / total_cells for cluster in changed_clusters), default=0.0),
         'ambiguous_cluster_count': len(ambiguous_clusters),
     }
 
@@ -2227,6 +2233,7 @@ def decide_stage3_bucket_outcome(
     resolved_unchanged_coverage = float(coverage_summary['resolved_unchanged_coverage'])
     resolved_ambiguous_coverage = float(coverage_summary['resolved_ambiguous_coverage'])
     largest_changed_cluster_size = int(coverage_summary['largest_changed_cluster_size'])
+    largest_changed_cluster_coverage = float(coverage_summary.get('largest_changed_cluster_coverage', 0.0))
     ambiguous_cluster_count = int(coverage_summary['ambiguous_cluster_count'])
     bounded_ambiguity = (
         resolved_ambiguous_coverage > 0.0
@@ -2240,11 +2247,22 @@ def decide_stage3_bucket_outcome(
         and largest_changed_cluster_size >= 2
         and not rejection_priority
     )
+    local_changed_cluster_survival = (
+        reconstructed_before_coverage >= 0.80
+        and largest_changed_cluster_size >= STAGE3_LOCAL_CHANGED_CLUSTER_MIN_SIZE
+        and largest_changed_cluster_coverage >= STAGE3_LOCAL_CHANGED_CLUSTER_MIN_COVERAGE
+        and resolved_ambiguous_coverage <= STAGE3_LOCAL_CHANGED_CLUSTER_MAX_AMBIGUOUS_COVERAGE
+        and not rejection_priority
+    )
 
     if changed_evidence_survival:
         if mode == 'step1':
             return 'surviving', True, 'step1_clear_survival', False
         return 'surviving', True, 'survived_by_changed_evidence', False
+    if local_changed_cluster_survival:
+        if mode == 'step1':
+            return 'surviving', True, 'step1_local_changed_cluster_survival', False
+        return 'surviving', True, 'survived_by_local_changed_cluster', False
     if bounded_ambiguity:
         return 'surviving', True, 'survived_by_bounded_ambiguity', True
     if rejection_priority:
@@ -2274,10 +2292,12 @@ def serialize_stage3_window_metadata(window_metadata: dict[str, object] | None) 
 
 def serialize_stage3_coverage_summary(coverage_summary: dict[str, object]) -> dict[str, object]:
     return {
+        'total_footprint_cells': int(coverage_summary.get('total_footprint_cells', 0)),
         'resolved_changed_coverage': round(float(coverage_summary.get('resolved_changed_coverage', 0.0)), 6),
         'resolved_unchanged_coverage': round(float(coverage_summary.get('resolved_unchanged_coverage', 0.0)), 6),
         'resolved_ambiguous_coverage': round(float(coverage_summary.get('resolved_ambiguous_coverage', 0.0)), 6),
         'largest_changed_cluster_size': int(coverage_summary.get('largest_changed_cluster_size', 0)),
+        'largest_changed_cluster_coverage': round(float(coverage_summary.get('largest_changed_cluster_coverage', 0.0)), 6),
         'ambiguous_cluster_count': int(coverage_summary.get('ambiguous_cluster_count', 0)),
     }
 
@@ -2475,7 +2495,7 @@ def screen_candidate_union_with_art_state_prototype(
             stage3_debug_trace=stage3_debug_trace,
         )
 
-    reference_canvas_shape = sampled_frames[0]['canvas_gray'].shape
+    reference_canvas_shape = get_stage3_canvas_shape(sampled_frames[0])
     cell_art_state_masks = build_stage3_cell_art_state_masks(candidate_union.union_footprint, reference_canvas_shape)
     endpoint_coordinates = build_stage3_endpoint_coordinates(within_union_records)
     touch_frame_bounds = build_stage3_cell_touch_frame_bounds(candidate_union.union_footprint, within_union_records)
@@ -3349,7 +3369,7 @@ def evaluate_local_subregion_change(
             'after_window_candidate_count': after_candidate_count,
         }
 
-    reference_canvas_shape = before_samples[0]['canvas_gray'].shape
+    reference_canvas_shape = get_stage3_canvas_shape(before_samples[0])
     subregion_canvas_mask = build_canvas_footprint_mask_from_coordinates(subregion, reference_canvas_shape)
     subregion_art_state_mask = crop_canvas_mask_to_art_state(subregion_canvas_mask)
     persistent_mask = build_art_state_change_mask(pre_baseline, post_baseline, settings, cv2)
@@ -4071,6 +4091,130 @@ def serialize_movement_evidence_record(record: MovementEvidenceRecord) -> dict[s
 
 
 
+def build_precomputed_movement_evidence_cache_path(path: Path) -> Path:
+    return path.with_suffix('.npz')
+def write_precomputed_movement_evidence_record_cache(path: Path, serialized_records: list[dict[str, object]]) -> Path:
+    output_path = build_precomputed_movement_evidence_cache_path(path)
+    record_count = len(serialized_records)
+    record_indices = np.empty(record_count, dtype=np.int32)
+    frame_indices = np.empty(record_count, dtype=np.int32)
+    movement_present = np.empty(record_count, dtype=np.bool_)
+    opening_signal = np.empty(record_count, dtype=np.bool_)
+    continuation_signal = np.empty(record_count, dtype=np.bool_)
+    weak_signal = np.empty(record_count, dtype=np.bool_)
+    change_magnitude_scores = np.empty(record_count, dtype=np.float32)
+    spatial_extent_scores = np.empty(record_count, dtype=np.float32)
+    temporal_persistence_scores = np.empty(record_count, dtype=np.float32)
+    movement_strength_scores = np.empty(record_count, dtype=np.float32)
+    touched_coordinate_offsets = np.zeros(record_count + 1, dtype=np.int32)
+    flattened_touched_coordinates: list[tuple[int, int]] = []
+    for index, payload in enumerate(serialized_records):
+        record_indices[index] = int(payload['record_index'])
+        frame_indices[index] = int(payload['frame_index'])
+        movement_present[index] = bool(payload['movement_present'])
+        opening_signal[index] = bool(payload.get('opening_signal', False))
+        continuation_signal[index] = bool(payload.get('continuation_signal', False))
+        weak_signal[index] = bool(payload.get('weak_signal', False))
+        change_magnitude_scores[index] = float(payload['change_magnitude_score'])
+        spatial_extent_scores[index] = float(payload['spatial_extent_score'])
+        temporal_persistence_scores[index] = float(payload['temporal_persistence_score'])
+        movement_strength_scores[index] = float(payload['movement_strength_score'])
+        coordinates = [
+            (int(coordinate[0]), int(coordinate[1]))
+            for coordinate in payload.get('touched_grid_coordinates', [])
+        ]
+        flattened_touched_coordinates.extend(coordinates)
+        touched_coordinate_offsets[index + 1] = len(flattened_touched_coordinates)
+    touched_coordinate_values = (
+        np.asarray(flattened_touched_coordinates, dtype=np.int16)
+        if flattened_touched_coordinates
+        else np.empty((0, 2), dtype=np.int16)
+    )
+    np.savez(
+        output_path,
+        record_indices=record_indices,
+        frame_indices=frame_indices,
+        movement_present=movement_present,
+        opening_signal=opening_signal,
+        continuation_signal=continuation_signal,
+        weak_signal=weak_signal,
+        change_magnitude_scores=change_magnitude_scores,
+        spatial_extent_scores=spatial_extent_scores,
+        temporal_persistence_scores=temporal_persistence_scores,
+        movement_strength_scores=movement_strength_scores,
+        touched_coordinate_offsets=touched_coordinate_offsets,
+        touched_coordinate_values=touched_coordinate_values,
+    )
+    return output_path
+def load_precomputed_movement_evidence_record_cache(path: Path) -> list[MovementEvidenceRecord]:
+    try:
+        with np.load(path, allow_pickle=False) as payload:
+            record_indices = payload['record_indices']
+            frame_indices = payload['frame_indices']
+            movement_present = payload['movement_present']
+            opening_signal = payload['opening_signal']
+            continuation_signal = payload['continuation_signal']
+            weak_signal = payload['weak_signal']
+            change_magnitude_scores = payload['change_magnitude_scores']
+            spatial_extent_scores = payload['spatial_extent_scores']
+            temporal_persistence_scores = payload['temporal_persistence_scores']
+            movement_strength_scores = payload['movement_strength_scores']
+            touched_coordinate_offsets = payload['touched_coordinate_offsets']
+            touched_coordinate_values = payload['touched_coordinate_values']
+    except Exception as exc:
+        raise RuntimeError(f'Unable to load precomputed movement evidence cache: {path}') from exc
+    record_count = len(record_indices)
+    expected_lengths = (
+        len(frame_indices),
+        len(movement_present),
+        len(opening_signal),
+        len(continuation_signal),
+        len(weak_signal),
+        len(change_magnitude_scores),
+        len(spatial_extent_scores),
+        len(temporal_persistence_scores),
+        len(movement_strength_scores),
+    )
+    if any(length != record_count for length in expected_lengths):
+        raise RuntimeError(f'Precomputed movement evidence cache is inconsistent: {path}')
+    if len(touched_coordinate_offsets) != record_count + 1:
+        raise RuntimeError(f'Precomputed movement evidence cache has invalid touch offsets: {path}')
+    if touched_coordinate_values.ndim != 2 or touched_coordinate_values.shape[1] != 2:
+        raise RuntimeError(f'Precomputed movement evidence cache has invalid touch coordinates: {path}')
+    records: list[MovementEvidenceRecord] = []
+    for index in range(record_count):
+        touch_start = int(touched_coordinate_offsets[index])
+        touch_end = int(touched_coordinate_offsets[index + 1])
+        if touch_start > touch_end or touch_end > len(touched_coordinate_values):
+            raise RuntimeError(f'Precomputed movement evidence cache has invalid touch bounds: {path}')
+        touched_grid_coordinates = tuple(
+            (int(coordinate[0]), int(coordinate[1]))
+            for coordinate in touched_coordinate_values[touch_start:touch_end]
+        )
+        frame_index = int(frame_indices[index])
+        records.append(
+            MovementEvidenceRecord(
+                record_index=int(record_indices[index]),
+                evaluation_point_timecode=Timecode(total_frames=frame_index).to_hhmmssff(),
+                frame_index=frame_index,
+                movement_present=bool(movement_present[index]),
+                touched_grid_coordinates=touched_grid_coordinates,
+                touched_grid_coordinate_count=len(touched_grid_coordinates),
+                change_magnitude_score=float(change_magnitude_scores[index]),
+                spatial_extent_score=float(spatial_extent_scores[index]),
+                temporal_persistence_score=float(temporal_persistence_scores[index]),
+                movement_strength_score=float(movement_strength_scores[index]),
+                opening_signal=bool(opening_signal[index]),
+                continuation_signal=bool(continuation_signal[index]),
+                weak_signal=bool(weak_signal[index]),
+            )
+        )
+    return records
+def find_precomputed_movement_evidence_cache_path(path: Path) -> Path | None:
+    cache_path = build_precomputed_movement_evidence_cache_path(path)
+    if not cache_path.exists():
+        return None
+    return cache_path
 def deserialize_movement_evidence_record(payload: dict[str, object]) -> MovementEvidenceRecord:
     touched_grid_coordinates = tuple(
         (int(coordinate[0]), int(coordinate[1]))
@@ -4094,6 +4238,12 @@ def deserialize_movement_evidence_record(payload: dict[str, object]) -> Movement
 
 
 def load_precomputed_movement_evidence_records(path: Path) -> list[MovementEvidenceRecord]:
+    cache_path = find_precomputed_movement_evidence_cache_path(path)
+    if cache_path is not None:
+        try:
+            return load_precomputed_movement_evidence_record_cache(cache_path)
+        except RuntimeError:
+            pass
     raw_payload = json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(raw_payload, list):
         raise RuntimeError(f'Precomputed movement evidence JSON must contain a top-level list: {path}')
@@ -4108,16 +4258,26 @@ def infer_debug_stem_from_artifact_path(artifact_path: Path, artifact_key: str, 
     return artifact_path.with_name(artifact_path.name[:-len(artifact_suffix)])
 
 
+def get_stage3_canvas_shape(sample: dict[str, object]) -> tuple[int, int]:
+    canvas_shape = sample.get('canvas_shape')
+    if canvas_shape is not None:
+        return (int(canvas_shape[0]), int(canvas_shape[1]))
+    canvas_gray = sample.get('canvas_gray')
+    if canvas_gray is not None:
+        return tuple(int(dimension) for dimension in canvas_gray.shape)
+    raise RuntimeError('Stage 3 sample is missing canvas shape metadata.')
+
+
 def write_reusable_stage3_art_state_sample_cache(debug_stem: Path, sampled_frames: list[dict[str, object]]) -> Path:
     output_path = build_staged_debug_output_path(debug_stem, 'reusable_stage3_art_state_samples', '.npz')
     frame_indices = np.asarray([int(sample['frame_index']) for sample in sampled_frames], dtype=np.int32)
     if sampled_frames:
-        canvas_gray_stack = np.stack([np.asarray(sample['canvas_gray'], dtype=np.uint8) for sample in sampled_frames], axis=0)
+        canvas_shape = np.asarray(get_stage3_canvas_shape(sampled_frames[0]), dtype=np.int32)
         art_gray_stack = np.stack([np.asarray(sample['art_gray'], dtype=np.uint8) for sample in sampled_frames], axis=0)
     else:
-        canvas_gray_stack = np.empty((0, 0, 0), dtype=np.uint8)
+        canvas_shape = np.asarray((0, 0), dtype=np.int32)
         art_gray_stack = np.empty((0, 0, 0), dtype=np.uint8)
-    np.savez_compressed(output_path, frame_indices=frame_indices, canvas_gray=canvas_gray_stack, art_gray=art_gray_stack)
+    np.savez(output_path, frame_indices=frame_indices, canvas_shape=canvas_shape, art_gray=art_gray_stack)
     return output_path
 
 
@@ -4125,30 +4285,52 @@ def load_reusable_stage3_art_state_sample_cache(path: Path) -> list[dict[str, ob
     try:
         with np.load(path, allow_pickle=False) as payload:
             frame_indices = payload['frame_indices']
-            canvas_gray_stack = payload['canvas_gray']
             art_gray_stack = payload['art_gray']
+            if 'canvas_shape' in payload:
+                canvas_shape = tuple(int(dimension) for dimension in payload['canvas_shape'].tolist())
+            elif 'canvas_gray' in payload:
+                canvas_gray_stack = payload['canvas_gray']
+                if len(frame_indices) != len(canvas_gray_stack) or len(frame_indices) != len(art_gray_stack):
+                    raise RuntimeError(f'Reusable Stage 2B frame payload is inconsistent: {path}')
+                return [
+                    {
+                        'frame_index': int(frame_indices[index]),
+                        'canvas_shape': tuple(int(dimension) for dimension in canvas_gray_stack[index].shape),
+                        'art_gray': art_gray_stack[index],
+                    }
+                    for index in range(len(frame_indices))
+                ]
+            else:
+                raise RuntimeError(f'Reusable Stage 2B frame payload is missing canvas shape metadata: {path}')
     except Exception as exc:
         raise RuntimeError(f'Unable to load reusable Stage 2B frame payload: {path}') from exc
-    if len(frame_indices) != len(canvas_gray_stack) or len(frame_indices) != len(art_gray_stack):
+    if len(frame_indices) != len(art_gray_stack):
         raise RuntimeError(f'Reusable Stage 2B frame payload is inconsistent: {path}')
     return [
         {
             'frame_index': int(frame_indices[index]),
-            'canvas_gray': canvas_gray_stack[index],
+            'canvas_shape': canvas_shape,
             'art_gray': art_gray_stack[index],
         }
         for index in range(len(frame_indices))
     ]
 
 
-def load_precomputed_stage3_art_state_sample_cache_from_movement_evidence_path(
-    movement_evidence_path: Path,
-) -> list[dict[str, object]] | None:
+def find_precomputed_stage3_art_state_sample_cache_path_from_movement_evidence_path(movement_evidence_path: Path) -> Path | None:
     debug_stem = infer_debug_stem_from_artifact_path(movement_evidence_path, 'movement_evidence_records', '.json')
     if debug_stem is None:
         return None
     cache_path = build_staged_debug_output_path(debug_stem, 'reusable_stage3_art_state_samples', '.npz')
     if not cache_path.exists():
+        return None
+    return cache_path
+
+
+def load_precomputed_stage3_art_state_sample_cache_from_movement_evidence_path(
+    movement_evidence_path: Path,
+) -> list[dict[str, object]] | None:
+    cache_path = find_precomputed_stage3_art_state_sample_cache_path_from_movement_evidence_path(movement_evidence_path)
+    if cache_path is None:
         return None
     return load_reusable_stage3_art_state_sample_cache(cache_path)
 
@@ -4465,6 +4647,7 @@ def detect_staged_activity_ranges(
     else:
         emit_stage_status(status_callback, f"Runtime Stage 1A - Loading precomputed movement evidence started ({precomputed_movement_evidence_path})")
     stage_started_at = time.perf_counter()
+    reused_stage3_sample_cache_path: Path | None = None
     if precomputed_movement_evidence_path is None:
         records, retained_stage3_samples = detect_movement_evidence_records(
             video_path=video_path,
@@ -4474,8 +4657,13 @@ def detect_staged_activity_ranges(
         )
     else:
         records = load_precomputed_movement_evidence_records(precomputed_movement_evidence_path)
-        retained_stage3_samples = load_precomputed_stage3_art_state_sample_cache_from_movement_evidence_path(
+        reused_stage3_sample_cache_path = find_precomputed_stage3_art_state_sample_cache_path_from_movement_evidence_path(
             precomputed_movement_evidence_path
+        )
+        retained_stage3_samples = (
+            load_reusable_stage3_art_state_sample_cache(reused_stage3_sample_cache_path)
+            if reused_stage3_sample_cache_path is not None
+            else None
         )
     elapsed_seconds = time.perf_counter() - stage_started_at
     stage_timings.append(build_stage_timing_entry('runtime_stage_1a_movement_evidence', 'Runtime Stage 1A - Scanning chapter for movement evidence', elapsed_seconds, len(records)))
@@ -4538,22 +4726,45 @@ def detect_staged_activity_ranges(
     stage_timings.append(build_stage_timing_entry('runtime_stage_2b_art_state_samples', 'Runtime Stage 2B - Collecting Stage 3 art-state samples', elapsed_seconds, len(stage3_art_state_samples)))
     emit_stage_status(status_callback, f"Runtime Stage 2B - Collecting Stage 3 art-state samples complete in {format_stage_elapsed(elapsed_seconds)} ({len(stage3_art_state_samples)} sampled frames)")
     if debug_stem is not None:
-        emit_stage_status(status_callback, 'Runtime Stage 1C - Writing reusable Stage 2B frame payload started')
-        stage_started_at = time.perf_counter()
-        write_reusable_stage3_art_state_sample_cache(debug_stem, stage3_art_state_samples)
-        elapsed_seconds = time.perf_counter() - stage_started_at
-        stage_timings.append(
-            build_stage_timing_entry(
-                'runtime_stage_1c_reusable_frame_payload',
-                'Runtime Stage 1C - Writing reusable Stage 2B frame payload',
-                elapsed_seconds,
-                len(stage3_art_state_samples),
+        reusable_sample_cache_output_path = build_staged_debug_output_path(debug_stem, 'reusable_stage3_art_state_samples', '.npz')
+        if reused_stage3_sample_cache_path is not None:
+            emit_stage_status(status_callback, 'Runtime Stage 1C - Linking reused Stage 2B frame payload into current debug folder started')
+            stage_started_at = time.perf_counter()
+            if reusable_sample_cache_output_path != reused_stage3_sample_cache_path and not reusable_sample_cache_output_path.exists():
+                try:
+                    os.link(reused_stage3_sample_cache_path, reusable_sample_cache_output_path)
+                except OSError:
+                    write_reusable_stage3_art_state_sample_cache(debug_stem, stage3_art_state_samples)
+            elapsed_seconds = time.perf_counter() - stage_started_at
+            stage_timings.append(
+                build_stage_timing_entry(
+                    'runtime_stage_1c_reusable_frame_payload',
+                    'Runtime Stage 1C - Writing reusable Stage 2B frame payload',
+                    elapsed_seconds,
+                    len(stage3_art_state_samples),
+                )
             )
-        )
-        emit_stage_status(
-            status_callback,
-            f"Runtime Stage 1C - Writing reusable Stage 2B frame payload complete in {format_stage_elapsed(elapsed_seconds)} ({len(stage3_art_state_samples)} sampled frames)",
-        )
+            emit_stage_status(
+                status_callback,
+                f"Runtime Stage 1C - Linking reused Stage 2B frame payload into current debug folder complete in {format_stage_elapsed(elapsed_seconds)} ({len(stage3_art_state_samples)} sampled frames)",
+            )
+        else:
+            emit_stage_status(status_callback, 'Runtime Stage 1C - Writing reusable Stage 2B frame payload started')
+            stage_started_at = time.perf_counter()
+            write_reusable_stage3_art_state_sample_cache(debug_stem, stage3_art_state_samples)
+            elapsed_seconds = time.perf_counter() - stage_started_at
+            stage_timings.append(
+                build_stage_timing_entry(
+                    'runtime_stage_1c_reusable_frame_payload',
+                    'Runtime Stage 1C - Writing reusable Stage 2B frame payload',
+                    elapsed_seconds,
+                    len(stage3_art_state_samples),
+                )
+            )
+            emit_stage_status(
+                status_callback,
+                f"Runtime Stage 1C - Writing reusable Stage 2B frame payload complete in {format_stage_elapsed(elapsed_seconds)} ({len(stage3_art_state_samples)} sampled frames)",
+            )
     flush_debug_payload({
         'movement_evidence_records': serialized_records,
         'movement_spans': serialized_movement_spans,
@@ -4675,6 +4886,11 @@ def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, obje
         output_path = build_staged_debug_output_path(debug_stem, section_name, '.json')
         output_path.write_text(json.dumps(items, indent=2), encoding='utf-8')
         output_paths[section_name] = output_path
+        if section_name == 'movement_evidence_records' and isinstance(items, list):
+            output_paths['movement_evidence_records_cache'] = write_precomputed_movement_evidence_record_cache(
+                output_path,
+                items,
+            )
     reusable_sample_cache_path = build_staged_debug_output_path(debug_stem, 'reusable_stage3_art_state_samples', '.npz')
     if reusable_sample_cache_path.exists():
         output_paths['reusable_stage3_art_state_samples'] = reusable_sample_cache_path
@@ -4685,6 +4901,13 @@ def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, obje
     )
     output_paths['summary'] = summary_output_path
     return output_paths
+
+
+
+
+
+
+
 
 
 
