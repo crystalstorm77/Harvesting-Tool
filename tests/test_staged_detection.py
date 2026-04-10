@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from collections import deque
 from pathlib import Path
 
@@ -29,12 +30,14 @@ from harvesting_tool.staged_detection import (
     decide_stage3_bucket_outcome,
     load_precomputed_stage3_art_state_sample_cache_from_movement_evidence_path,
     load_reusable_stage3_art_state_sample_cache,
+    build_stage4_bands_from_probe_results,
     classify_stage4_time_slices,
     classify_stage5_minimum_size_leaf,
     refine_stage5_sub_slices,
     screen_stage3_candidate_unions,
     select_stage3_art_state_reference_window,
     serialize_movement_evidence_record,
+    split_footprint_into_local_subregions,
     write_reusable_stage3_art_state_sample_cache,
     write_staged_debug_artifacts,
 )
@@ -936,114 +939,180 @@ class CandidateUnionScreeningTests(unittest.TestCase):
         self.assertEqual(screened[0].reason, 'rejected_after_rescue_failure')
         self.assertEqual(screened[0].stage3_mode, 'snapshot_rescue')
 
-# ============================================================
-# ============================================================
-# SECTION F - Stage 4 Time Slice Classification Tests
+# ============================================================`r`n# SECTION F - Stage 4 Time Slice Classification Tests
 # ============================================================
 
 
 class TimeSliceClassificationTests(unittest.TestCase):
-    def test_stage4_validates_slice_from_local_subregion_support_even_when_neighboring_activity_exists(self) -> None:
-        screened_union = make_screened_union(start_frame=300, end_frame=330)
+    def test_stage4_leading_zero_change_holding_probe_is_not_retained_when_followed_by_positive_probe(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=420)
+        holding_probe = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=0,
+            start_frame=300,
+            end_frame=360,
+            start_time='00:00:10:00',
+            end_time='00:00:12:00',
+            footprint=frozenset({(2, 2)}),
+            footprint_size=1,
+            within_slice_record_count=1,
+            classification='undetermined',
+            reason='mixed_slice_evidence',
+            lasting_change_evidence_score=0.0,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        positive_probe = replace(
+            holding_probe,
+            slice_index=2,
+            start_frame=360,
+            end_frame=420,
+            start_time='00:00:12:00',
+            end_time='00:00:14:00',
+            classification='valid',
+            reason='slice_activity_supported',
+            lasting_change_evidence_score=0.8,
+        )
+        probe_results = [
+            (holding_probe, {'probe_label': 'holding', 'changed_support_score': 0.0, 'judgeable_changed_support_score': 0.0, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (positive_probe, {'probe_label': 'positive', 'changed_support_score': 0.30, 'lasting_change_evidence_score': 0.8, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+        ]
+
+        bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
+
+        self.assertEqual(len(bands), 1)
+        self.assertEqual((bands[0].start_frame, bands[0].end_frame), (360, 420))
+
+    def test_stage4_changed_holding_probe_is_retained_when_followed_by_positive_probe(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=420)
+        holding_probe = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=0,
+            start_frame=300,
+            end_frame=360,
+            start_time='00:00:10:00',
+            end_time='00:00:12:00',
+            footprint=frozenset({(2, 2)}),
+            footprint_size=1,
+            within_slice_record_count=1,
+            classification='undetermined',
+            reason='mixed_slice_evidence',
+            lasting_change_evidence_score=0.0,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        positive_probe = replace(
+            holding_probe,
+            slice_index=2,
+            start_frame=360,
+            end_frame=420,
+            start_time='00:00:12:00',
+            end_time='00:00:14:00',
+            classification='valid',
+            reason='slice_activity_supported',
+            lasting_change_evidence_score=0.8,
+        )
+        probe_results = [
+            (holding_probe, {'probe_label': 'holding', 'changed_support_score': 0.03, 'judgeable_changed_support_score': 0.12, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (positive_probe, {'probe_label': 'positive', 'changed_support_score': 0.30, 'judgeable_changed_support_score': 0.30, 'lasting_change_evidence_score': 0.8, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+        ]
+
+        bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
+
+        self.assertEqual(len(bands), 1)
+        self.assertEqual((bands[0].start_frame, bands[0].end_frame), (300, 420))
+
+    def test_stage4_sustained_holding_probes_without_positive_support_do_not_open_band(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=480)
+        first_probe = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=0,
+            start_frame=300,
+            end_frame=360,
+            start_time='00:00:10:00',
+            end_time='00:00:12:00',
+            footprint=frozenset({(2, 2)}),
+            footprint_size=1,
+            within_slice_record_count=1,
+            classification='undetermined',
+            reason='mixed_slice_evidence',
+            lasting_change_evidence_score=0.0,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        second_probe = replace(first_probe, slice_index=2, start_frame=360, end_frame=420, start_time='00:00:12:00', end_time='00:00:14:00')
+        negative_probe = replace(first_probe, slice_index=3, start_frame=420, end_frame=480, start_time='00:00:14:00', end_time='00:00:16:00', classification='invalid', reason='weak_slice_activity')
+        probe_results = [
+            (first_probe, {'probe_label': 'holding', 'changed_support_score': 0.0, 'judgeable_changed_support_score': 0.0, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (second_probe, {'probe_label': 'holding', 'changed_support_score': 0.0, 'judgeable_changed_support_score': 0.0, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (negative_probe, {'probe_label': 'negative', 'changed_support_score': 0.0, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+        ]
+
+        bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
+
+        self.assertEqual(bands, [])
+
+    def test_stage4_builds_separate_valid_bands_when_a_negative_probe_gap_splits_union_activity(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=540)
         records = [
-            make_record(1, 292, movement_present=True, movement_strength_score=0.70, temporal_persistence_score=0.68, spatial_extent_score=0.40, touched_grid_coordinates=((0, 0), (0, 1))),
-            make_record(2, 298, movement_present=True, movement_strength_score=0.72, temporal_persistence_score=0.70, spatial_extent_score=0.42, touched_grid_coordinates=((0, 1), (0, 2))),
-            make_record(3, 304, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(4, 310, movement_present=True, movement_strength_score=0.85, temporal_persistence_score=0.83, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(5, 318, movement_present=True, movement_strength_score=0.71, temporal_persistence_score=0.69, spatial_extent_score=0.41, touched_grid_coordinates=((0, 2), (0, 3))),
-            make_record(6, 324, movement_present=True, movement_strength_score=0.70, temporal_persistence_score=0.68, spatial_extent_score=0.40, touched_grid_coordinates=((0, 3), (0, 4))),
+            make_record(1, 304, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_record(2, 310, movement_present=True, movement_strength_score=0.85, temporal_persistence_score=0.83, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_record(3, 424, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_record(4, 430, movement_present=True, movement_strength_score=0.85, temporal_persistence_score=0.83, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
         ]
         sampled_frames = [
             make_stage3_art_state_sample(288, changed=False),
             make_stage3_art_state_sample(294, changed=False),
-            make_stage3_art_state_sample(318, changed=True),
-            make_stage3_art_state_sample(324, changed=True),
-            make_stage3_art_state_sample(332, changed=True),
+            make_stage3_art_state_sample(366, changed=True),
+            make_stage3_art_state_sample(368, changed=True),
+            make_stage3_art_state_sample(372, changed=True),
+            make_stage3_art_state_sample(408, changed=False),
+            make_stage3_art_state_sample(414, changed=False),
+            make_stage3_art_state_sample(486, changed=True),
+            make_stage3_art_state_sample(488, changed=True),
+            make_stage3_art_state_sample(492, changed=True),
         ]
 
         slices = classify_stage4_time_slices([screened_union], records, sampled_frames=sampled_frames, settings=make_settings())
 
-        self.assertEqual(len(slices), 2)
+        self.assertEqual(len(slices), 1)
+        self.assertEqual([(slice_info.start_frame, slice_info.end_frame) for slice_info in slices], [(300, 360)])
+        self.assertTrue(all(slice_info.classification == 'valid' for slice_info in slices))
+        self.assertTrue(all(slice_info.reason == 'probe_supported_band' for slice_info in slices))
+
+    def test_stage4_merges_consecutive_positive_probes_into_one_valid_band(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=420)
+        records = [
+            make_record(1, 304, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_record(2, 310, movement_present=True, movement_strength_score=0.85, temporal_persistence_score=0.83, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_record(3, 364, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_record(4, 370, movement_present=True, movement_strength_score=0.85, temporal_persistence_score=0.83, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+        ]
+        sampled_frames = [
+            make_stage3_art_state_sample(288, changed=False),
+            make_stage3_art_state_sample(294, changed=False),
+            make_stage3_art_state_sample(348, changed=False),
+            make_stage3_art_state_sample(354, changed=False),
+            make_stage3_art_state_sample(366, changed=True),
+            make_stage3_art_state_sample(368, changed=True),
+            make_stage3_art_state_sample(372, changed=True),
+            make_stage3_art_state_sample(426, changed=True),
+            make_stage3_art_state_sample(428, changed=True),
+            make_stage3_art_state_sample(432, changed=True),
+        ]
+
+        slices = classify_stage4_time_slices([screened_union], records, sampled_frames=sampled_frames, settings=make_settings())
+
+        self.assertEqual(len(slices), 1)
+        self.assertEqual((slices[0].start_frame, slices[0].end_frame), (360, 420))
         self.assertEqual(slices[0].classification, 'valid')
-        self.assertEqual(slices[0].reason, 'slice_activity_supported')
-
-    def test_stage4_marks_slice_invalid_when_local_before_after_state_is_unchanged(self) -> None:
-        screened_union = make_screened_union(start_frame=300, end_frame=330)
-        records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.84, temporal_persistence_score=0.82, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(2, 310, movement_present=True, movement_strength_score=0.83, temporal_persistence_score=0.81, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-        ]
-        sampled_frames = [
-            make_stage3_art_state_sample(288, changed=False),
-            make_stage3_art_state_sample(294, changed=False),
-            make_stage3_art_state_sample(318, changed=False),
-            make_stage3_art_state_sample(324, changed=False),
-            make_stage3_art_state_sample(332, changed=False),
-        ]
-
-        slices = classify_stage4_time_slices([screened_union], records, sampled_frames=sampled_frames, settings=make_settings())
-
-        self.assertEqual(len(slices), 2)
-        self.assertEqual(slices[0].classification, 'invalid')
-        self.assertEqual(slices[0].reason, 'weak_slice_activity')
-
-    def test_stage4_marks_low_footprint_slice_invalid_when_no_unsettled_activity_remains(self) -> None:
-        screened_union = make_screened_union(start_frame=300, end_frame=330)
-        records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.84, temporal_persistence_score=0.82, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(2, 310, movement_present=True, movement_strength_score=0.83, temporal_persistence_score=0.81, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6), (0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1))),
-        ]
-        sampled_frames = [
-            make_stage3_art_state_sample(288, changed=False),
-            make_stage3_art_state_sample(294, changed=False),
-            make_stage3_art_state_sample(318, changed=True),
-            make_stage3_art_state_sample(324, changed=True),
-            make_stage3_art_state_sample(332, changed=True),
-        ]
-
-        slices = classify_stage4_time_slices([screened_union], records, sampled_frames=sampled_frames, settings=make_settings())
-
-        self.assertEqual(len(slices), 2)
-        self.assertEqual(slices[0].classification, 'invalid')
-        self.assertEqual(slices[0].reason, 'weak_slice_activity')
-
-    def test_stage4_marks_slice_undetermined_when_local_reference_windows_cannot_be_formed(self) -> None:
-        screened_union = make_screened_union(start_frame=300, end_frame=330)
-        records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.84, temporal_persistence_score=0.82, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(2, 310, movement_present=True, movement_strength_score=0.83, temporal_persistence_score=0.81, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-        ]
-        sampled_frames = [
-            make_stage3_art_state_sample(288, changed=False),
-            make_stage3_art_state_sample(294, changed=False),
-        ]
-
-        slices = classify_stage4_time_slices([screened_union], records, sampled_frames=sampled_frames, settings=make_settings())
-
-        self.assertEqual(len(slices), 2)
-        self.assertEqual(slices[0].classification, 'undetermined')
-        self.assertEqual(slices[0].reason, 'reference_windows_unreliable')
-
-    def test_stage4_marks_slice_undetermined_when_after_state_is_still_unsettled(self) -> None:
-        screened_union = make_screened_union(start_frame=300, end_frame=330)
-        records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.84, temporal_persistence_score=0.82, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(2, 310, movement_present=True, movement_strength_score=0.83, temporal_persistence_score=0.81, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(3, 318, movement_present=True, movement_strength_score=0.80, temporal_persistence_score=0.78, spatial_extent_score=0.86, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(4, 324, movement_present=True, movement_strength_score=0.79, temporal_persistence_score=0.77, spatial_extent_score=0.85, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-        ]
-        sampled_frames = [
-            make_stage3_art_state_sample(288, changed=False),
-            make_stage3_art_state_sample(294, changed=False),
-            make_stage3_art_state_sample(318, changed=True),
-            make_stage3_art_state_sample(324, changed=True),
-            make_stage3_art_state_sample(332, changed=True),
-        ]
-
-        slices = classify_stage4_time_slices([screened_union], records, sampled_frames=sampled_frames, settings=make_settings())
-
-        self.assertEqual(len(slices), 2)
-        self.assertEqual(slices[0].classification, 'undetermined')
+        self.assertEqual(slices[0].reason, 'probe_supported_band')
 
     def test_stage4_ignores_rejected_unions(self) -> None:
         rejected_union = make_screened_union(surviving=False, screening_result='rejected')
@@ -1054,221 +1123,82 @@ class TimeSliceClassificationTests(unittest.TestCase):
 
         slices = classify_stage4_time_slices([rejected_union], records, sampled_frames=[], settings=make_settings())
         self.assertEqual(slices, [])
+
+
 # ============================================================
 # SECTION G - Stage 5 Recursive Sub-Slice Refinement Tests
 # ============================================================
 
 
 class SubSliceRefinementTests(unittest.TestCase):
-    def test_stage5_refines_undetermined_slice_into_valid_and_invalid_leaves_using_local_subregions(self) -> None:
-        screened_union = make_screened_union(start_frame=300, end_frame=330)
-        undetermined_slice = ClassifiedTimeSlice(
+    def test_stage5_returns_stage4_bands_without_recursive_subdivision(self) -> None:
+        first_band = ClassifiedTimeSlice(
             slice_index=1,
-            parent_union_index=screened_union.candidate_union.union_index,
+            parent_union_index=1,
             slice_level=0,
             start_frame=300,
-            end_frame=330,
+            end_frame=360,
             start_time='00:00:10:00',
-            end_time='00:00:11:00',
-            footprint=frozenset({(5, 5), (5, 6), (6, 5), (6, 6)}),
-            footprint_size=4,
-            within_slice_record_count=2,
-            classification='undetermined',
-            reason='mixed_slice_evidence',
-            lasting_change_evidence_score=0.45,
-            before_reference_activity=0.1,
-            after_reference_activity=0.1,
-            reference_windows_reliable=True,
-        )
-        records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.88, temporal_persistence_score=0.86, spatial_extent_score=0.96, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(2, 310, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.95, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(3, 318, movement_present=False, movement_strength_score=0.02, temporal_persistence_score=0.02),
-            make_record(4, 324, movement_present=False, movement_strength_score=0.02, temporal_persistence_score=0.02),
-        ]
-        sampled_frames = [
-            make_stage3_art_state_sample(288, changed=False),
-            make_stage3_art_state_sample(294, changed=False),
-            make_stage3_art_state_sample(318, changed=True),
-            make_stage3_art_state_sample(324, changed=True),
-            make_stage3_art_state_sample(332, changed=False),
-            make_stage3_art_state_sample(338, changed=False),
-        ]
-
-        refined = refine_stage5_sub_slices(
-            [screened_union],
-            [undetermined_slice],
-            records,
-            sampled_frames=sampled_frames,
-            settings=make_settings(),
-            minimum_subdivision_frames=15,
-        )
-
-        self.assertEqual(len(refined), 2)
-        self.assertEqual([slice_info.classification for slice_info in refined], ['valid', 'invalid'])
-        self.assertTrue(all(slice_info.parent_range == (300, 330) for slice_info in refined))
-
-    def test_stage5_marks_terminal_undetermined_leaf_as_boundary_when_adjacent_to_valid(self) -> None:
-        terminal_leaf = ClassifiedTimeSlice(
-            slice_index=1,
-            parent_union_index=1,
-            slice_level=3,
-            start_frame=300,
-            end_frame=315,
-            start_time='00:00:10:00',
-            end_time='00:00:10:15',
+            end_time='00:00:12:00',
             footprint=frozenset({(2, 2), (2, 3)}),
-            footprint_size=8,
-            within_slice_record_count=2,
-            classification='undetermined',
-            reason='minimum_subdivision_size_reached',
-            lasting_change_evidence_score=0.60,
-            before_reference_activity=0.10,
-            after_reference_activity=0.10,
-            reference_windows_reliable=True,
-        )
-        valid_leaf = ClassifiedTimeSlice(
-            slice_index=2,
-            parent_union_index=1,
-            slice_level=3,
-            start_frame=315,
-            end_frame=330,
-            start_time='00:00:10:15',
-            end_time='00:00:11:00',
-            footprint=frozenset({(2, 3), (3, 3)}),
-            footprint_size=8,
+            footprint_size=2,
             within_slice_record_count=2,
             classification='valid',
-            reason='slice_activity_supported',
-            lasting_change_evidence_score=0.82,
+            reason='probe_supported_band',
+            lasting_change_evidence_score=0.72,
+            before_reference_activity=0.02,
+            after_reference_activity=0.02,
+            reference_windows_reliable=True,
+        )
+        second_band = ClassifiedTimeSlice(
+            slice_index=2,
+            parent_union_index=1,
+            slice_level=0,
+            start_frame=420,
+            end_frame=480,
+            start_time='00:00:14:00',
+            end_time='00:00:16:00',
+            footprint=frozenset({(2, 4), (2, 5)}),
+            footprint_size=2,
+            within_slice_record_count=2,
+            classification='valid',
+            reason='probe_supported_band',
+            lasting_change_evidence_score=0.70,
             before_reference_activity=0.02,
             after_reference_activity=0.02,
             reference_windows_reliable=True,
         )
 
-        refined = refine_stage5_sub_slices([], [terminal_leaf, valid_leaf], [], sampled_frames=[], settings=make_settings(), minimum_subdivision_frames=15)
-        resolved_leaf = next(slice_info for slice_info in refined if slice_info.start_frame == 300)
+        refined = refine_stage5_sub_slices([], [second_band, first_band], [], sampled_frames=[], settings=make_settings(), minimum_subdivision_frames=15)
 
-        self.assertEqual(resolved_leaf.classification, 'boundary')
-        self.assertEqual(resolved_leaf.reason, 'minimum_subdivision_size_reached')
+        self.assertEqual([(slice_info.start_frame, slice_info.end_frame) for slice_info in refined], [(300, 360), (420, 480)])
+        self.assertEqual([slice_info.reason for slice_info in refined], ['probe_supported_band', 'probe_supported_band'])
 
-    def test_stage5_marks_terminal_undetermined_leaf_as_invalid_when_isolated(self) -> None:
-        terminal_leaf = ClassifiedTimeSlice(
+    def test_stage5_leaves_non_valid_band_handoffs_unchanged_for_future_boundary_work(self) -> None:
+        unresolved_band = ClassifiedTimeSlice(
             slice_index=1,
             parent_union_index=1,
-            slice_level=3,
-            start_frame=300,
-            end_frame=315,
-            start_time='00:00:10:00',
-            end_time='00:00:10:15',
-            footprint=frozenset({(2, 2), (2, 3)}),
-            footprint_size=8,
-            within_slice_record_count=2,
-            classification='undetermined',
-            reason='minimum_subdivision_size_reached',
-            lasting_change_evidence_score=0.60,
-            before_reference_activity=0.10,
-            after_reference_activity=0.10,
-            reference_windows_reliable=True,
-        )
-
-        refined = refine_stage5_sub_slices([], [terminal_leaf], [], sampled_frames=[], settings=make_settings(), minimum_subdivision_frames=15)
-
-        self.assertEqual(len(refined), 1)
-        self.assertEqual(refined[0].classification, 'invalid')
-        self.assertEqual(refined[0].reason, 'minimum_subdivision_size_reached')
-
-    def test_stage5_frontier_resolution_does_not_propagate_boundary_through_undetermined_neighbors(self) -> None:
-        first_leaf = ClassifiedTimeSlice(
-            slice_index=1,
-            parent_union_index=1,
-            slice_level=3,
-            start_frame=300,
-            end_frame=315,
-            start_time='00:00:10:00',
-            end_time='00:00:10:15',
-            footprint=frozenset({(2, 2)}),
-            footprint_size=8,
-            within_slice_record_count=1,
-            classification='undetermined',
-            reason='minimum_subdivision_size_reached',
-            lasting_change_evidence_score=0.58,
-            before_reference_activity=0.10,
-            after_reference_activity=0.10,
-            reference_windows_reliable=True,
-        )
-        second_leaf = ClassifiedTimeSlice(
-            slice_index=2,
-            parent_union_index=1,
-            slice_level=3,
-            start_frame=315,
-            end_frame=330,
-            start_time='00:00:10:15',
-            end_time='00:00:11:00',
-            footprint=frozenset({(2, 3)}),
-            footprint_size=8,
-            within_slice_record_count=1,
-            classification='undetermined',
-            reason='minimum_subdivision_size_reached',
-            lasting_change_evidence_score=0.59,
-            before_reference_activity=0.10,
-            after_reference_activity=0.10,
-            reference_windows_reliable=True,
-            parent_range=(300, 330),
-        )
-        valid_leaf = ClassifiedTimeSlice(
-            slice_index=3,
-            parent_union_index=1,
-            slice_level=3,
-            start_frame=330,
-            end_frame=345,
-            start_time='00:00:11:00',
-            end_time='00:00:11:15',
-            footprint=frozenset({(2, 4)}),
-            footprint_size=8,
-            within_slice_record_count=1,
-            classification='valid',
-            reason='slice_activity_supported',
-            lasting_change_evidence_score=0.81,
-            before_reference_activity=0.02,
-            after_reference_activity=0.02,
-            reference_windows_reliable=True,
-            parent_range=(300, 330),
-        )
-
-        refined = refine_stage5_sub_slices([], [first_leaf, second_leaf, valid_leaf], [], sampled_frames=[], settings=make_settings(), minimum_subdivision_frames=15)
-        first_resolved = next(slice_info for slice_info in refined if slice_info.start_frame == 300)
-        second_resolved = next(slice_info for slice_info in refined if slice_info.start_frame == 315)
-
-        self.assertEqual(first_resolved.classification, 'invalid')
-        self.assertEqual(second_resolved.classification, 'boundary')
-
-    def test_stage5_stops_at_minimum_subdivision_size(self) -> None:
-        screened_union = make_screened_union(start_frame=300, end_frame=312)
-        undetermined_slice = ClassifiedTimeSlice(
-            slice_index=1,
-            parent_union_index=screened_union.candidate_union.union_index,
             slice_level=0,
             start_frame=300,
-            end_frame=312,
+            end_frame=360,
             start_time='00:00:10:00',
-            end_time='00:00:10:12',
+            end_time='00:00:12:00',
             footprint=frozenset({(2, 2)}),
             footprint_size=1,
             within_slice_record_count=1,
             classification='undetermined',
-            reason='mixed_slice_evidence',
-            lasting_change_evidence_score=0.19,
-            before_reference_activity=0.1,
-            after_reference_activity=0.1,
+            reason='probe_holding_band',
+            lasting_change_evidence_score=0.40,
+            before_reference_activity=0.10,
+            after_reference_activity=0.10,
             reference_windows_reliable=True,
         )
 
-        refined = refine_stage5_sub_slices([screened_union], [undetermined_slice], [], sampled_frames=[], settings=make_settings(), minimum_subdivision_frames=15)
+        refined = refine_stage5_sub_slices([], [unresolved_band], [], sampled_frames=[], settings=make_settings(), minimum_subdivision_frames=15)
 
         self.assertEqual(len(refined), 1)
-        self.assertEqual(refined[0].classification, 'invalid')
-        self.assertEqual(refined[0].reason, 'minimum_subdivision_size_reached')
+        self.assertEqual(refined[0], unresolved_band)
+
 # SECTION H - Stage 6 Final Candidate Range Assembly Tests
 # ============================================================
 
@@ -1717,6 +1647,7 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
             'screened_candidate_unions': [],
             'stage3_screening_traces': [],
             'classified_time_slices': [],
+            'stage4_subregion_debug': [],
             'refined_sub_slices': [],
             'final_candidate_ranges': [],
             'candidate_clips': [],
@@ -1735,6 +1666,7 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
             self.assertEqual(output_paths['screened_candidate_unions'].name, 'Backpack - Stage 3A - Union Screening.json')
             self.assertEqual(output_paths['stage3_screening_traces'].name, 'Backpack - Stage 3B - Screening Trace [Step 1 + Snapshot Rescue].json')
             self.assertEqual(output_paths['classified_time_slices'].name, 'Backpack - Stage 4 - Time Slice Classifications.json')
+            self.assertEqual(output_paths['stage4_subregion_debug'].name, 'Backpack - Stage 4B - SubRegion Data Output.json')
             self.assertEqual(output_paths['refined_sub_slices'].name, 'Backpack - Stage 5 - Recursive Sub-Time Slice Classifications.json')
             self.assertEqual(output_paths['final_candidate_ranges'].name, 'Backpack - Stage 6A - Candidate Ranges [Pre-Filters].json')
             self.assertEqual(output_paths['candidate_clips'].name, 'Backpack - Stage 6B - Candidate Pre-Clips [Post-Filters].json')
@@ -1774,20 +1706,5 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
