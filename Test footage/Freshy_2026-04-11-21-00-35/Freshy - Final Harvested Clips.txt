@@ -1,0 +1,107 @@
+Clip 1
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:00:09:07 -> 00:00:09:17
+  Clip: 00:00:09:05 -> 00:00:09:21
+  Duration: 00:00:00:16
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 2
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:00:17:07 -> 00:00:21:17
+  Clip: 00:00:17:05 -> 00:00:21:21
+  Duration: 00:00:04:16
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 3
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:00:26:17 -> 00:00:26:27
+  Clip: 00:00:26:15 -> 00:00:27:01
+  Duration: 00:00:00:16
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 4
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:00:30:17 -> 00:00:36:27
+  Clip: 00:00:30:15 -> 00:00:37:01
+  Duration: 00:00:06:16
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 5
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:00:42:17 -> 00:00:54:27
+  Clip: 00:00:42:15 -> 00:00:55:01
+  Duration: 00:00:12:16
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 6
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:01:17:28 -> 00:01:24:08
+  Clip: 00:01:17:26 -> 00:01:24:12
+  Duration: 00:00:06:16
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 7
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:02:12:07 -> 00:02:19:06
+  Clip: 00:02:12:05 -> 00:02:19:10
+  Duration: 00:00:07:05
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 8
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:02:30:18 -> 00:02:34:26
+  Clip: 00:02:30:16 -> 00:02:35:00
+  Duration: 00:00:04:14
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 9
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:02:38:07 -> 00:02:45:27
+  Clip: 00:02:38:05 -> 00:02:46:01
+  Duration: 00:00:07:26
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 10
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:02:55:20 -> 00:02:56:00
+  Clip: 00:02:55:18 -> 00:02:56:04
+  Duration: 00:00:00:16
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 11
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:03:03:21 -> 00:03:04:01
+  Clip: 00:03:03:19 -> 00:03:04:05
+  Duration: 00:00:00:16
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f
+
+Clip 12
+  Source: A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\Sample 2\Sample 2.mp4
+  Chapter: 00:00:00:00 -> 00:03:38:29
+  Activity: 00:03:13:21 -> 00:03:34:04
+  Clip: 00:03:13:19 -> 00:03:34:08
+  Duration: 00:00:20:19
+  Lead-in: 0s 2f
+  Tail-after: 0s 4f

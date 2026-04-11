@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 # ============================================================
 # SECTION A - Imports And Reused Detection Primitives
@@ -100,9 +100,18 @@ STAGE4_MAX_UNRESOLVED_SUBREGION_FOOTPRINT_RATIO_FOR_VALID = 0.20
 STAGE4_CORE_ACTIVE_CELL_MIN_TOUCH_COUNT = 2
 STAGE4_CORE_ACTIVE_CELL_MIN_ACTIVE_RECORDS = 2
 STAGE4_CELL_TIMING_MERGE_TOLERANCE_FRAMES = FRAME_RATE
+STAGE4_PROBE_INTERVAL_FRAMES = FRAME_RATE * 2
+STAGE4_PROBE_LOCAL_WINDOW_FRAMES = 10
+STAGE4_PROBE_HALF_WINDOW_FRAMES = STAGE4_PROBE_LOCAL_WINDOW_FRAMES // 2
+STAGE4_PROBE_TERMINAL_OFFSET_FRAMES = 5
+STAGE4_PROBE_MIN_ANCHOR_SEPARATION_FRAMES = FRAME_RATE
+STAGE4_POST_UNION_LATE_RESOLUTION_FRAMES = 5
 STAGE4_PROBE_MIN_CHANGED_SUPPORT = 0.08
 STAGE4_PROBE_MIN_JUDGEABLE_CHANGED_SUPPORT = 0.10
-STAGE4_PROBE_MIN_ABSOLUTE_CHANGED_CELLS = 2
+STAGE4_PROBE_MIN_ABSOLUTE_CHANGED_CELLS = 1
+STAGE4_PROBE_NEGATIVE_MIN_JUDGEABLE_COVERAGE = 0.90
+STAGE4_PROBE_NEGATIVE_MAX_UNRESOLVED_SUPPORT = 0.10
+STAGE4_PROBE_HOLDING_MIN_UNRESOLVED_SUPPORT = 0.15
 STAGE4_PROBE_CURRENT_SEARCH_FRAMES = FRAME_RATE * 2
 STRONG_ACTIVE_REFERENCE_UNDETERMINED_FLOOR = 0.60
 ROCKY_MINIMUM_SIZE_EVIDENCE_FLOOR = 0.60
@@ -3090,17 +3099,38 @@ def build_stage4_time_slice_ranges(
     if union_end <= union_start:
         return []
 
-    probe_interval_frames = max(FRAME_RATE * 2, STAGE5_MIN_SUBDIVISION_FRAMES)
-    probe_ranges: list[tuple[int, int]] = []
-    current_start = union_start
-    while current_start < union_end:
-        current_end = min(union_end, current_start + probe_interval_frames)
-        if current_end <= current_start:
-            break
-        probe_ranges.append((current_start, current_end))
-        current_start = current_end
-    return probe_ranges
+    def build_probe_window(anchor_frame: int) -> tuple[int, int]:
+        window_start = max(union_start, anchor_frame - STAGE4_PROBE_HALF_WINDOW_FRAMES)
+        window_end = min(
+            union_end,
+            window_start + STAGE4_PROBE_LOCAL_WINDOW_FRAMES,
+        )
+        if window_end <= window_start:
+            window_end = min(union_end, window_start + 1)
+        return window_start, window_end
 
+    union_duration = union_end - union_start
+    anchors: list[int] = []
+    if union_duration >= STAGE4_PROBE_INTERVAL_FRAMES:
+        anchor_frame = union_start + STAGE4_PROBE_INTERVAL_FRAMES
+        while anchor_frame < union_end:
+            anchors.append(anchor_frame)
+            anchor_frame += STAGE4_PROBE_INTERVAL_FRAMES
+
+    terminal_anchor = max(union_start, union_end - STAGE4_PROBE_TERMINAL_OFFSET_FRAMES)
+    if not anchors:
+        anchors = [terminal_anchor]
+    elif terminal_anchor - anchors[-1] < STAGE4_PROBE_MIN_ANCHOR_SEPARATION_FRAMES:
+        anchors[-1] = max(anchors[-1], terminal_anchor)
+    else:
+        anchors.append(terminal_anchor)
+
+    probe_ranges: list[tuple[int, int]] = []
+    for anchor_frame in anchors:
+        probe_window = build_probe_window(anchor_frame)
+        if not probe_ranges or probe_ranges[-1] != probe_window:
+            probe_ranges.append(probe_window)
+    return probe_ranges
 
 
 def count_active_records(records: Iterable[MovementEvidenceRecord]) -> int:
@@ -3940,6 +3970,63 @@ def build_stage4_probe_cell_rows(coordinates: Iterable[GridCoordinate]) -> list[
 
 
 
+def stage4_coordinate_sets_have_local_connection(
+    first: Iterable[GridCoordinate],
+    second: Iterable[GridCoordinate],
+) -> bool:
+    first_set = frozenset(first)
+    second_set = frozenset(second)
+    if not first_set or not second_set:
+        return False
+    if first_set.intersection(second_set):
+        return True
+    return any(
+        abs(first_row - second_row) <= 1 and abs(first_column - second_column) <= 1
+        for first_row, first_column in first_set
+        for second_row, second_column in second_set
+    )
+
+
+
+def build_stage4_probe_reason_summary(
+    *,
+    probe_label: str,
+    changed_cell_count: int,
+    judgeable_cell_count: int,
+    unresolved_cell_count: int,
+    judgeable_coverage: float,
+    structural_holding_support: bool,
+    opening_zone_low_confidence: bool,
+) -> str:
+    opening_note = ' opening-zone-low-confidence;' if opening_zone_low_confidence else ''
+    if probe_label == 'positive':
+        return (
+            f'positive: {changed_cell_count} confirmed changed cells; '
+            f'{judgeable_cell_count} judgeable; {unresolved_cell_count} unresolved;'
+            f'{opening_note}'
+        ).strip()
+    if probe_label == 'negative':
+        return (
+            f'negative: no confirmed changed cells; '
+            f'judgeable coverage {judgeable_coverage:.2f}; '
+            f'{unresolved_cell_count} unresolved; no structural holding support;'
+            f'{opening_note}'
+        ).strip()
+    if probe_label == 'holding':
+        return (
+            f'holding: unresolved continuity remains plausible; '
+            f'{unresolved_cell_count} unresolved; '
+            f'structural_holding_support={structural_holding_support};'
+            f'{opening_note}'
+        ).strip()
+    return (
+        f'unclear: unresolved evidence is present but too weak to keep the band alive; '
+        f'{unresolved_cell_count} unresolved; '
+        f'judgeable coverage {judgeable_coverage:.2f};'
+        f'{opening_note}'
+    ).strip()
+
+
 def evaluate_stage4_cell_level_probe(
     *,
     screened_candidate_union: ScreenedCandidateUnion,
@@ -3949,27 +4036,31 @@ def evaluate_stage4_cell_level_probe(
     sampled_frames: list[dict[str, object]] | None,
     settings: DetectorSettings | None,
     carried_unresolved_cells: frozenset[GridCoordinate],
+    carried_recently_changed_cells: frozenset[GridCoordinate],
     baseline_comparison_state: dict[GridCoordinate, dict[str, object]],
+    previous_probe_end: int | None,
     reference_window_frames: int = STAGE3_REFERENCE_WINDOW_FRAMES,
 ) -> dict[str, object]:
     slice_records = collect_records_in_frame_range(ordered_records, slice_start, slice_end)
-    interval_active_cells = frozenset(
+    relevant_record_start = (
+        screened_candidate_union.candidate_union.start_frame
+        if previous_probe_end is None
+        else min(previous_probe_end, slice_start)
+    )
+    relevant_source_records = collect_records_in_frame_range(ordered_records, relevant_record_start, slice_end)
+    freshly_touched_cells = frozenset(
         coordinate
-        for record in slice_records
+        for record in relevant_source_records
         if record.movement_present
         for coordinate in record.touched_grid_coordinates
         if coordinate in screened_candidate_union.candidate_union.union_footprint
     )
-    recently_active_cells = frozenset(interval_active_cells.union(carried_unresolved_cells))
-    contamination_window_start = max(slice_start, slice_end - max(1, reference_window_frames))
-    contaminated_cells = frozenset(
-        coordinate
-        for record in collect_records_in_frame_range(ordered_records, contamination_window_start, slice_end)
-        if record.movement_present
-        for coordinate in record.touched_grid_coordinates
-        if coordinate in recently_active_cells
+    recently_active_cells = frozenset(
+        freshly_touched_cells
+        .union(carried_unresolved_cells)
+        .union(carried_recently_changed_cells)
     )
-    judgeable_cells = frozenset(recently_active_cells.difference(contaminated_cells))
+    opening_zone_low_confidence = previous_probe_end is None and slice_start > screened_candidate_union.candidate_union.start_frame
 
     fallback_score = compute_slice_lasting_change_evidence_score(
         slice_records=slice_records,
@@ -4000,10 +4091,20 @@ def evaluate_stage4_cell_level_probe(
             'unresolved_cells': [],
             'cell_results': [],
             'changed_support_score': 0.0,
+            'judgeable_changed_support_score': 0.0,
             'unchanged_support_score': 0.0,
             'unresolved_support_score': 0.0,
+            'relevant_cell_count': 0,
+            'judgeable_cell_count': 0,
+            'confirmed_changed_cell_count': 0,
+            'confirmed_unchanged_cell_count': 0,
+            'unresolved_cell_count': 0,
+            'judgeable_coverage': 1.0,
+            'structural_holding_support': False,
+            'opening_zone_low_confidence': opening_zone_low_confidence,
             'classification': 'invalid',
-            'reason': 'weak_probe_activity',
+            'reason': 'probe_cell_no_relevant_activity',
+            'reason_summary': 'negative: no relevant cells in this probe window',
             'lasting_change_evidence_score': 0.0,
             'before_reference_activity': 0.0,
             'after_reference_activity': 0.0,
@@ -4012,7 +4113,7 @@ def evaluate_stage4_cell_level_probe(
         }
 
     if not sampled_frames or settings is None:
-        probe_label = 'holding' if slice_records else 'unclear'
+        probe_label = 'holding' if freshly_touched_cells or carried_unresolved_cells else 'unclear'
         return {
             'slice_records': slice_records,
             'footprint': recently_active_cells,
@@ -4029,17 +4130,27 @@ def evaluate_stage4_cell_level_probe(
                 'end_time': Timecode(total_frames=slice_end).to_hhmmssff(),
             },
             'recently_active_cells': build_stage4_probe_cell_rows(recently_active_cells),
-            'judgeable_cells': build_stage4_probe_cell_rows(judgeable_cells),
-            'contaminated_cells': build_stage4_probe_cell_rows(contaminated_cells),
+            'judgeable_cells': [],
+            'contaminated_cells': build_stage4_probe_cell_rows(recently_active_cells),
             'confirmed_changed_cells': [],
             'confirmed_unchanged_cells': [],
             'unresolved_cells': build_stage4_probe_cell_rows(recently_active_cells),
             'cell_results': [],
             'changed_support_score': 0.0,
+            'judgeable_changed_support_score': 0.0,
             'unchanged_support_score': 0.0,
             'unresolved_support_score': 1.0,
+            'relevant_cell_count': len(recently_active_cells),
+            'judgeable_cell_count': 0,
+            'confirmed_changed_cell_count': 0,
+            'confirmed_unchanged_cell_count': 0,
+            'unresolved_cell_count': len(recently_active_cells),
+            'judgeable_coverage': 0.0,
+            'structural_holding_support': bool(freshly_touched_cells or carried_unresolved_cells),
+            'opening_zone_low_confidence': opening_zone_low_confidence,
             'classification': 'undetermined',
             'reason': 'probe_references_unavailable',
+            'reason_summary': 'holding: probe references unavailable for relevant cells',
             'lasting_change_evidence_score': fallback_score,
             'before_reference_activity': 0.0,
             'after_reference_activity': 0.0,
@@ -4054,6 +4165,10 @@ def evaluate_stage4_cell_level_probe(
 
     sampled_frame_start = min(int(sample['frame_index']) for sample in sampled_frames)
     sampled_frame_end = max(int(sample['frame_index']) for sample in sampled_frames) + 1
+    post_union_resolution_end = min(
+        sampled_frame_end,
+        screened_candidate_union.candidate_union.end_frame + STAGE4_POST_UNION_LATE_RESOLUTION_FRAMES,
+    )
     reference_canvas_shape = get_stage3_canvas_shape(sampled_frames[0])
     cell_art_state_masks = build_stage3_cell_art_state_masks(recently_active_cells, reference_canvas_shape)
     stage3_context = build_stage3_runtime_context(ordered_records, sampled_frames)
@@ -4091,8 +4206,16 @@ def evaluate_stage4_cell_level_probe(
     }
     before_assignments.update(searched_before_assignments)
 
+    current_window_touched_cells = frozenset(
+        coordinate
+        for record in slice_records
+        if record.movement_present
+        for coordinate in record.touched_grid_coordinates
+        if coordinate in recently_active_cells
+    )
+
     active_cell_last_frames: dict[GridCoordinate, int] = {}
-    for record in slice_records:
+    for record in relevant_source_records:
         if not record.movement_present:
             continue
         for coordinate in record.touched_grid_coordinates:
@@ -4107,8 +4230,23 @@ def evaluate_stage4_cell_level_probe(
     current_search_starts: list[int] = []
     current_search_ends: list[int] = []
     for coordinate in sorted(recently_active_cells):
-        coordinate_search_start = min(sampled_frame_end, active_cell_last_frames.get(coordinate, slice_start) + 1)
-        coordinate_search_end = min(sampled_frame_end, coordinate_search_start + STAGE4_PROBE_CURRENT_SEARCH_FRAMES)
+        if coordinate in active_cell_last_frames:
+            coordinate_search_start = min(
+                post_union_resolution_end,
+                active_cell_last_frames[coordinate] + 1,
+            )
+        else:
+            coordinate_search_start = max(
+                sampled_frame_start,
+                slice_start - STAGE4_PROBE_HALF_WINDOW_FRAMES,
+            )
+        coordinate_search_end = min(
+            post_union_resolution_end,
+            max(
+                coordinate_search_start + STAGE4_PROBE_CURRENT_SEARCH_FRAMES,
+                slice_end + STAGE4_PROBE_HALF_WINDOW_FRAMES,
+            ),
+        )
         current_search_starts.append(coordinate_search_start)
         current_search_ends.append(coordinate_search_end)
         if coordinate_search_end <= coordinate_search_start:
@@ -4121,7 +4259,7 @@ def evaluate_stage4_cell_level_probe(
             endpoint_coordinates=frozenset(),
             require_external_movement_for_all_cells=False,
             require_external_movement_for_endpoints=False,
-            require_external_movement_outside_coordinate_for_all_cells=False,
+            require_external_movement_outside_coordinate_for_all_cells=(coordinate not in active_cell_last_frames),
             ordered_records=ordered_records,
             sampled_frames=sampled_frames,
             cell_art_state_masks=cell_art_state_masks,
@@ -4133,13 +4271,14 @@ def evaluate_stage4_cell_level_probe(
         current_candidate_count += coordinate_candidate_count
         current_assignments.update(coordinate_assignments)
 
-    current_search_start = min(current_search_starts) if current_search_starts else min(sampled_frame_end, slice_end)
-    current_search_end = max(current_search_ends) if current_search_ends else min(sampled_frame_end, slice_end)
+    current_search_start = min(current_search_starts) if current_search_starts else min(post_union_resolution_end, slice_end)
+    current_search_end = max(current_search_ends) if current_search_ends else min(post_union_resolution_end, slice_end)
     judgeable_cells = frozenset(
         coordinate
         for coordinate in recently_active_cells
         if coordinate in before_assignments and coordinate in current_assignments
     )
+    contaminated_cells = frozenset(current_window_touched_cells.difference(judgeable_cells))
 
     confirmed_changed_cells: set[GridCoordinate] = set()
     confirmed_unchanged_cells: set[GridCoordinate] = set()
@@ -4197,33 +4336,54 @@ def evaluate_stage4_cell_level_probe(
     unchanged_support_score = len(confirmed_unchanged_cells) / total_relevant_cells
     unresolved_support_score = len(unresolved_cells) / total_relevant_cells
     judgeable_changed_support_score = len(confirmed_changed_cells) / total_judgeable_cells
+    judgeable_coverage = len(judgeable_cells) / total_relevant_cells
     changed_cell_count = len(confirmed_changed_cells)
-    has_broad_changed_support = changed_support_score >= STAGE4_PROBE_MIN_CHANGED_SUPPORT
-    has_local_changed_support = (
-        changed_cell_count >= STAGE4_PROBE_MIN_ABSOLUTE_CHANGED_CELLS
-        and judgeable_changed_support_score >= STAGE4_PROBE_MIN_JUDGEABLE_CHANGED_SUPPORT
-    )
+    unresolved_cell_count = len(unresolved_cells)
 
-    if changed_cell_count >= 1 and (has_broad_changed_support or has_local_changed_support):
+    unresolved_has_recent_activity_continuity = stage4_coordinate_sets_have_local_connection(unresolved_cells, freshly_touched_cells)
+    unresolved_has_carried_continuity = stage4_coordinate_sets_have_local_connection(unresolved_cells, carried_unresolved_cells)
+    structural_holding_support = bool(unresolved_cells) and (
+        unresolved_has_recent_activity_continuity
+        or unresolved_has_carried_continuity
+    )
+    negative_has_broad_coverage = judgeable_coverage >= STAGE4_PROBE_NEGATIVE_MIN_JUDGEABLE_COVERAGE
+    negative_has_tiny_unresolved_remainder = unresolved_support_score <= STAGE4_PROBE_NEGATIVE_MAX_UNRESOLVED_SUPPORT
+
+    if changed_cell_count >= STAGE4_PROBE_MIN_ABSOLUTE_CHANGED_CELLS:
         classification = 'valid'
         reason = 'probe_cell_changed_support'
         probe_label = 'positive'
-    elif changed_cell_count >= 1 and unresolved_support_score >= 0.30:
-        classification = 'undetermined'
-        reason = 'probe_cell_changed_with_unresolved_support'
-        probe_label = 'holding'
-    elif changed_cell_count == 0 and unchanged_support_score >= 0.50:
+    elif (
+        changed_cell_count == 0
+        and negative_has_broad_coverage
+        and negative_has_tiny_unresolved_remainder
+        and not structural_holding_support
+    ):
         classification = 'invalid'
-        reason = 'probe_cell_unchanged_support'
+        reason = 'probe_cell_broad_unchanged_support'
         probe_label = 'negative'
-    elif unresolved_support_score >= 0.50 and slice_records:
+    elif (
+        changed_cell_count == 0
+        and unresolved_support_score >= STAGE4_PROBE_HOLDING_MIN_UNRESOLVED_SUPPORT
+        and structural_holding_support
+    ):
         classification = 'undetermined'
-        reason = 'probe_cell_unresolved_activity'
+        reason = 'probe_cell_structural_holding_support'
         probe_label = 'holding'
     else:
         classification = 'undetermined'
-        reason = 'probe_cell_unclear_support'
+        reason = 'probe_cell_ambiguous_support'
         probe_label = 'unclear'
+
+    reason_summary = build_stage4_probe_reason_summary(
+        probe_label=probe_label,
+        changed_cell_count=changed_cell_count,
+        judgeable_cell_count=len(judgeable_cells),
+        unresolved_cell_count=unresolved_cell_count,
+        judgeable_coverage=judgeable_coverage,
+        structural_holding_support=structural_holding_support,
+        opening_zone_low_confidence=opening_zone_low_confidence,
+    )
 
     baseline_comparison_updates = {
         coordinate: current_assignments[coordinate]
@@ -4266,6 +4426,14 @@ def evaluate_stage4_cell_level_probe(
         'judgeable_changed_support_score': judgeable_changed_support_score,
         'unchanged_support_score': unchanged_support_score,
         'unresolved_support_score': unresolved_support_score,
+        'relevant_cell_count': len(recently_active_cells),
+        'judgeable_cell_count': len(judgeable_cells),
+        'confirmed_changed_cell_count': changed_cell_count,
+        'confirmed_unchanged_cell_count': len(confirmed_unchanged_cells),
+        'unresolved_cell_count': unresolved_cell_count,
+        'judgeable_coverage': judgeable_coverage,
+        'structural_holding_support': structural_holding_support,
+        'opening_zone_low_confidence': opening_zone_low_confidence,
         'before_window_candidate_count': before_candidate_count,
         'current_window_candidate_count': current_candidate_count,
         'current_window': {
@@ -4273,9 +4441,11 @@ def evaluate_stage4_cell_level_probe(
             'search_end': current_search_end,
             'assigned_cell_count': len(current_assignments),
             'mean_window_activity': round(after_reference_activity, 6),
+            'post_union_resolution_end': post_union_resolution_end,
         },
         'classification': classification,
         'reason': reason,
+        'reason_summary': reason_summary,
         'lasting_change_evidence_score': changed_support_score,
         'before_reference_activity': 0.0,
         'after_reference_activity': after_reference_activity,
@@ -4285,7 +4455,6 @@ def evaluate_stage4_cell_level_probe(
         '_baseline_comparison_updates': baseline_comparison_updates,
         'probe_label': probe_label,
     }
-
 
 def build_stage4_band_from_probe_results(
     screened_candidate_union: ScreenedCandidateUnion,
@@ -4338,12 +4507,26 @@ def build_stage4_band_from_probe_results(
 
 
 
-def stage4_holding_probe_has_changed_support(evaluation: dict[str, object]) -> bool:
-    return (
-        float(evaluation.get('changed_support_score', 0.0)) > 0.0
-        or float(evaluation.get('judgeable_changed_support_score', 0.0)) > 0.0
-    )
+def stage4_probe_supports_band_continuity(evaluation: dict[str, object]) -> bool:
+    probe_label = str(evaluation.get('probe_label', 'unclear'))
+    if probe_label == 'positive':
+        return True
+    return bool(evaluation.get('structural_holding_support', False))
 
+
+
+def stage4_probe_supports_opening_backfill(evaluation: dict[str, object]) -> bool:
+    probe_label = str(evaluation.get('probe_label', 'unclear'))
+    if probe_label != 'holding':
+        return False
+    changed_support_score = float(evaluation.get('changed_support_score', 0.0))
+    judgeable_changed_support_score = float(evaluation.get('judgeable_changed_support_score', 0.0))
+    confirmed_changed_cell_count = int(evaluation.get('confirmed_changed_cell_count', 0))
+    return (
+        confirmed_changed_cell_count > 0
+        or changed_support_score > 0.0
+        or judgeable_changed_support_score > 0.0
+    )
 
 
 def build_stage4_bands_from_probe_results(
@@ -4368,22 +4551,28 @@ def build_stage4_bands_from_probe_results(
 
     for probe_slice, evaluation in probe_results:
         probe_label = str(evaluation['probe_label'])
-        holding_has_changed_support = stage4_holding_probe_has_changed_support(evaluation)
+        continuity_support = stage4_probe_supports_band_continuity(evaluation)
+
         if probe_label == 'positive':
             if pending_holding_probes and not active_band_probes:
-                active_band_probes.extend(pending_holding_probes)
-                pending_holding_probes.clear()
+                prepend_start = len(pending_holding_probes)
+                while prepend_start > 0 and stage4_probe_supports_opening_backfill(
+                    pending_holding_probes[prepend_start - 1][1]
+                ):
+                    prepend_start -= 1
+                if prepend_start < len(pending_holding_probes):
+                    active_band_probes.extend(pending_holding_probes[prepend_start:])
+            pending_holding_probes.clear()
             active_band_probes.append((probe_slice, evaluation))
             continue
 
         if probe_label == 'holding':
-            if holding_has_changed_support:
+            if continuity_support:
                 if active_band_probes:
                     active_band_probes.append((probe_slice, evaluation))
                 else:
                     pending_holding_probes.append((probe_slice, evaluation))
                 continue
-
             close_active_band()
             pending_holding_probes.clear()
             continue
@@ -4393,7 +4582,6 @@ def build_stage4_bands_from_probe_results(
 
     close_active_band()
     return bands
-
 def classify_stage4_time_slices_with_subregion_debug(
     screened_candidate_unions: Iterable[ScreenedCandidateUnion],
     records: Iterable[MovementEvidenceRecord],
@@ -4411,7 +4599,37 @@ def classify_stage4_time_slices_with_subregion_debug(
         slice_ranges = build_stage4_time_slice_ranges(screened_candidate_union)
         probe_results: list[tuple[ClassifiedTimeSlice, dict[str, object]]] = []
         carried_unresolved_cells: frozenset[GridCoordinate] = frozenset()
+        carried_recently_changed_cells: frozenset[GridCoordinate] = frozenset()
         baseline_comparison_state: dict[GridCoordinate, dict[str, object]] = {}
+        previous_probe_end: int | None = None
+
+        if sampled_frames and settings is not None and screened_candidate_union.candidate_union.union_footprint:
+            try:
+                import cv2  # type: ignore
+            except ImportError as exc:  # pragma: no cover
+                raise RuntimeError('OpenCV is required for staged cell-level probe classification.') from exc
+
+            sampled_frame_start = min(int(sample['frame_index']) for sample in sampled_frames)
+            reference_canvas_shape = get_stage3_canvas_shape(sampled_frames[0])
+            union_footprint = screened_candidate_union.candidate_union.union_footprint
+            union_baseline_assignments, _ = select_stage3_cell_reference_windows(
+                search_start=max(sampled_frame_start, screened_candidate_union.candidate_union.start_frame - STAGE3_ART_STATE_RESCUE_SEARCH_FRAMES),
+                search_end=max(sampled_frame_start, screened_candidate_union.candidate_union.start_frame),
+                prefer_nearest=True,
+                footprint=union_footprint,
+                endpoint_coordinates=frozenset(),
+                require_external_movement_for_all_cells=False,
+                require_external_movement_for_endpoints=False,
+                require_external_movement_outside_coordinate_for_all_cells=False,
+                ordered_records=ordered_records,
+                sampled_frames=sampled_frames,
+                cell_art_state_masks=build_stage3_cell_art_state_masks(union_footprint, reference_canvas_shape),
+                settings=settings,
+                cv2=cv2,
+                stage3_context=build_stage3_runtime_context(ordered_records, sampled_frames),
+                target_coordinates=union_footprint,
+            )
+            baseline_comparison_state.update(union_baseline_assignments)
 
         for probe_index, (slice_start, slice_end) in enumerate(slice_ranges, start=1):
             evaluation = evaluate_stage4_cell_level_probe(
@@ -4422,7 +4640,9 @@ def classify_stage4_time_slices_with_subregion_debug(
                 sampled_frames=sampled_frames,
                 settings=settings,
                 carried_unresolved_cells=carried_unresolved_cells,
+                carried_recently_changed_cells=carried_recently_changed_cells,
                 baseline_comparison_state=baseline_comparison_state,
+                previous_probe_end=previous_probe_end,
             )
             probe_slice = build_classified_time_slice_from_evaluation(
                 screened_candidate_union=screened_candidate_union,
@@ -4437,23 +4657,26 @@ def classify_stage4_time_slices_with_subregion_debug(
             probe_results.append((probe_slice, evaluation))
 
             baseline_comparison_state.update(evaluation.get('_baseline_comparison_updates', {}))
-
-            if str(evaluation['probe_label']) in {'positive', 'negative'}:
+            carried_recently_changed_cells = frozenset(
+                tuple(cell_row['coordinate'])
+                for cell_row in evaluation.get('confirmed_changed_cells', [])
+                if isinstance(cell_row, dict) and 'coordinate' in cell_row
+            )
+            carried_unresolved_cells = frozenset(
+                tuple(cell_row['coordinate'])
+                for cell_row in evaluation.get('unresolved_cells', [])
+                if isinstance(cell_row, dict) and 'coordinate' in cell_row
+            )
+            if str(evaluation.get('probe_label')) == 'negative':
                 carried_unresolved_cells = frozenset()
-            else:
-                carried_unresolved_cells = frozenset(
-                    tuple(cell_row['coordinate'])
-                    for cell_row in evaluation.get('unresolved_cells', [])
-                    if isinstance(cell_row, dict) and 'coordinate' in cell_row
-                )
+                carried_recently_changed_cells = frozenset()
+            previous_probe_end = slice_end
 
         classified_slices.extend(
             build_stage4_bands_from_probe_results(screened_candidate_union, probe_results)
         )
 
     return classified_slices, stage4_subregion_debug
-
-
 
 def classify_stage4_time_slices(
     screened_candidate_unions: Iterable[ScreenedCandidateUnion],
@@ -4709,9 +4932,9 @@ DEBUG_ARTIFACT_TITLES = {
     'candidate_unions': 'Stage 2A - Candidate Union Record',
     'screened_candidate_unions': 'Stage 3A - Union Screening',
     'stage3_screening_traces': 'Stage 3B - Screening Trace [Step 1 + Snapshot Rescue]',
-    'classified_time_slices': 'Stage 4 - Time Slice Classifications',
-    'stage4_subregion_debug': 'Stage 4B - SubRegion Data Output',
-    'refined_sub_slices': 'Stage 5 - Recursive Sub-Time Slice Classifications',
+    'classified_time_slices': 'Stage 4 - Probe-Band Classifications',
+    'stage4_subregion_debug': 'Stage 4B - Probe Debug Output',
+    'refined_sub_slices': 'Stage 5 - Local Boundary Refinement Output',
     'final_candidate_ranges': 'Stage 6A - Candidate Ranges [Pre-Filters]',
     'candidate_clips': 'Stage 6B - Candidate Pre-Clips [Post-Filters]',
 }
@@ -5216,10 +5439,19 @@ def serialize_stage4_time_slice_subregion_debug_entry(
         'confirmed_unchanged_cells': evaluation.get('confirmed_unchanged_cells', []),
         'unresolved_cells': evaluation.get('unresolved_cells', []),
         'cell_results': evaluation.get('cell_results', []),
+        'reason_summary': evaluation.get('reason_summary'),
+        'relevant_cell_count': int(evaluation.get('relevant_cell_count', 0)),
+        'judgeable_cell_count': int(evaluation.get('judgeable_cell_count', 0)),
+        'confirmed_changed_cell_count': int(evaluation.get('confirmed_changed_cell_count', 0)),
+        'confirmed_unchanged_cell_count': int(evaluation.get('confirmed_unchanged_cell_count', 0)),
+        'unresolved_cell_count': int(evaluation.get('unresolved_cell_count', 0)),
+        'judgeable_coverage': round(float(evaluation.get('judgeable_coverage', 0.0)), 6),
         'changed_support_score': round(float(evaluation.get('changed_support_score', 0.0)), 6),
         'judgeable_changed_support_score': round(float(evaluation.get('judgeable_changed_support_score', 0.0)), 6),
         'unchanged_support_score': round(float(evaluation.get('unchanged_support_score', 0.0)), 6),
         'unresolved_support_score': round(float(evaluation.get('unresolved_support_score', 0.0)), 6),
+        'structural_holding_support': bool(evaluation.get('structural_holding_support', False)),
+        'opening_zone_low_confidence': bool(evaluation.get('opening_zone_low_confidence', False)),
         'probe_label': evaluation.get('probe_label'),
         'before_window_candidate_count': int(evaluation.get('before_window_candidate_count', 0)),
         'current_window_candidate_count': int(evaluation.get('current_window_candidate_count', 0)),
@@ -5227,8 +5459,6 @@ def serialize_stage4_time_slice_subregion_debug_entry(
         'baseline_comparison_update_cell_count': int(evaluation.get('baseline_comparison_update_cell_count', 0)),
         'current_window': evaluation.get('current_window'),
     }
-
-
 
 def serialize_final_candidate_range(final_range: FinalCandidateRange) -> dict[str, object]:
     return {
@@ -5343,13 +5573,13 @@ def build_staged_debug_summary_lines(debug_payload: dict[str, object]) -> list[s
         f'- Rejected: {rejected_union_count}',
         f'- Provisional survivals: {provisional_survival_count}',
         '',
-        'Stage 4 - Top-level time slices',
-        f'- Top-level slices created: {len(classified_time_slices)}',
+        'Stage 4 - Probe-bands',
+        f'- Probe-bands created: {len(classified_time_slices)}',
         f"- Valid: {stage4_counts['valid']}",
         f"- Invalid: {stage4_counts['invalid']}",
         f"- Undetermined: {stage4_counts['undetermined']}",
         '',
-        'Stage 5 - Recursive refinement',
+        'Stage 5 - Local boundary refinement',
         f'- Refined slices produced: {len(refined_sub_slices)}',
         f"- Valid: {stage5_counts['valid']}",
         f"- Invalid: {stage5_counts['invalid']}",
@@ -5584,12 +5814,12 @@ def detect_staged_activity_ranges(
         'stage_timings': stage_timings,
     })
 
-    emit_stage_status(status_callback, 'Runtime Stage 4 - Classifying top-level time slices started')
+    emit_stage_status(status_callback, 'Runtime Stage 4 - Detecting probe-bands started')
     stage_started_at = time.perf_counter()
     classified_time_slices, serialized_stage4_subregion_debug = classify_stage4_time_slices_with_subregion_debug(screened_candidate_unions, records, sampled_frames=stage3_art_state_samples, settings=settings)
     elapsed_seconds = time.perf_counter() - stage_started_at
-    stage_timings.append(build_stage_timing_entry('runtime_stage_4_time_slice_classification', 'Runtime Stage 4 - Classifying top-level time slices', elapsed_seconds, len(classified_time_slices)))
-    emit_stage_status(status_callback, f"Runtime Stage 4 - Classifying top-level time slices complete in {format_stage_elapsed(elapsed_seconds)} ({len(classified_time_slices)} slices)")
+    stage_timings.append(build_stage_timing_entry('runtime_stage_4_time_slice_classification', 'Runtime Stage 4 - Detecting probe-bands', elapsed_seconds, len(classified_time_slices)))
+    emit_stage_status(status_callback, f"Runtime Stage 4 - Detecting probe-bands complete in {format_stage_elapsed(elapsed_seconds)} ({len(classified_time_slices)} probe-bands)")
     serialized_classified_time_slices = [serialize_classified_time_slice(time_slice) for time_slice in classified_time_slices]
     flush_debug_payload({
         'movement_evidence_records': serialized_records,
@@ -5681,6 +5911,22 @@ def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, obje
     )
     output_paths['summary'] = summary_output_path
     return output_paths
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

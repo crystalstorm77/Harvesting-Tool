@@ -111,6 +111,12 @@ Start: 00:03:14:26
 End: 00:03:19:21
 Notes: Canvas movement activity causing a lasting canvas change.
 
+Zone 17C - Clear Canvas
+Valid: Yes
+Start: 00:03:23:04
+End: 00:03:23:10
+Notes: The exact moment that I clear the canvas is 3 minutes, 23 seconds, 7 frames. This causes the canvas to go from almost completely red to completely blank white. 
+
 Zone 18 - Real Drawing C
 Valid: Yes
 Start: 00:03:24:11

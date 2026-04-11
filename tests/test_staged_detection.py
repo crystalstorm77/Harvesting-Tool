@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 # ============================================================
 # SECTION A - Imports And Helpers
@@ -13,7 +13,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from harvesting_tool.detection import ChapterRange, DetectorSettings, Timecode, extract_art_state_region
+from harvesting_tool.detection import ChapterRange, DetectorSettings, GRID_COLUMNS, GRID_ROWS, Timecode, extract_art_state_region
 from harvesting_tool.staged_detection import (
     CandidateUnion,
     ClassifiedTimeSlice,
@@ -32,6 +32,7 @@ from harvesting_tool.staged_detection import (
     load_reusable_stage3_art_state_sample_cache,
     build_stage4_bands_from_probe_results,
     classify_stage4_time_slices,
+    classify_stage4_time_slices_with_subregion_debug,
     classify_stage5_minimum_size_leaf,
     refine_stage5_sub_slices,
     screen_stage3_candidate_unions,
@@ -42,20 +43,41 @@ from harvesting_tool.staged_detection import (
     write_staged_debug_artifacts,
 )
 
+def build_stage3_art_gray_for_cells(
+    changed_cells: tuple[tuple[int, int], ...],
+) -> np.ndarray:
+    canvas_gray = np.zeros((120, 120), dtype=np.uint8)
+    canvas_height, canvas_width = canvas_gray.shape[:2]
+    cell_height = max(1, canvas_height // GRID_ROWS)
+    cell_width = max(1, canvas_width // GRID_COLUMNS)
+
+    for row_index, column_index in changed_cells:
+        top = row_index * cell_height
+        left = column_index * cell_width
+        bottom = canvas_height if row_index == (GRID_ROWS - 1) else min(canvas_height, (row_index + 1) * cell_height)
+        right = canvas_width if column_index == (GRID_COLUMNS - 1) else min(canvas_width, (column_index + 1) * cell_width)
+        canvas_gray[top:bottom, left:right] = 255
+
+    return extract_art_state_region(canvas_gray)
+
 def make_stage3_art_state_sample(
     frame_index: int,
     *,
     changed: bool = False,
+    changed_cells: tuple[tuple[int, int], ...] = (),
 ) -> dict[str, object]:
     canvas_gray = np.zeros((120, 120), dtype=np.uint8)
-    if changed:
-        canvas_gray[40:70, 40:70] = 255
+    if changed_cells:
+        art_gray = build_stage3_art_gray_for_cells(changed_cells)
+    else:
+        if changed:
+            canvas_gray[40:70, 40:70] = 255
+        art_gray = extract_art_state_region(canvas_gray)
     return {
         'frame_index': frame_index,
         'canvas_shape': tuple(int(dimension) for dimension in canvas_gray.shape),
-        'art_gray': extract_art_state_region(canvas_gray),
+        'art_gray': art_gray,
     }
-
 
 def make_settings() -> DetectorSettings:
     return DetectorSettings(
@@ -110,10 +132,16 @@ def make_screened_union(
     start_frame: int = 300,
     end_frame: int = 360,
     union_footprint_size: int = 4,
+    union_footprint: frozenset[tuple[int, int]] | None = None,
     surviving: bool = True,
     provisional_survival: bool = False,
     screening_result: str = "surviving",
 ) -> ScreenedCandidateUnion:
+    resolved_union_footprint = (
+        union_footprint
+        if union_footprint is not None
+        else (frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}) if union_footprint_size else frozenset())
+    )
     candidate_union = CandidateUnion(
         union_index=union_index,
         start_frame=start_frame,
@@ -121,8 +149,8 @@ def make_screened_union(
         start_time=Timecode(total_frames=start_frame).to_hhmmssff(),
         end_time=Timecode(total_frames=end_frame).to_hhmmssff(),
         member_movement_spans=(),
-        union_footprint=frozenset({(4, 4), (4, 5), (5, 4), (5, 5)}) if union_footprint_size else frozenset(),
-        union_footprint_size=union_footprint_size,
+        union_footprint=resolved_union_footprint,
+        union_footprint_size=len(resolved_union_footprint),
     )
     return ScreenedCandidateUnion(
         candidate_union=candidate_union,
@@ -141,7 +169,6 @@ def make_screened_union(
         after_reference_activity=0.0,
         reference_windows_reliable=True,
     )
-
 
 # ============================================================
 # SECTION B - Record Scoring Tests
@@ -601,8 +628,8 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             union_footprint_size=4,
         )
         records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
-            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
+            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
             make_record(3, 338, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.10, touched_grid_coordinates=((0, 0),)),
         ]
         chapter_range = ChapterRange(
@@ -642,8 +669,8 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             union_footprint_size=4,
         )
         records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
-            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
+            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
             make_record(3, 338, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.10, touched_grid_coordinates=((0, 0),)),
         ]
         chapter_range = ChapterRange(
@@ -681,8 +708,8 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             union_footprint_size=4,
         )
         records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
-            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
+            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
         ]
         chapter_range = ChapterRange(
             start=Timecode.from_hhmmssff('00:00:09:00'),
@@ -719,8 +746,8 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             union_footprint_size=4,
         )
         records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
-            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
+            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
             make_record(3, 338, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.10, touched_grid_coordinates=((0, 0),)),
         ]
         chapter_range = ChapterRange(
@@ -760,8 +787,8 @@ class CandidateUnionScreeningTests(unittest.TestCase):
         records = [
             make_record(1, 278, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.20, touched_grid_coordinates=((4, 4), (4, 5))),
             make_record(2, 288, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.20, touched_grid_coordinates=((5, 4), (5, 5))),
-            make_record(3, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
-            make_record(4, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(3, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
+            make_record(4, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
             make_record(5, 338, movement_present=True, movement_strength_score=0.30, temporal_persistence_score=0.28, spatial_extent_score=0.10, touched_grid_coordinates=((0, 0),)),
         ]
         chapter_range = ChapterRange(
@@ -911,10 +938,10 @@ class CandidateUnionScreeningTests(unittest.TestCase):
             union_footprint_size=4,
         )
         records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
-            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
-            make_record(3, 364, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
-            make_record(4, 376, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 4), (4, 5), (5, 4), (5, 5))),
+            make_record(1, 304, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
+            make_record(2, 316, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
+            make_record(3, 364, movement_present=True, movement_strength_score=0.62, temporal_persistence_score=0.58, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
+            make_record(4, 376, movement_present=True, movement_strength_score=0.66, temporal_persistence_score=0.60, spatial_extent_score=0.5, touched_grid_coordinates=((4, 5), (4, 6), (5, 5), (5, 6))),
         ]
         chapter_range = ChapterRange(
             start=Timecode.from_hhmmssff('00:00:09:00'),
@@ -939,7 +966,8 @@ class CandidateUnionScreeningTests(unittest.TestCase):
         self.assertEqual(screened[0].reason, 'rejected_after_rescue_failure')
         self.assertEqual(screened[0].stage3_mode, 'snapshot_rescue')
 
-# ============================================================`r`n# SECTION F - Stage 4 Time Slice Classification Tests
+# ============================================================
+# SECTION F - Stage 4 Time Slice Classification Tests
 # ============================================================
 
 
@@ -1024,7 +1052,7 @@ class TimeSliceClassificationTests(unittest.TestCase):
         bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
 
         self.assertEqual(len(bands), 1)
-        self.assertEqual((bands[0].start_frame, bands[0].end_frame), (300, 420))
+        self.assertEqual((bands[0].start_frame, bands[0].end_frame), (360, 420))
 
     def test_stage4_sustained_holding_probes_without_positive_support_do_not_open_band(self) -> None:
         screened_union = make_screened_union(start_frame=300, end_frame=480)
@@ -1060,60 +1088,91 @@ class TimeSliceClassificationTests(unittest.TestCase):
 
     def test_stage4_builds_separate_valid_bands_when_a_negative_probe_gap_splits_union_activity(self) -> None:
         screened_union = make_screened_union(start_frame=300, end_frame=540)
-        records = [
-            make_record(1, 304, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(2, 310, movement_present=True, movement_strength_score=0.85, temporal_persistence_score=0.83, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(3, 424, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(4, 430, movement_present=True, movement_strength_score=0.85, temporal_persistence_score=0.83, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-        ]
-        sampled_frames = [
-            make_stage3_art_state_sample(288, changed=False),
-            make_stage3_art_state_sample(294, changed=False),
-            make_stage3_art_state_sample(366, changed=True),
-            make_stage3_art_state_sample(368, changed=True),
-            make_stage3_art_state_sample(372, changed=True),
-            make_stage3_art_state_sample(408, changed=False),
-            make_stage3_art_state_sample(414, changed=False),
-            make_stage3_art_state_sample(486, changed=True),
-            make_stage3_art_state_sample(488, changed=True),
-            make_stage3_art_state_sample(492, changed=True),
+        first_positive_probe = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=0,
+            start_frame=355,
+            end_frame=365,
+            start_time='00:00:11:25',
+            end_time='00:00:12:05',
+            footprint=frozenset({(5, 5), (5, 6), (6, 5), (6, 6)}),
+            footprint_size=4,
+            within_slice_record_count=1,
+            classification='valid',
+            reason='probe_cell_changed_support',
+            lasting_change_evidence_score=0.8,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        negative_probe = replace(
+            first_positive_probe,
+            slice_index=2,
+            start_frame=415,
+            end_frame=425,
+            start_time='00:00:13:25',
+            end_time='00:00:14:05',
+            classification='invalid',
+            reason='probe_cell_broad_unchanged_support',
+            lasting_change_evidence_score=0.0,
+        )
+        second_positive_probe = replace(
+            first_positive_probe,
+            slice_index=3,
+            start_frame=475,
+            end_frame=485,
+            start_time='00:00:15:25',
+            end_time='00:00:16:05',
+            footprint=frozenset({(2, 8), (2, 9), (3, 8), (3, 9)}),
+        )
+        probe_results = [
+            (first_positive_probe, {'probe_label': 'positive', 'changed_support_score': 0.30, 'judgeable_changed_support_score': 0.30, 'lasting_change_evidence_score': 0.8, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (negative_probe, {'probe_label': 'negative', 'changed_support_score': 0.0, 'judgeable_changed_support_score': 0.0, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (second_positive_probe, {'probe_label': 'positive', 'changed_support_score': 0.30, 'judgeable_changed_support_score': 0.30, 'lasting_change_evidence_score': 0.8, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
         ]
 
-        slices = classify_stage4_time_slices([screened_union], records, sampled_frames=sampled_frames, settings=make_settings())
+        bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
 
-        self.assertEqual(len(slices), 1)
-        self.assertEqual([(slice_info.start_frame, slice_info.end_frame) for slice_info in slices], [(300, 360)])
-        self.assertTrue(all(slice_info.classification == 'valid' for slice_info in slices))
-        self.assertTrue(all(slice_info.reason == 'probe_supported_band' for slice_info in slices))
+        self.assertEqual(len(bands), 2)
+        self.assertEqual([(band.start_frame, band.end_frame) for band in bands], [(355, 365), (475, 485)])
+        self.assertTrue(all(band.classification == 'valid' for band in bands))
+        self.assertTrue(all(band.reason == 'probe_supported_band' for band in bands))
 
     def test_stage4_merges_consecutive_positive_probes_into_one_valid_band(self) -> None:
-        screened_union = make_screened_union(start_frame=300, end_frame=420)
+        screened_union = make_screened_union(
+            start_frame=300,
+            end_frame=420,
+            union_footprint=frozenset({(5, 5), (5, 6), (6, 5), (6, 6), (2, 8), (2, 9), (3, 8), (3, 9)}),
+        )
         records = [
             make_record(1, 304, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
             make_record(2, 310, movement_present=True, movement_strength_score=0.85, temporal_persistence_score=0.83, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(3, 364, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.88, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
-            make_record(4, 370, movement_present=True, movement_strength_score=0.85, temporal_persistence_score=0.83, spatial_extent_score=0.87, touched_grid_coordinates=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_record(3, 404, movement_present=True, movement_strength_score=0.86, temporal_persistence_score=0.84, spatial_extent_score=0.88, touched_grid_coordinates=((2, 8), (2, 9), (3, 8), (3, 9))),
+            make_record(4, 408, movement_present=True, movement_strength_score=0.85, temporal_persistence_score=0.83, spatial_extent_score=0.87, touched_grid_coordinates=((2, 8), (2, 9), (3, 8), (3, 9))),
+            make_record(5, 414, movement_present=True, movement_strength_score=0.82, temporal_persistence_score=0.80, spatial_extent_score=0.40, touched_grid_coordinates=((0, 0), (0, 1))),
         ]
         sampled_frames = [
             make_stage3_art_state_sample(288, changed=False),
             make_stage3_art_state_sample(294, changed=False),
             make_stage3_art_state_sample(348, changed=False),
             make_stage3_art_state_sample(354, changed=False),
-            make_stage3_art_state_sample(366, changed=True),
-            make_stage3_art_state_sample(368, changed=True),
-            make_stage3_art_state_sample(372, changed=True),
-            make_stage3_art_state_sample(426, changed=True),
-            make_stage3_art_state_sample(428, changed=True),
-            make_stage3_art_state_sample(432, changed=True),
+            make_stage3_art_state_sample(366, changed_cells=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_stage3_art_state_sample(368, changed_cells=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_stage3_art_state_sample(372, changed_cells=((5, 5), (5, 6), (6, 5), (6, 6))),
+            make_stage3_art_state_sample(411, changed_cells=((5, 5), (5, 6), (6, 5), (6, 6), (2, 8), (2, 9), (3, 8), (3, 9))),
+            make_stage3_art_state_sample(413, changed_cells=((5, 5), (5, 6), (6, 5), (6, 6), (2, 8), (2, 9), (3, 8), (3, 9))),
+            make_stage3_art_state_sample(415, changed_cells=((5, 5), (5, 6), (6, 5), (6, 6), (2, 8), (2, 9), (3, 8), (3, 9))),
+            make_stage3_art_state_sample(417, changed_cells=((5, 5), (5, 6), (6, 5), (6, 6), (2, 8), (2, 9), (3, 8), (3, 9))),
+            make_stage3_art_state_sample(419, changed_cells=((5, 5), (5, 6), (6, 5), (6, 6), (2, 8), (2, 9), (3, 8), (3, 9))),
         ]
 
         slices = classify_stage4_time_slices([screened_union], records, sampled_frames=sampled_frames, settings=make_settings())
 
         self.assertEqual(len(slices), 1)
-        self.assertEqual((slices[0].start_frame, slices[0].end_frame), (360, 420))
+        self.assertEqual((slices[0].start_frame, slices[0].end_frame), (355, 420))
         self.assertEqual(slices[0].classification, 'valid')
         self.assertEqual(slices[0].reason, 'probe_supported_band')
-
     def test_stage4_ignores_rejected_unions(self) -> None:
         rejected_union = make_screened_union(surviving=False, screening_result='rejected')
         records = [
@@ -1620,12 +1679,12 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
         self.assertIn('- Survived: 1', summary_text)
         self.assertIn('- Rejected: 1', summary_text)
         self.assertIn('- Provisional survivals: 1', summary_text)
-        self.assertIn('Stage 4 - Top-level time slices', summary_text)
-        self.assertIn('- Top-level slices created: 3', summary_text)
+        self.assertIn('Stage 4 - Probe-bands', summary_text)
+        self.assertIn('- Probe-bands created: 3', summary_text)
         self.assertIn('- Valid: 1', summary_text)
         self.assertIn('- Invalid: 1', summary_text)
         self.assertIn('- Undetermined: 1', summary_text)
-        self.assertIn('Stage 5 - Recursive refinement', summary_text)
+        self.assertIn('Stage 5 - Local boundary refinement', summary_text)
         self.assertIn('- Refined slices produced: 3', summary_text)
         self.assertIn('- Boundary: 1', summary_text)
         self.assertIn('- Undetermined remaining after refinement: 0', summary_text)
@@ -1665,9 +1724,9 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
             self.assertEqual(output_paths['candidate_unions'].name, 'Backpack - Stage 2A - Candidate Union Record.json')
             self.assertEqual(output_paths['screened_candidate_unions'].name, 'Backpack - Stage 3A - Union Screening.json')
             self.assertEqual(output_paths['stage3_screening_traces'].name, 'Backpack - Stage 3B - Screening Trace [Step 1 + Snapshot Rescue].json')
-            self.assertEqual(output_paths['classified_time_slices'].name, 'Backpack - Stage 4 - Time Slice Classifications.json')
-            self.assertEqual(output_paths['stage4_subregion_debug'].name, 'Backpack - Stage 4B - SubRegion Data Output.json')
-            self.assertEqual(output_paths['refined_sub_slices'].name, 'Backpack - Stage 5 - Recursive Sub-Time Slice Classifications.json')
+            self.assertEqual(output_paths['classified_time_slices'].name, 'Backpack - Stage 4 - Probe-Band Classifications.json')
+            self.assertEqual(output_paths['stage4_subregion_debug'].name, 'Backpack - Stage 4B - Probe Debug Output.json')
+            self.assertEqual(output_paths['refined_sub_slices'].name, 'Backpack - Stage 5 - Local Boundary Refinement Output.json')
             self.assertEqual(output_paths['final_candidate_ranges'].name, 'Backpack - Stage 6A - Candidate Ranges [Pre-Filters].json')
             self.assertEqual(output_paths['candidate_clips'].name, 'Backpack - Stage 6B - Candidate Pre-Clips [Post-Filters].json')
             self.assertEqual(output_paths['summary'].name, 'Backpack - Debug Summary.txt')
@@ -1706,5 +1765,31 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
