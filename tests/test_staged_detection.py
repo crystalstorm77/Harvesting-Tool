@@ -28,6 +28,7 @@ from harvesting_tool.staged_detection import (
     build_stage2_candidate_unions,
     build_staged_debug_summary_lines,
     decide_stage3_bucket_outcome,
+    evaluate_stage4_cell_level_probe,
     load_precomputed_stage3_art_state_sample_cache_from_movement_evidence_path,
     load_reusable_stage3_art_state_sample_cache,
     build_stage4_bands_from_probe_results,
@@ -1086,6 +1087,293 @@ class TimeSliceClassificationTests(unittest.TestCase):
 
         self.assertEqual(bands, [])
 
+    def test_stage4_structural_unclear_then_holding_can_backfill_opening_into_later_positive(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=540)
+        unclear_probe = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=0,
+            start_frame=355,
+            end_frame=365,
+            start_time='00:00:11:25',
+            end_time='00:00:12:05',
+            footprint=frozenset({(2, 2), (2, 3)}),
+            footprint_size=2,
+            within_slice_record_count=1,
+            classification='undetermined',
+            reason='probe_cell_ambiguous_support',
+            lasting_change_evidence_score=0.0,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        holding_probe = replace(
+            unclear_probe,
+            slice_index=2,
+            start_frame=415,
+            end_frame=425,
+            start_time='00:00:13:25',
+            end_time='00:00:14:05',
+            reason='probe_cell_structural_holding_support',
+        )
+        positive_probe = replace(
+            unclear_probe,
+            slice_index=3,
+            start_frame=475,
+            end_frame=485,
+            start_time='00:00:15:25',
+            end_time='00:00:16:05',
+            classification='valid',
+            reason='probe_cell_changed_support',
+            lasting_change_evidence_score=0.8,
+        )
+        probe_results = [
+            (unclear_probe, {'probe_label': 'unclear', 'changed_support_score': 0.0, 'judgeable_changed_support_score': 0.0, 'confirmed_changed_cell_count': 0, 'unresolved_cell_count': 4, 'structural_holding_support': True, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (holding_probe, {'probe_label': 'holding', 'changed_support_score': 0.0, 'judgeable_changed_support_score': 0.0, 'confirmed_changed_cell_count': 0, 'unresolved_cell_count': 6, 'structural_holding_support': True, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (positive_probe, {'probe_label': 'positive', 'changed_support_score': 0.3, 'judgeable_changed_support_score': 0.3, 'confirmed_changed_cell_count': 2, 'unresolved_cell_count': 0, 'structural_holding_support': False, 'lasting_change_evidence_score': 0.8, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+        ]
+
+        bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
+
+        self.assertEqual(len(bands), 1)
+        self.assertEqual((bands[0].start_frame, bands[0].end_frame), (355, 485))
+
+    def test_stage4_structural_unclear_bridge_keeps_active_band_alive(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=540)
+        first_positive_probe = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=0,
+            start_frame=355,
+            end_frame=365,
+            start_time='00:00:11:25',
+            end_time='00:00:12:05',
+            footprint=frozenset({(5, 5), (5, 6)}),
+            footprint_size=2,
+            within_slice_record_count=1,
+            classification='valid',
+            reason='probe_cell_changed_support',
+            lasting_change_evidence_score=0.8,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        ambiguous_bridge_probe = replace(
+            first_positive_probe,
+            slice_index=2,
+            start_frame=415,
+            end_frame=425,
+            start_time='00:00:13:25',
+            end_time='00:00:14:05',
+            classification='undetermined',
+            reason='probe_cell_ambiguous_support',
+            lasting_change_evidence_score=0.0,
+        )
+        second_positive_probe = replace(
+            first_positive_probe,
+            slice_index=3,
+            start_frame=475,
+            end_frame=485,
+            start_time='00:00:15:25',
+            end_time='00:00:16:05',
+            footprint=frozenset({(6, 6), (6, 7)}),
+        )
+        probe_results = [
+            (first_positive_probe, {'probe_label': 'positive', 'changed_support_score': 0.30, 'judgeable_changed_support_score': 0.30, 'confirmed_changed_cell_count': 2, 'unresolved_cell_count': 0, 'structural_holding_support': False, 'lasting_change_evidence_score': 0.8, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (ambiguous_bridge_probe, {'probe_label': 'unclear', 'changed_support_score': 0.0, 'judgeable_changed_support_score': 0.0, 'confirmed_changed_cell_count': 0, 'unresolved_cell_count': 2, 'structural_holding_support': True, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (second_positive_probe, {'probe_label': 'positive', 'changed_support_score': 0.30, 'judgeable_changed_support_score': 0.30, 'confirmed_changed_cell_count': 2, 'unresolved_cell_count': 0, 'structural_holding_support': False, 'lasting_change_evidence_score': 0.8, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+        ]
+
+        bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
+
+        self.assertEqual(len(bands), 1)
+        self.assertEqual((bands[0].start_frame, bands[0].end_frame), (355, 485))
+
+    def test_stage4_single_unresolved_unclear_bridge_does_not_keep_active_band_alive(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=540)
+        first_positive_probe = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=0,
+            start_frame=355,
+            end_frame=365,
+            start_time='00:00:11:25',
+            end_time='00:00:12:05',
+            footprint=frozenset({(5, 5), (5, 6)}),
+            footprint_size=2,
+            within_slice_record_count=1,
+            classification='valid',
+            reason='probe_cell_changed_support',
+            lasting_change_evidence_score=0.8,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        ambiguous_bridge_probe = replace(
+            first_positive_probe,
+            slice_index=2,
+            start_frame=415,
+            end_frame=425,
+            start_time='00:00:13:25',
+            end_time='00:00:14:05',
+            classification='undetermined',
+            reason='probe_cell_ambiguous_support',
+            lasting_change_evidence_score=0.0,
+        )
+        second_positive_probe = replace(
+            first_positive_probe,
+            slice_index=3,
+            start_frame=475,
+            end_frame=485,
+            start_time='00:00:15:25',
+            end_time='00:00:16:05',
+            footprint=frozenset({(6, 6), (6, 7)}),
+        )
+        probe_results = [
+            (first_positive_probe, {'probe_label': 'positive', 'changed_support_score': 0.30, 'judgeable_changed_support_score': 0.30, 'confirmed_changed_cell_count': 2, 'unresolved_cell_count': 0, 'structural_holding_support': False, 'lasting_change_evidence_score': 0.8, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (ambiguous_bridge_probe, {'probe_label': 'unclear', 'changed_support_score': 0.0, 'judgeable_changed_support_score': 0.0, 'confirmed_changed_cell_count': 0, 'unresolved_cell_count': 1, 'structural_holding_support': True, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (second_positive_probe, {'probe_label': 'positive', 'changed_support_score': 0.30, 'judgeable_changed_support_score': 0.30, 'confirmed_changed_cell_count': 2, 'unresolved_cell_count': 0, 'structural_holding_support': False, 'lasting_change_evidence_score': 0.8, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+        ]
+
+        bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
+
+        self.assertEqual(len(bands), 2)
+        self.assertEqual([(band.start_frame, band.end_frame) for band in bands], [(355, 365), (475, 485)])
+
+    def test_stage4_late_resolution_probe_closes_earlier_band_and_opens_from_union_start(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=540)
+        opening_probe = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=0,
+            start_frame=355,
+            end_frame=365,
+            start_time='00:00:11:25',
+            end_time='00:00:12:05',
+            footprint=frozenset({(2, 2), (2, 3)}),
+            footprint_size=2,
+            within_slice_record_count=1,
+            classification='undetermined',
+            reason='probe_cell_ambiguous_support',
+            lasting_change_evidence_score=0.0,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        holding_probe = replace(
+            opening_probe,
+            slice_index=2,
+            start_frame=415,
+            end_frame=425,
+            start_time='00:00:13:25',
+            end_time='00:00:14:05',
+            reason='probe_cell_structural_holding_support',
+        )
+        late_resolution_probe = replace(
+            opening_probe,
+            slice_index=3,
+            start_frame=475,
+            end_frame=485,
+            start_time='00:00:15:25',
+            end_time='00:00:16:05',
+            reason='probe_cell_late_resolution_support',
+        )
+        later_positive_probe = replace(
+            opening_probe,
+            slice_index=4,
+            start_frame=535,
+            end_frame=540,
+            start_time='00:00:17:25',
+            end_time='00:00:18:00',
+            classification='valid',
+            reason='probe_cell_changed_support',
+            lasting_change_evidence_score=0.8,
+        )
+        probe_results = [
+            (opening_probe, {'probe_label': 'unclear', 'changed_support_score': 0.0, 'judgeable_changed_support_score': 0.0, 'confirmed_changed_cell_count': 0, 'unresolved_cell_count': 4, 'structural_holding_support': True, 'opening_zone_low_confidence': True, 'late_resolution_only': False, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (holding_probe, {'probe_label': 'holding', 'changed_support_score': 0.0, 'judgeable_changed_support_score': 0.0, 'confirmed_changed_cell_count': 0, 'unresolved_cell_count': 6, 'structural_holding_support': True, 'opening_zone_low_confidence': False, 'late_resolution_only': False, 'lasting_change_evidence_score': 0.0, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (late_resolution_probe, {'probe_label': 'holding', 'changed_support_score': 0.1, 'judgeable_changed_support_score': 0.2, 'confirmed_changed_cell_count': 2, 'unresolved_cell_count': 0, 'structural_holding_support': False, 'opening_zone_low_confidence': False, 'late_resolution_only': True, 'lasting_change_evidence_score': 0.1, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+            (later_positive_probe, {'probe_label': 'positive', 'changed_support_score': 0.3, 'judgeable_changed_support_score': 0.3, 'confirmed_changed_cell_count': 2, 'unresolved_cell_count': 0, 'structural_holding_support': False, 'opening_zone_low_confidence': False, 'late_resolution_only': False, 'lasting_change_evidence_score': 0.8, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+        ]
+
+        bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
+
+        self.assertEqual(len(bands), 2)
+        self.assertEqual([(band.start_frame, band.end_frame) for band in bands], [(300, 425), (535, 540)])
+
+    def test_stage4_first_positive_probe_can_open_from_local_attribution_start(self) -> None:
+        screened_union = make_screened_union(start_frame=300, end_frame=540)
+        positive_probe = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=0,
+            start_frame=355,
+            end_frame=365,
+            start_time='00:00:11:25',
+            end_time='00:00:12:05',
+            footprint=frozenset({(6, 8), (7, 8)}),
+            footprint_size=2,
+            within_slice_record_count=1,
+            classification='valid',
+            reason='probe_cell_changed_support',
+            lasting_change_evidence_score=0.8,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        probe_results = [
+            (positive_probe, {'probe_label': 'positive', 'changed_support_score': 0.30, 'judgeable_changed_support_score': 0.30, 'confirmed_changed_cell_count': 2, 'unresolved_cell_count': 0, 'structural_holding_support': False, 'opening_zone_low_confidence': True, 'opening_attribution_start_frame': 320, 'opening_attribution_start_time': '00:00:10:20', 'late_resolution_only': False, 'lasting_change_evidence_score': 0.8, 'before_reference_activity': 0.0, 'after_reference_activity': 0.0, 'reference_windows_reliable': True}),
+        ]
+
+        bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
+
+        self.assertEqual(len(bands), 1)
+        self.assertEqual((bands[0].start_frame, bands[0].end_frame), (320, 365))
+
+
+    def test_stage4_single_front_loaded_touch_becomes_late_resolution_holding(self) -> None:
+        screened_union = make_screened_union(
+            start_frame=3900,
+            end_frame=4200,
+            union_footprint=frozenset({(3, 2), (3, 3), (4, 1), (4, 2), (4, 3), (5, 1), (5, 2), (5, 3), (6, 2)}),
+        )
+        records = [
+            make_record(
+                1,
+                3967,
+                movement_present=True,
+                movement_strength_score=0.7,
+                temporal_persistence_score=0.6,
+                spatial_extent_score=0.4,
+                touched_grid_coordinates=((3, 2), (3, 3), (4, 2), (4, 3), (5, 2), (5, 3)),
+            ),
+        ]
+        sampled_frames = [
+            make_stage3_art_state_sample(3890, changed=False),
+            make_stage3_art_state_sample(3894, changed=False),
+            make_stage3_art_state_sample(3972, changed_cells=((4, 2), (5, 2))),
+            make_stage3_art_state_sample(3974, changed_cells=((4, 2), (5, 2))),
+            make_stage3_art_state_sample(3980, changed_cells=((4, 2), (5, 2))),
+        ]
+
+        evaluation = evaluate_stage4_cell_level_probe(
+            screened_candidate_union=screened_union,
+            slice_start=3967,
+            slice_end=3977,
+            ordered_records=records,
+            sampled_frames=sampled_frames,
+            settings=make_settings(),
+            carried_unresolved_cells=frozenset({(4, 2), (5, 2)}),
+            carried_recently_changed_cells=frozenset(),
+            baseline_comparison_state={},
+            previous_probe_end=3957,
+        )
+
+        self.assertTrue(evaluation['late_resolution_only'])
+        self.assertEqual(evaluation['probe_label'], 'holding')
+        self.assertEqual(evaluation['confirmed_changed_cell_count'], 2)
+        self.assertEqual(evaluation['changed_touch_frame_count'], 1)
+        self.assertLessEqual(evaluation['changed_touch_frame_ratio'], 0.10)
     def test_stage4_builds_separate_valid_bands_when_a_negative_probe_gap_splits_union_activity(self) -> None:
         screened_union = make_screened_union(start_frame=300, end_frame=540)
         first_positive_probe = ClassifiedTimeSlice(
@@ -1765,6 +2053,7 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
