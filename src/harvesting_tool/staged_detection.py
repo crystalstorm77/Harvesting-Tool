@@ -3938,7 +3938,35 @@ def compute_stage4_cell_change_score(
     cv2,
     stage3_context: dict[str, object] | None = None,
 ) -> float | None:
-    _, before_baseline = get_stage3_window_baseline(
+    details = compute_stage4_cell_change_details(
+        coordinate,
+        before_window,
+        current_window,
+        sampled_frames,
+        cell_art_state_masks,
+        baseline_cache,
+        settings,
+        cv2,
+        stage3_context,
+    )
+    if details is None:
+        return None
+    return float(details['change_score'])
+
+
+
+def compute_stage4_cell_change_details(
+    coordinate: GridCoordinate,
+    before_window: dict[str, object],
+    current_window: dict[str, object],
+    sampled_frames: list[dict[str, object]],
+    cell_art_state_masks: dict[GridCoordinate, object],
+    baseline_cache: dict[tuple[int, int], tuple[list[dict[str, object]], object | None]],
+    settings: DetectorSettings,
+    cv2,
+    stage3_context: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    before_samples, before_baseline = get_stage3_window_baseline(
         baseline_cache,
         sampled_frames,
         int(before_window['window_start']),
@@ -3955,13 +3983,71 @@ def compute_stage4_cell_change_score(
     if before_baseline is None or current_baseline is None or not current_samples:
         return None
 
+    cell_mask = cell_art_state_masks[coordinate]
+    mask_pixels = cell_mask > 0
+    mask_pixel_count = int(np.count_nonzero(mask_pixels))
+    raw_difference = cv2.absdiff(before_baseline, current_baseline)
+    focused_raw_difference = cv2.bitwise_and(raw_difference, cell_mask)
+    threshold_mask = cv2.threshold(raw_difference, settings.activity_threshold, 255, cv2.THRESH_BINARY)[1]
+    focused_threshold_mask = cv2.bitwise_and(threshold_mask, cell_mask)
     change_mask = build_art_state_change_mask(before_baseline, current_baseline, settings, cv2)
-    focused_change_mask = cv2.bitwise_and(change_mask, cell_art_state_masks[coordinate])
-    return compute_stage3_art_state_persistent_difference_score(
+    focused_change_mask = cv2.bitwise_and(change_mask, cell_mask)
+    if mask_pixel_count > 0:
+        before_values = before_baseline[mask_pixels]
+        current_values = current_baseline[mask_pixels]
+        raw_difference_values = focused_raw_difference[mask_pixels]
+        threshold_values = focused_threshold_mask[mask_pixels]
+        before_baseline_mean = float(before_values.mean())
+        current_baseline_mean = float(current_values.mean())
+        raw_difference_mean = float(raw_difference_values.mean())
+        raw_difference_max = int(raw_difference_values.max())
+        raw_difference_nonzero_ratio = float(np.count_nonzero(raw_difference_values)) / float(mask_pixel_count)
+        raw_difference_over_threshold_ratio = float(np.count_nonzero(threshold_values)) / float(mask_pixel_count)
+    else:
+        before_baseline_mean = 0.0
+        current_baseline_mean = 0.0
+        raw_difference_mean = 0.0
+        raw_difference_max = 0
+        raw_difference_nonzero_ratio = 0.0
+        raw_difference_over_threshold_ratio = 0.0
+    focused_change_ratio = compute_binary_mask_ratio(focused_change_mask)
+    focused_change_blocks = count_active_blocks(focused_change_mask)
+    change_score = compute_stage3_art_state_persistent_difference_score(
         focused_change_mask,
         1,
         settings,
     )
+    return {
+        'change_score': change_score,
+        'focused_change_ratio': focused_change_ratio,
+        'focused_change_blocks': focused_change_blocks,
+        'mask_pixel_count': mask_pixel_count,
+        'before_baseline_mean': round(before_baseline_mean, 6),
+        'current_baseline_mean': round(current_baseline_mean, 6),
+        'raw_difference_mean': round(raw_difference_mean, 6),
+        'raw_difference_max': raw_difference_max,
+        'raw_difference_nonzero_ratio': round(raw_difference_nonzero_ratio, 6),
+        'raw_difference_over_threshold_ratio': round(raw_difference_over_threshold_ratio, 6),
+        'activity_threshold': float(settings.activity_threshold),
+        'before_sample_count': len(before_samples),
+        'current_sample_count': len(current_samples),
+        'before_window': {
+            'window_start': int(before_window['window_start']),
+            'window_end': int(before_window['window_end']),
+            'start_time': Timecode(total_frames=int(before_window['window_start'])).to_hhmmssff(),
+            'end_time': Timecode(total_frames=int(before_window['window_end'])).to_hhmmssff(),
+            'mean_window_activity': round(float(before_window.get('mean_window_activity', 0.0)), 6),
+            'max_window_activity': round(float(before_window.get('max_window_activity', 0.0)), 6),
+        },
+        'current_window': {
+            'window_start': int(current_window['window_start']),
+            'window_end': int(current_window['window_end']),
+            'start_time': Timecode(total_frames=int(current_window['window_start'])).to_hhmmssff(),
+            'end_time': Timecode(total_frames=int(current_window['window_end'])).to_hhmmssff(),
+            'mean_window_activity': round(float(current_window.get('mean_window_activity', 0.0)), 6),
+            'max_window_activity': round(float(current_window.get('max_window_activity', 0.0)), 6),
+        },
+    }
 
 
 
@@ -4332,6 +4418,7 @@ def evaluate_stage4_cell_level_probe(
     confirmed_unchanged_cells: set[GridCoordinate] = set()
     unresolved_cells: set[GridCoordinate] = set(recently_active_cells.difference(judgeable_cells))
     cell_results: list[dict[str, object]] = []
+    cell_reference_debug: list[dict[str, object]] = []
 
     for coordinate in sorted(judgeable_cells):
         before_window = before_assignments.get(coordinate)
@@ -4345,9 +4432,32 @@ def evaluate_stage4_cell_level_probe(
                 'change_score': None,
                 'reason': 'reference_unavailable',
             })
+            cell_reference_debug.append({
+                'coordinate': list(coordinate),
+                'label': format_grid_coordinate_label(coordinate),
+                'classification': 'unresolved',
+                'change_score': None,
+                'focused_change_ratio': None,
+                'focused_change_blocks': None,
+                'mask_pixel_count': None,
+                'before_baseline_mean': None,
+                'current_baseline_mean': None,
+                'raw_difference_mean': None,
+                'raw_difference_max': None,
+                'raw_difference_nonzero_ratio': None,
+                'raw_difference_over_threshold_ratio': None,
+                'activity_threshold': float(settings.activity_threshold),
+                'before_window_source': 'inherited_baseline' if coordinate in baseline_assigned_coordinates else 'searched_before_window',
+                'before_window': None,
+                'current_window_source': 'searched_current_window',
+                'current_window': None,
+                'before_sample_count': 0,
+                'current_sample_count': 0,
+                'reason': 'reference_unavailable',
+            })
             continue
 
-        change_score = compute_stage4_cell_change_score(
+        change_details = compute_stage4_cell_change_details(
             coordinate,
             before_window,
             current_window,
@@ -4358,6 +4468,7 @@ def evaluate_stage4_cell_level_probe(
             cv2,
             stage3_context,
         )
+        change_score = None if change_details is None else float(change_details['change_score'])
         if change_score is None:
             unresolved_cells.add(coordinate)
             cell_classification = 'unresolved'
@@ -4375,6 +4486,29 @@ def evaluate_stage4_cell_level_probe(
             'label': format_grid_coordinate_label(coordinate),
             'classification': cell_classification,
             'change_score': None if change_score is None else round(change_score, 6),
+            'reason': 'cell_level_probe_comparison',
+        })
+        cell_reference_debug.append({
+            'coordinate': list(coordinate),
+            'label': format_grid_coordinate_label(coordinate),
+            'classification': cell_classification,
+            'change_score': None if change_score is None else round(change_score, 6),
+            'focused_change_ratio': None if change_details is None else round(float(change_details['focused_change_ratio']), 6),
+            'focused_change_blocks': None if change_details is None else int(change_details['focused_change_blocks']),
+            'mask_pixel_count': None if change_details is None else int(change_details['mask_pixel_count']),
+            'before_baseline_mean': None if change_details is None else round(float(change_details['before_baseline_mean']), 6),
+            'current_baseline_mean': None if change_details is None else round(float(change_details['current_baseline_mean']), 6),
+            'raw_difference_mean': None if change_details is None else round(float(change_details['raw_difference_mean']), 6),
+            'raw_difference_max': None if change_details is None else int(change_details['raw_difference_max']),
+            'raw_difference_nonzero_ratio': None if change_details is None else round(float(change_details['raw_difference_nonzero_ratio']), 6),
+            'raw_difference_over_threshold_ratio': None if change_details is None else round(float(change_details['raw_difference_over_threshold_ratio']), 6),
+            'activity_threshold': None if change_details is None else float(change_details['activity_threshold']),
+            'before_window_source': 'inherited_baseline' if coordinate in baseline_assigned_coordinates else 'searched_before_window',
+            'before_window': None if change_details is None else change_details['before_window'],
+            'current_window_source': 'searched_current_window',
+            'current_window': None if change_details is None else change_details['current_window'],
+            'before_sample_count': 0 if change_details is None else int(change_details['before_sample_count']),
+            'current_sample_count': 0 if change_details is None else int(change_details['current_sample_count']),
             'reason': 'cell_level_probe_comparison',
         })
 
@@ -4529,6 +4663,7 @@ def evaluate_stage4_cell_level_probe(
         'changed_touch_frame_ratio': round(changed_touch_frame_ratio, 6),
         'before_window_candidate_count': before_candidate_count,
         'current_window_candidate_count': current_candidate_count,
+        'cell_reference_debug': cell_reference_debug,
         'current_window': {
             'search_start': current_search_start,
             'search_end': current_search_end,
@@ -4729,10 +4864,11 @@ def classify_stage4_time_slices_with_subregion_debug(
     records: Iterable[MovementEvidenceRecord],
     sampled_frames: list[dict[str, object]] | None = None,
     settings: DetectorSettings | None = None,
-) -> tuple[list[ClassifiedTimeSlice], list[dict[str, object]]]:
+) -> tuple[list[ClassifiedTimeSlice], list[dict[str, object]], list[dict[str, object]]]:
     ordered_records = sorted(records, key=lambda record: record.frame_index)
     classified_slices: list[ClassifiedTimeSlice] = []
     stage4_subregion_debug: list[dict[str, object]] = []
+    stage4_cell_reference_debug: list[dict[str, object]] = []
 
     for screened_candidate_union in screened_candidate_unions:
         if not screened_candidate_union.surviving:
@@ -4796,6 +4932,9 @@ def classify_stage4_time_slices_with_subregion_debug(
             )
             debug_entry = serialize_stage4_time_slice_subregion_debug_entry(probe_slice, evaluation)
             stage4_subregion_debug.append(debug_entry)
+            stage4_cell_reference_debug.extend(
+                serialize_stage4_cell_reference_debug_entries(probe_slice, evaluation)
+            )
             probe_results.append((probe_slice, evaluation))
 
             baseline_comparison_state.update(evaluation.get('_baseline_comparison_updates', {}))
@@ -4818,7 +4957,7 @@ def classify_stage4_time_slices_with_subregion_debug(
             build_stage4_bands_from_probe_results(screened_candidate_union, probe_results)
         )
 
-    return classified_slices, stage4_subregion_debug
+    return classified_slices, stage4_subregion_debug, stage4_cell_reference_debug
 
 def classify_stage4_time_slices(
     screened_candidate_unions: Iterable[ScreenedCandidateUnion],
@@ -4826,7 +4965,7 @@ def classify_stage4_time_slices(
     sampled_frames: list[dict[str, object]] | None = None,
     settings: DetectorSettings | None = None,
 ) -> list[ClassifiedTimeSlice]:
-    classified_slices, _ = classify_stage4_time_slices_with_subregion_debug(
+    classified_slices, _, _ = classify_stage4_time_slices_with_subregion_debug(
         screened_candidate_unions,
         records,
         sampled_frames=sampled_frames,
@@ -5076,6 +5215,7 @@ DEBUG_ARTIFACT_TITLES = {
     'stage3_screening_traces': 'Stage 3B - Screening Trace [Step 1 + Snapshot Rescue]',
     'classified_time_slices': 'Stage 4 - Probe-Band Classifications',
     'stage4_subregion_debug': 'Stage 4B - Probe Debug Output',
+    'stage4_cell_reference_debug': 'Stage 4C - Per-Cell Reference Debug',
     'refined_sub_slices': 'Stage 5 - Local Boundary Refinement Output',
     'final_candidate_ranges': 'Stage 6A - Candidate Ranges [Pre-Filters]',
     'candidate_clips': 'Stage 6B - Candidate Pre-Clips [Post-Filters]',
@@ -5607,6 +5747,26 @@ def serialize_stage4_time_slice_subregion_debug_entry(
         'current_window': evaluation.get('current_window'),
     }
 
+def serialize_stage4_cell_reference_debug_entries(
+    time_slice: ClassifiedTimeSlice,
+    evaluation: dict[str, object],
+) -> list[dict[str, object]]:
+    serialized_probe = serialize_classified_time_slice(time_slice)
+    probe_anchor_time = evaluation.get('probe_anchor_time')
+    probe_local_evaluation_window = evaluation.get('probe_local_evaluation_window')
+    return [
+        {
+            **serialized_probe,
+            'probe_anchor_time': probe_anchor_time,
+            'probe_local_evaluation_window': probe_local_evaluation_window,
+            'probe_label': evaluation.get('probe_label'),
+            **cell_entry,
+        }
+        for cell_entry in evaluation.get('cell_reference_debug', [])
+        if isinstance(cell_entry, dict)
+    ]
+
+
 def serialize_final_candidate_range(final_range: FinalCandidateRange) -> dict[str, object]:
     return {
         'range_index': final_range.range_index,
@@ -5963,7 +6123,7 @@ def detect_staged_activity_ranges(
 
     emit_stage_status(status_callback, 'Runtime Stage 4 - Detecting probe-bands started')
     stage_started_at = time.perf_counter()
-    classified_time_slices, serialized_stage4_subregion_debug = classify_stage4_time_slices_with_subregion_debug(screened_candidate_unions, records, sampled_frames=stage3_art_state_samples, settings=settings)
+    classified_time_slices, serialized_stage4_subregion_debug, serialized_stage4_cell_reference_debug = classify_stage4_time_slices_with_subregion_debug(screened_candidate_unions, records, sampled_frames=stage3_art_state_samples, settings=settings)
     elapsed_seconds = time.perf_counter() - stage_started_at
     stage_timings.append(build_stage_timing_entry('runtime_stage_4_time_slice_classification', 'Runtime Stage 4 - Detecting probe-bands', elapsed_seconds, len(classified_time_slices)))
     emit_stage_status(status_callback, f"Runtime Stage 4 - Detecting probe-bands complete in {format_stage_elapsed(elapsed_seconds)} ({len(classified_time_slices)} probe-bands)")
@@ -5976,6 +6136,7 @@ def detect_staged_activity_ranges(
         'stage3_screening_traces': serialized_stage3_screening_traces,
         'classified_time_slices': serialized_classified_time_slices,
         'stage4_subregion_debug': serialized_stage4_subregion_debug,
+        'stage4_cell_reference_debug': serialized_stage4_cell_reference_debug,
         'stage_timings': stage_timings,
     })
 
@@ -5994,6 +6155,7 @@ def detect_staged_activity_ranges(
         'stage3_screening_traces': serialized_stage3_screening_traces,
         'classified_time_slices': serialized_classified_time_slices,
         'stage4_subregion_debug': serialized_stage4_subregion_debug,
+        'stage4_cell_reference_debug': serialized_stage4_cell_reference_debug,
         'refined_sub_slices': serialized_refined_sub_slices,
         'stage_timings': stage_timings,
     })
@@ -6024,6 +6186,7 @@ def detect_staged_activity_ranges(
         'stage3_screening_traces': serialized_stage3_screening_traces,
         'classified_time_slices': serialized_classified_time_slices,
         'stage4_subregion_debug': serialized_stage4_subregion_debug,
+        'stage4_cell_reference_debug': serialized_stage4_cell_reference_debug,
         'refined_sub_slices': serialized_refined_sub_slices,
         'final_candidate_ranges': serialized_final_candidate_ranges,
         'stage_timings': stage_timings,
@@ -6058,6 +6221,7 @@ def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, obje
     )
     output_paths['summary'] = summary_output_path
     return output_paths
+
 
 
 
