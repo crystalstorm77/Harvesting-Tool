@@ -79,6 +79,7 @@ STAGE3_ART_STATE_MIN_REVEAL_HOLD_SCORE = 0.45
 STAGE3_ART_STATE_MISSING_REVEAL_SCORE = 0.0
 STAGE3_ART_STATE_MIN_FOOTPRINT_SUPPORT_SCORE = 0.10
 STAGE3_ART_STATE_FALLBACK_REFERENCE_MIN_FOOTPRINT = 20
+STAGE3_FULL_AFTER_FAST_PATH_MAX_FOOTPRINT = 20
 STAGE3_LOCAL_CHANGED_CLUSTER_MIN_SIZE = 4
 STAGE3_LOCAL_CHANGED_CLUSTER_MIN_COVERAGE = 0.04
 STAGE3_LOCAL_CHANGED_CLUSTER_MAX_AMBIGUOUS_COVERAGE = 0.35
@@ -2062,6 +2063,7 @@ def select_stage3_internal_after_reference_windows(
     *,
     union_start: int,
     union_end: int,
+    search_end: int | None = None,
     footprint: frozenset[GridCoordinate],
     touch_frame_bounds: dict[GridCoordinate, dict[str, int]],
     ordered_records: list[MovementEvidenceRecord],
@@ -2074,6 +2076,7 @@ def select_stage3_internal_after_reference_windows(
 ) -> dict[GridCoordinate, dict[str, object]]:
     assignments: dict[GridCoordinate, dict[str, object]] = {}
     target_footprint = footprint if target_coordinates is None else target_coordinates
+    effective_search_end = union_end + 1 if search_end is None else max(union_end + 1, search_end)
     for coordinate in target_footprint:
         cell_bounds = touch_frame_bounds.get(coordinate, {})
         if 'last_touch_frame' not in cell_bounds:
@@ -2081,7 +2084,7 @@ def select_stage3_internal_after_reference_windows(
         search_start = cell_bounds['last_touch_frame'] + 1
         candidate_windows = build_stage3_reference_window_candidates(
             search_start,
-            union_end + 1,
+            effective_search_end,
             STAGE3_ART_STATE_AFTER_WINDOW_FRAMES,
             get_stage3_reference_candidate_step_frames(settings),
         )
@@ -2120,6 +2123,58 @@ def select_stage3_internal_after_reference_windows(
             break
     return assignments
 
+
+def select_stage3_composite_after_reference_windows(
+    *,
+    union_start: int,
+    union_end: int,
+    search_start: int,
+    search_end: int,
+    footprint: frozenset[GridCoordinate],
+    endpoint_coordinates: frozenset[GridCoordinate],
+    touch_frame_bounds: dict[GridCoordinate, dict[str, int]],
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    cell_art_state_masks: dict[GridCoordinate, object],
+    settings: DetectorSettings,
+    cv2,
+    stage3_context: dict[str, object] | None = None,
+    target_coordinates: frozenset[GridCoordinate] | None = None,
+) -> tuple[dict[GridCoordinate, dict[str, object]], int, int]:
+    target_footprint = footprint if target_coordinates is None else target_coordinates
+    internal_assignments = select_stage3_internal_after_reference_windows(
+        union_start=union_start,
+        union_end=union_end,
+        search_end=search_end,
+        footprint=footprint,
+        touch_frame_bounds=touch_frame_bounds,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        target_coordinates=target_footprint,
+    )
+    unresolved_coordinates = frozenset(target_footprint.difference(internal_assignments))
+    external_assignments, external_candidate_count = ({}, 0) if not unresolved_coordinates else select_stage3_cell_reference_windows(
+        search_start=search_start,
+        search_end=search_end,
+        prefer_nearest=False,
+        footprint=footprint,
+        endpoint_coordinates=endpoint_coordinates,
+        require_external_movement_for_all_cells=False,
+        require_external_movement_for_endpoints=True,
+        require_external_movement_outside_coordinate_for_all_cells=False,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        target_coordinates=unresolved_coordinates,
+    )
+    return merge_stage3_reference_assignments(internal_assignments, external_assignments), len(internal_assignments), external_candidate_count
 
 
 def merge_stage3_reference_assignments(
@@ -2585,27 +2640,42 @@ def screen_candidate_union_with_art_state_prototype(
         progress_label='Step 1 full-footprint before search progress',
     )
     record_stage3_timing('step1_full_before_search_seconds', step1_before_search_started_at)
-    step1_after_search_started_at = time.perf_counter()
-    selected_after_window, after_window_candidate_count = select_stage3_full_footprint_reference_window_v3(
-        search_start=simple_after_search_start,
-        search_end=simple_after_search_end,
-        prefer_nearest=False,
-        footprint=candidate_union.union_footprint,
-        endpoint_coordinates=endpoint_coordinates,
-        require_external_movement_for_all_cells=False,
-        require_external_movement_for_endpoints=True,
-        require_external_movement_outside_coordinate_for_all_cells=False,
-        ordered_records=ordered_records,
-        sampled_frames=sampled_frames,
-        cell_art_state_masks=cell_art_state_masks,
-        settings=settings,
-        cv2=cv2,
-        stage3_context=stage3_context,
-        status_callback=status_callback,
-        progress_prefix=union_progress_prefix,
-        progress_label='Step 1 full-footprint after search progress',
+    step1_after_fast_path_attempted = (
+        candidate_union.union_footprint_size <= STAGE3_FULL_AFTER_FAST_PATH_MAX_FOOTPRINT
     )
-    record_stage3_timing('step1_full_after_search_seconds', step1_after_search_started_at)
+    after_window_candidate_count = len(
+        build_stage3_reference_window_candidates(
+            simple_after_search_start,
+            simple_after_search_end,
+            STAGE3_ART_STATE_AFTER_WINDOW_FRAMES,
+            get_stage3_reference_candidate_step_frames(settings),
+        )
+    )
+    selected_after_window = None
+    if step1_after_fast_path_attempted:
+        step1_after_search_started_at = time.perf_counter()
+        selected_after_window, after_window_candidate_count = select_stage3_full_footprint_reference_window_v3(
+            search_start=simple_after_search_start,
+            search_end=simple_after_search_end,
+            prefer_nearest=False,
+            footprint=candidate_union.union_footprint,
+            endpoint_coordinates=endpoint_coordinates,
+            require_external_movement_for_all_cells=False,
+            require_external_movement_for_endpoints=True,
+            require_external_movement_outside_coordinate_for_all_cells=False,
+            ordered_records=ordered_records,
+            sampled_frames=sampled_frames,
+            cell_art_state_masks=cell_art_state_masks,
+            settings=settings,
+            cv2=cv2,
+            stage3_context=stage3_context,
+            status_callback=status_callback,
+            progress_prefix=union_progress_prefix,
+            progress_label='Step 1 full-footprint after search progress',
+        )
+        record_stage3_timing('step1_full_after_search_seconds', step1_after_search_started_at)
+    else:
+        stage3_timings['step1_full_after_search_seconds'] = 0.0
 
     report_union_substep(
         f"Step 1 full-footprint search complete "
@@ -2619,6 +2689,7 @@ def screen_candidate_union_with_art_state_prototype(
             'selected_after_window': serialize_stage3_window_metadata(selected_after_window),
             'before_window_candidate_count': before_window_candidate_count,
             'after_window_candidate_count': after_window_candidate_count,
+            'after_fast_path_attempted': step1_after_fast_path_attempted,
         },
     }
 
@@ -2711,46 +2782,73 @@ def screen_candidate_union_with_art_state_prototype(
 
     report_union_substep('Step 1 partial-footprint reference assignment')
     step1_partial_before_assignment_started_at = time.perf_counter()
-    step1_before_assignments, step1_before_candidate_count = select_stage3_cell_reference_windows(
-        search_start=simple_before_search_start,
-        search_end=simple_before_search_end,
-        prefer_nearest=True,
-        footprint=candidate_union.union_footprint,
-        endpoint_coordinates=endpoint_coordinates,
-        require_external_movement_for_all_cells=False,
-        require_external_movement_for_endpoints=False,
-        require_external_movement_outside_coordinate_for_all_cells=True,
-        ordered_records=ordered_records,
-        sampled_frames=sampled_frames,
-        cell_art_state_masks=cell_art_state_masks,
-        settings=settings,
-        cv2=cv2,
-        stage3_context=stage3_context,
-        status_callback=status_callback,
-        progress_prefix=union_progress_prefix,
-        progress_label='Step 1 partial before assignment progress',
-    )
-    record_stage3_timing('step1_partial_before_assignment_seconds', step1_partial_before_assignment_started_at)
+    step1_before_assignments: dict[GridCoordinate, dict[str, object]]
+    step1_before_candidate_count = before_window_candidate_count
+    if selected_before_window is not None and not step1_after_fast_path_attempted:
+        step1_before_assignments = {
+            coordinate: dict(selected_before_window)
+            for coordinate in candidate_union.union_footprint
+        }
+        stage3_timings['step1_partial_before_assignment_seconds'] = 0.0
+    else:
+        step1_before_assignments, step1_before_candidate_count = select_stage3_cell_reference_windows(
+            search_start=simple_before_search_start,
+            search_end=simple_before_search_end,
+            prefer_nearest=True,
+            footprint=candidate_union.union_footprint,
+            endpoint_coordinates=endpoint_coordinates,
+            require_external_movement_for_all_cells=False,
+            require_external_movement_for_endpoints=False,
+            require_external_movement_outside_coordinate_for_all_cells=True,
+            ordered_records=ordered_records,
+            sampled_frames=sampled_frames,
+            cell_art_state_masks=cell_art_state_masks,
+            settings=settings,
+            cv2=cv2,
+            stage3_context=stage3_context,
+            status_callback=status_callback,
+            progress_prefix=union_progress_prefix,
+            progress_label='Step 1 partial before assignment progress',
+        )
+        record_stage3_timing('step1_partial_before_assignment_seconds', step1_partial_before_assignment_started_at)
     step1_partial_after_assignment_started_at = time.perf_counter()
-    step1_after_assignments, step1_after_candidate_count = select_stage3_cell_reference_windows(
-        search_start=simple_after_search_start,
-        search_end=simple_after_search_end,
-        prefer_nearest=False,
-        footprint=candidate_union.union_footprint,
-        endpoint_coordinates=endpoint_coordinates,
-        require_external_movement_for_all_cells=False,
-        require_external_movement_for_endpoints=True,
-        require_external_movement_outside_coordinate_for_all_cells=False,
-        ordered_records=ordered_records,
-        sampled_frames=sampled_frames,
-        cell_art_state_masks=cell_art_state_masks,
-        settings=settings,
-        cv2=cv2,
-        stage3_context=stage3_context,
-        status_callback=status_callback,
-        progress_prefix=union_progress_prefix,
-        progress_label='Step 1 partial after assignment progress',
-    )
+    if step1_after_fast_path_attempted:
+        step1_internal_after_assignment_count = 0
+        step1_after_assignments, step1_after_candidate_count = select_stage3_cell_reference_windows(
+            search_start=simple_after_search_start,
+            search_end=simple_after_search_end,
+            prefer_nearest=False,
+            footprint=candidate_union.union_footprint,
+            endpoint_coordinates=endpoint_coordinates,
+            require_external_movement_for_all_cells=False,
+            require_external_movement_for_endpoints=True,
+            require_external_movement_outside_coordinate_for_all_cells=False,
+            ordered_records=ordered_records,
+            sampled_frames=sampled_frames,
+            cell_art_state_masks=cell_art_state_masks,
+            settings=settings,
+            cv2=cv2,
+            stage3_context=stage3_context,
+            status_callback=status_callback,
+            progress_prefix=union_progress_prefix,
+            progress_label='Step 1 partial after assignment progress',
+        )
+    else:
+        step1_after_assignments, step1_internal_after_assignment_count, step1_after_candidate_count = select_stage3_composite_after_reference_windows(
+            union_start=candidate_union.start_frame,
+            union_end=candidate_union.end_frame,
+            search_start=simple_after_search_start,
+            search_end=simple_after_search_end,
+            footprint=candidate_union.union_footprint,
+            endpoint_coordinates=endpoint_coordinates,
+            touch_frame_bounds=touch_frame_bounds,
+            ordered_records=ordered_records,
+            sampled_frames=sampled_frames,
+            cell_art_state_masks=cell_art_state_masks,
+            settings=settings,
+            cv2=cv2,
+            stage3_context=stage3_context,
+        )
     record_stage3_timing('step1_partial_after_assignment_seconds', step1_partial_after_assignment_started_at)
     report_union_substep(
         f"Step 1 partial-footprint assignment complete "
@@ -2778,7 +2876,7 @@ def screen_candidate_union_with_art_state_prototype(
         )
     record_stage3_timing('step1_partial_classification_seconds', step1_partial_classification_started_at)
     step1_partial_coverage = evaluate_stage3_bucket_coverages(candidate_union.union_footprint, step1_partial_bucket_by_cell)
-    step1_partial_before_coverage = len(step1_before_assignments) / max(1, candidate_union.union_footprint_size)
+    step1_partial_before_coverage = 1.0 if (selected_before_window is not None and not step1_after_fast_path_attempted) else (len(step1_before_assignments) / max(1, candidate_union.union_footprint_size))
     step1_partial_screening_result, step1_partial_surviving, step1_partial_reason, step1_partial_bounded_ambiguity = decide_stage3_bucket_outcome(
         coverage_summary=step1_partial_coverage,
         reconstructed_before_coverage=step1_partial_before_coverage,
@@ -2789,6 +2887,8 @@ def screen_candidate_union_with_art_state_prototype(
         'after_assignment_count': len(step1_after_assignments),
         'before_window_candidate_count': step1_before_candidate_count,
         'after_window_candidate_count': step1_after_candidate_count,
+        'internal_after_assignment_count': step1_internal_after_assignment_count,
+        'before_assignment_source': 'shared_full_footprint' if (selected_before_window is not None and not step1_after_fast_path_attempted) else 'cell_specific',
         'representative_before_window': serialize_stage3_window_metadata(next(iter(step1_before_assignments.values())) if step1_before_assignments else None),
         'representative_after_window': serialize_stage3_window_metadata(next(iter(step1_after_assignments.values())) if step1_after_assignments else None),
         'reconstructed_before_coverage': round(step1_partial_before_coverage, 6),
@@ -2839,12 +2939,12 @@ def screen_candidate_union_with_art_state_prototype(
             stage3_mode='step1',
             stage3_alignment_mode='partial_footprint',
             resolved_changed_coverage=float(step1_partial_coverage['resolved_changed_coverage']),
-            reconstructed_before_coverage=len(step1_before_assignments) / max(1, candidate_union.union_footprint_size),
+            reconstructed_before_coverage=step1_partial_before_coverage,
             resolved_ambiguous_coverage=float(step1_partial_coverage['resolved_ambiguous_coverage']),
             before_window=representative_before_window,
             after_window=representative_after_window,
-            before_window_candidate_count=before_window_candidate_count,
-            after_window_candidate_count=after_window_candidate_count,
+            before_window_candidate_count=step1_before_candidate_count,
+            after_window_candidate_count=step1_after_candidate_count,
             survived_by_bounded_ambiguity=step1_partial_bounded_ambiguity,
             stage3_debug_trace=stage3_debug_trace,
         )
