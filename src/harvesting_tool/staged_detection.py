@@ -14,10 +14,6 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from harvesting_tool.detection import (
-    ART_STATE_BOTTOM_RATIO,
-    ART_STATE_LEFT_RATIO,
-    ART_STATE_RIGHT_RATIO,
-    ART_STATE_TOP_RATIO,
     BACKTRACK_BUFFER_SAMPLES,
     CANVAS_BOTTOM_RATIO,
     CANVAS_LEFT_RATIO,
@@ -42,7 +38,6 @@ from harvesting_tool.detection import (
     collect_window_samples,
     count_active_blocks,
     emit_scan_progress,
-    extract_art_state_region,
     is_weak_art_change_signal,
     should_enter_active_state,
     should_remain_active_state,
@@ -159,6 +154,8 @@ STAGE6_ART_STATE_SUPPORTED_MIN_SLICE_COUNT = 3
 STAGE6_ART_STATE_SUPPORTED_MIN_RESCUE_SLICE_COUNT = 2
 STAGE6_ART_STATE_SUPPORTED_MIN_AVERAGE_EVIDENCE = 0.59
 STAGE6_VALID_MERGE_MIN_FOOTPRINT_OVERLAP = 0.35
+MAX_AUTOMATIC_REUSED_STAGE3_SAMPLE_CACHE_BYTES = 8 * 1024 * 1024 * 1024
+ENABLE_REUSABLE_STAGE3_SAMPLE_CACHE_WRITES = False
 
 
 @dataclass(frozen=True)
@@ -299,6 +296,13 @@ def extract_canvas_region(frame, cv2):
     canvas_frame = frame[top:bottom, left:right]
     gray = cv2.cvtColor(canvas_frame, cv2.COLOR_BGR2GRAY)
     return cv2.GaussianBlur(gray, (3, 3), 0)
+
+
+def get_stage3_sample_gray(sample: dict[str, object]):
+    gray = sample.get('gray')
+    if gray is not None:
+        return gray
+    return sample['art_gray']
 
 
 
@@ -464,7 +468,7 @@ def detect_movement_evidence_records(
                     {
                         'frame_index': current_frame,
                         'canvas_shape': tuple(int(dimension) for dimension in canvas_gray.shape),
-                        'art_gray': extract_art_state_region(canvas_gray),
+                        'gray': canvas_gray,
                     }
                 )
                 if len(sampled_frames) == 3:
@@ -780,6 +784,7 @@ def build_stage3_runtime_context(
         'outside_footprint_cache': {},
         'outside_coordinate_cache': {},
         'cell_trust_cache': {},
+        'baseline_cache': {},
     }
 
 
@@ -916,7 +921,7 @@ def collect_stage3_art_state_samples(
                     {
                         'frame_index': current_frame,
                         'canvas_shape': tuple(int(dimension) for dimension in canvas_gray.shape),
-                        'art_gray': extract_art_state_region(canvas_gray),
+                        'gray': canvas_gray,
                     }
                 )
                 sampled_frame_count = len(sampled_frames)
@@ -1000,9 +1005,7 @@ def compute_stage3_window_internal_instability(
 
     instability_ratios: list[float] = []
     for sample_index in range(len(window_samples) - 1):
-        current_art_gray = window_samples[sample_index]['art_gray']
-        next_art_gray = window_samples[sample_index + 1]['art_gray']
-        instability_mask = build_art_state_change_mask(current_art_gray, next_art_gray, settings, cv2)
+        instability_mask = build_art_state_change_mask(get_stage3_sample_gray(window_samples[sample_index]), get_stage3_sample_gray(window_samples[sample_index + 1]), settings, cv2)
         instability_ratios.append(compute_binary_mask_ratio(instability_mask))
     if not instability_ratios:
         return 0.0
@@ -1177,7 +1180,7 @@ def compute_stage3_art_state_reveal_hold_score(
         clamp_score(compute_binary_mask_ratio(focused_reveal_stability_mask) / max(settings.active_pixel_ratio * 2.0, 1e-6))
     )
     for sample in reveal_samples:
-        drift_mask = build_art_state_change_mask(post_baseline, sample['art_gray'], settings, cv2)
+        drift_mask = build_art_state_change_mask(post_baseline, get_stage3_sample_gray(sample), settings, cv2)
         focused_drift_mask = cv2.bitwise_and(drift_mask, art_state_footprint_mask)
         drift_scores.append(
             clamp_score(compute_binary_mask_ratio(focused_drift_mask) / max(settings.active_pixel_ratio * 2.0, 1e-6))
@@ -1211,14 +1214,6 @@ def build_union_canvas_footprint_mask(
     return mask
 
 
-
-def crop_canvas_mask_to_art_state(mask):
-    frame_height, frame_width = mask.shape[:2]
-    left = int(frame_width * ART_STATE_LEFT_RATIO)
-    right = int(frame_width * ART_STATE_RIGHT_RATIO)
-    top = int(frame_height * ART_STATE_TOP_RATIO)
-    bottom = int(frame_height * ART_STATE_BOTTOM_RATIO)
-    return mask[top:bottom, left:right]
 
 
 
@@ -1266,7 +1261,7 @@ def compute_stage3_art_state_after_window_persistence_score(
     persistence_scores: list[float] = []
     instability_scores: list[float] = []
     for sample in after_samples:
-        persistent_mask = build_art_state_change_mask(pre_baseline, sample['art_gray'], settings, cv2)
+        persistent_mask = build_art_state_change_mask(pre_baseline, get_stage3_sample_gray(sample), settings, cv2)
         focused_persistent_mask = cv2.bitwise_and(persistent_mask, art_state_footprint_mask)
         persistence_scores.append(
             compute_stage3_art_state_persistent_difference_score(
@@ -1275,7 +1270,7 @@ def compute_stage3_art_state_after_window_persistence_score(
                 settings,
             )
         )
-        instability_mask = build_art_state_change_mask(post_baseline, sample['art_gray'], settings, cv2)
+        instability_mask = build_art_state_change_mask(post_baseline, get_stage3_sample_gray(sample), settings, cv2)
         focused_instability_mask = cv2.bitwise_and(instability_mask, art_state_footprint_mask)
         instability_scores.append(
             clamp_score(compute_binary_mask_ratio(focused_instability_mask) / max(settings.active_pixel_ratio * 2.0, 1e-6))
@@ -1434,9 +1429,7 @@ def build_stage3_cell_art_state_masks(
     canvas_shape: tuple[int, int],
 ) -> dict[GridCoordinate, object]:
     return {
-        coordinate: crop_canvas_mask_to_art_state(
-            build_canvas_footprint_mask_from_coordinates([coordinate], canvas_shape)
-        )
+        coordinate: build_canvas_footprint_mask_from_coordinates([coordinate], canvas_shape)
         for coordinate in footprint
     }
 
@@ -1453,9 +1446,7 @@ def compute_stage3_cell_window_instability(
 
     instability_scores: list[float] = []
     for sample_index in range(len(window_samples) - 1):
-        current_art_gray = window_samples[sample_index]['art_gray']
-        next_art_gray = window_samples[sample_index + 1]['art_gray']
-        instability_mask = build_art_state_change_mask(current_art_gray, next_art_gray, settings, cv2)
+        instability_mask = build_art_state_change_mask(get_stage3_sample_gray(window_samples[sample_index]), get_stage3_sample_gray(window_samples[sample_index + 1]), settings, cv2)
         focused_instability_mask = cv2.bitwise_and(instability_mask, cell_art_state_mask)
         instability_scores.append(compute_binary_mask_ratio(focused_instability_mask))
     if not instability_scores:
@@ -1593,7 +1584,13 @@ def stage3_cell_is_trustworthy_in_window(
 ) -> bool:
     cache_key = None
     if stage3_context is not None:
-        cache_key = (coordinate, window_start, window_end, footprint, require_external_movement)
+        cache_key = (
+            coordinate,
+            window_start,
+            window_end,
+            require_external_movement,
+            footprint if require_external_movement else None,
+        )
         trust_cache = stage3_context['cell_trust_cache']
         if cache_key in trust_cache:
             return trust_cache[cache_key]
@@ -1623,7 +1620,6 @@ def stage3_cell_is_trustworthy_in_window(
     if stage3_context is not None and cache_key is not None:
         stage3_context['cell_trust_cache'][cache_key] = result
     return result
-
 
 def build_stage3_reference_window_metadata(
     window_start: int,
@@ -1699,8 +1695,6 @@ def evaluate_stage3_full_footprint_window_blockers(
             active_blocking_coordinates.add(coordinate)
     return frozenset(blocking_coordinates), frozenset(active_blocking_coordinates)
 
-
-
 def find_next_stage3_candidate_position_after_blocker_release(
     ordered_candidates: list[tuple[int, int]],
     current_candidate_position: int,
@@ -1759,27 +1753,49 @@ def select_stage3_full_footprint_reference_window_v3(
     progress_started_at = time.perf_counter() if status_callback is not None else 0.0
     candidate_position = 0
     checked_candidate_count = 0
-    blocker_analysis_enabled = not prefer_nearest
+    blocker_analysis_enabled = True
+
     while candidate_position < total_candidates:
         window_start, window_end = ordered_candidates[candidate_position]
         checked_candidate_count += 1
 
-        if all(
-            stage3_cell_is_trustworthy_in_window(
-                coordinate,
-                window_start,
-                window_end,
-                ordered_records,
-                sampled_frames,
-                cell_art_state_masks,
-                footprint,
-                require_external_movement_for_all_cells or (require_external_movement_for_endpoints and coordinate in endpoint_coordinates),
-                settings,
-                cv2,
-                stage3_context,
+        blocking_coordinates: frozenset[GridCoordinate] = frozenset()
+        active_blocking_coordinates: frozenset[GridCoordinate] = frozenset()
+        if blocker_analysis_enabled:
+            blocking_coordinates, active_blocking_coordinates = evaluate_stage3_full_footprint_window_blockers(
+                window_start=window_start,
+                window_end=window_end,
+                footprint=footprint,
+                endpoint_coordinates=endpoint_coordinates,
+                require_external_movement_for_all_cells=require_external_movement_for_all_cells,
+                require_external_movement_for_endpoints=require_external_movement_for_endpoints,
+                ordered_records=ordered_records,
+                sampled_frames=sampled_frames,
+                cell_art_state_masks=cell_art_state_masks,
+                settings=settings,
+                cv2=cv2,
+                stage3_context=stage3_context,
             )
-            for coordinate in footprint
-        ):
+            window_is_trustworthy = not blocking_coordinates
+        else:
+            window_is_trustworthy = all(
+                stage3_cell_is_trustworthy_in_window(
+                    coordinate,
+                    window_start,
+                    window_end,
+                    ordered_records,
+                    sampled_frames,
+                    cell_art_state_masks,
+                    footprint,
+                    require_external_movement_for_all_cells
+                    or (require_external_movement_for_endpoints and coordinate in endpoint_coordinates),
+                    settings,
+                    cv2,
+                    stage3_context,
+                )
+                for coordinate in footprint
+            )
+        if window_is_trustworthy:
             if status_callback is not None and progress_prefix is not None:
                 elapsed = format_stage_elapsed(time.perf_counter() - progress_started_at)
                 status_callback(
@@ -1800,35 +1816,17 @@ def select_stage3_full_footprint_reference_window_v3(
 
         next_candidate_position = candidate_position + 1
         jumped_window_count = 0
-        blocking_coordinates: frozenset[GridCoordinate] = frozenset()
-        active_blocking_coordinates: frozenset[GridCoordinate] = frozenset()
-        should_analyze_blockers = blocker_analysis_enabled
-        if should_analyze_blockers:
-            blocking_coordinates, active_blocking_coordinates = evaluate_stage3_full_footprint_window_blockers(
-                window_start=window_start,
-                window_end=window_end,
-                footprint=footprint,
-                endpoint_coordinates=endpoint_coordinates,
-                require_external_movement_for_all_cells=require_external_movement_for_all_cells,
-                require_external_movement_for_endpoints=require_external_movement_for_endpoints,
-                ordered_records=ordered_records,
-                sampled_frames=sampled_frames,
-                cell_art_state_masks=cell_art_state_masks,
-                settings=settings,
-                cv2=cv2,
-                stage3_context=stage3_context,
+        if blocker_analysis_enabled and not active_blocking_coordinates:
+            blocker_analysis_enabled = False
+        elif blocker_analysis_enabled and active_blocking_coordinates and blocking_coordinates == active_blocking_coordinates:
+            next_candidate_position = find_next_stage3_candidate_position_after_blocker_release(
+                ordered_candidates,
+                candidate_position,
+                active_blocking_coordinates,
+                ordered_records,
+                stage3_context,
             )
-            if blocking_coordinates and not active_blocking_coordinates:
-                blocker_analysis_enabled = False
-            if active_blocking_coordinates and blocking_coordinates == active_blocking_coordinates:
-                next_candidate_position = find_next_stage3_candidate_position_after_blocker_release(
-                    ordered_candidates,
-                    candidate_position,
-                    active_blocking_coordinates,
-                    ordered_records,
-                    stage3_context,
-                )
-                jumped_window_count = max(0, next_candidate_position - candidate_position - 1)
+            jumped_window_count = max(0, next_candidate_position - candidate_position - 1)
 
         if (
             status_callback is not None
@@ -1841,29 +1839,19 @@ def select_stage3_full_footprint_reference_window_v3(
             )
         ):
             elapsed = format_stage_elapsed(time.perf_counter() - progress_started_at)
-            if should_analyze_blockers:
-                jump_suffix = ''
-                if jumped_window_count > 0:
-                    jump_suffix = f"; jumped over {jumped_window_count} windows until blocker activity changed"
-                status_callback(
-                    f"{progress_prefix} - {progress_label}: "
-                    f"{checked_candidate_count}/{max(1, total_candidates)} windows checked, "
-                    f"no full-footprint match yet "
-                    f"({len(blocking_coordinates)} blocking cells, "
-                    f"{len(active_blocking_coordinates)} still movement-active; "
-                    f"elapsed {elapsed}{jump_suffix})"
-                )
-            else:
-                status_callback(
-                    f"{progress_prefix} - {progress_label}: "
-                    f"{checked_candidate_count}/{max(1, total_candidates)} windows checked, "
-                    f"no full-footprint match yet "
-                    f"(elapsed {elapsed})"
-                )
+            jump_suffix = ''
+            if jumped_window_count > 0:
+                jump_suffix = f"; jumped over {jumped_window_count} windows until blocker activity changed"
+            status_callback(
+                f"{progress_prefix} - {progress_label}: "
+                f"{checked_candidate_count}/{max(1, total_candidates)} windows checked, "
+                f"no full-footprint match yet "
+                f"({len(blocking_coordinates)} blocking cells, "
+                f"{len(active_blocking_coordinates)} still movement-active; "
+                f"elapsed {elapsed}{jump_suffix})"
+            )
         candidate_position = next_candidate_position
     return None, len(candidate_windows)
-
-
 
 def select_stage3_cell_reference_windows(
     *,
@@ -2152,9 +2140,14 @@ def get_stage3_window_baseline(
     stage3_context: dict[str, object] | None = None,
 ) -> tuple[list[dict[str, object]], object | None]:
     cache_key = (window_start, window_end)
+    shared_baseline_cache = None if stage3_context is None else stage3_context.get('baseline_cache')
+    if shared_baseline_cache is not None and cache_key in shared_baseline_cache:
+        return shared_baseline_cache[cache_key]
     if cache_key not in baseline_cache:
         window_samples = get_stage3_window_samples(stage3_context, sampled_frames, window_start, window_end)
         baseline_cache[cache_key] = (window_samples, build_median_baseline(window_samples))
+    if shared_baseline_cache is not None:
+        shared_baseline_cache[cache_key] = baseline_cache[cache_key]
     return baseline_cache[cache_key]
 
 
@@ -2452,6 +2445,16 @@ def screen_candidate_union_with_art_state_prototype(
     status_callback: Callable[[str], None] | None = None,
     union_progress_prefix: str | None = None,
 ) -> ScreenedCandidateUnion:
+    union_screen_started_at = time.perf_counter()
+    stage3_timings: dict[str, float] = {}
+
+    def record_stage3_timing(label: str, started_at: float) -> None:
+        stage3_timings[label] = round(time.perf_counter() - started_at, 6)
+
+    def finalize_stage3_debug_trace() -> None:
+        stage3_timings['total_union_screen_seconds'] = round(time.perf_counter() - union_screen_started_at, 6)
+        stage3_debug_trace['timings'] = dict(stage3_timings)
+
     def report_union_substep(message: str) -> None:
         if status_callback is None or union_progress_prefix is None:
             return
@@ -2487,6 +2490,7 @@ def screen_candidate_union_with_art_state_prototype(
             'mode': 'snapshot_rescue',
             'alignment_mode': 'none',
         }
+        finalize_stage3_debug_trace()
         return build_stage3_screened_union_result(
             candidate_union=candidate_union,
             within_union_records=within_union_records,
@@ -2514,6 +2518,7 @@ def screen_candidate_union_with_art_state_prototype(
             stage3_debug_trace=stage3_debug_trace,
         )
 
+    setup_started_at = time.perf_counter()
     reference_canvas_shape = get_stage3_canvas_shape(sampled_frames[0])
     cell_art_state_masks = build_stage3_cell_art_state_masks(candidate_union.union_footprint, reference_canvas_shape)
     endpoint_coordinates = build_stage3_endpoint_coordinates(within_union_records)
@@ -2557,6 +2562,8 @@ def screen_candidate_union_with_art_state_prototype(
         ),
     }
 
+    record_stage3_timing('setup_seconds', setup_started_at)
+    step1_before_search_started_at = time.perf_counter()
     report_union_substep('Step 1 full-footprint window search')
     selected_before_window, before_window_candidate_count = select_stage3_full_footprint_reference_window_v3(
         search_start=simple_before_search_start,
@@ -2577,6 +2584,8 @@ def screen_candidate_union_with_art_state_prototype(
         progress_prefix=union_progress_prefix,
         progress_label='Step 1 full-footprint before search progress',
     )
+    record_stage3_timing('step1_full_before_search_seconds', step1_before_search_started_at)
+    step1_after_search_started_at = time.perf_counter()
     selected_after_window, after_window_candidate_count = select_stage3_full_footprint_reference_window_v3(
         search_start=simple_after_search_start,
         search_end=simple_after_search_end,
@@ -2596,6 +2605,7 @@ def screen_candidate_union_with_art_state_prototype(
         progress_prefix=union_progress_prefix,
         progress_label='Step 1 full-footprint after search progress',
     )
+    record_stage3_timing('step1_full_after_search_seconds', step1_after_search_started_at)
 
     report_union_substep(
         f"Step 1 full-footprint search complete "
@@ -2614,6 +2624,7 @@ def screen_candidate_union_with_art_state_prototype(
 
     if selected_before_window is not None and selected_after_window is not None:
         report_union_substep('Step 1 full-footprint cell classification')
+        step1_full_classification_started_at = time.perf_counter()
         step1_bucket_by_cell = {
             coordinate: classify_stage3_cell_change(
                 coordinate,
@@ -2628,6 +2639,7 @@ def screen_candidate_union_with_art_state_prototype(
             )
             for coordinate in candidate_union.union_footprint
         }
+        record_stage3_timing('step1_full_classification_seconds', step1_full_classification_started_at)
         step1_coverage = evaluate_stage3_bucket_coverages(candidate_union.union_footprint, step1_bucket_by_cell)
         step1_screening_result, step1_surviving, step1_reason, step1_bounded_ambiguity = decide_stage3_bucket_outcome(
             coverage_summary=step1_coverage,
@@ -2660,6 +2672,7 @@ def screen_candidate_union_with_art_state_prototype(
                 int(selected_after_window['window_start']),
                 int(selected_after_window['window_end']),
             )
+            finalize_stage3_debug_trace()
             return build_stage3_screened_union_result(
                 candidate_union=candidate_union,
                 within_union_records=within_union_records,
@@ -2697,6 +2710,7 @@ def screen_candidate_union_with_art_state_prototype(
         }
 
     report_union_substep('Step 1 partial-footprint reference assignment')
+    step1_partial_before_assignment_started_at = time.perf_counter()
     step1_before_assignments, step1_before_candidate_count = select_stage3_cell_reference_windows(
         search_start=simple_before_search_start,
         search_end=simple_before_search_end,
@@ -2716,6 +2730,8 @@ def screen_candidate_union_with_art_state_prototype(
         progress_prefix=union_progress_prefix,
         progress_label='Step 1 partial before assignment progress',
     )
+    record_stage3_timing('step1_partial_before_assignment_seconds', step1_partial_before_assignment_started_at)
+    step1_partial_after_assignment_started_at = time.perf_counter()
     step1_after_assignments, step1_after_candidate_count = select_stage3_cell_reference_windows(
         search_start=simple_after_search_start,
         search_end=simple_after_search_end,
@@ -2735,11 +2751,13 @@ def screen_candidate_union_with_art_state_prototype(
         progress_prefix=union_progress_prefix,
         progress_label='Step 1 partial after assignment progress',
     )
+    record_stage3_timing('step1_partial_after_assignment_seconds', step1_partial_after_assignment_started_at)
     report_union_substep(
         f"Step 1 partial-footprint assignment complete "
         f"(before assignments {len(step1_before_assignments)}, after assignments {len(step1_after_assignments)})"
     )
     report_union_substep('Step 1 partial-footprint cell classification')
+    step1_partial_classification_started_at = time.perf_counter()
     step1_partial_bucket_by_cell: dict[GridCoordinate, str] = {}
     for coordinate in candidate_union.union_footprint:
         before_window = step1_before_assignments.get(coordinate)
@@ -2758,6 +2776,7 @@ def screen_candidate_union_with_art_state_prototype(
             cv2,
             stage3_context,
         )
+    record_stage3_timing('step1_partial_classification_seconds', step1_partial_classification_started_at)
     step1_partial_coverage = evaluate_stage3_bucket_coverages(candidate_union.union_footprint, step1_partial_bucket_by_cell)
     step1_partial_before_coverage = len(step1_before_assignments) / max(1, candidate_union.union_footprint_size)
     step1_partial_screening_result, step1_partial_surviving, step1_partial_reason, step1_partial_bounded_ambiguity = decide_stage3_bucket_outcome(
@@ -2802,6 +2821,7 @@ def screen_candidate_union_with_art_state_prototype(
             int(representative_after_window['window_start']),
             int(representative_after_window['window_end']),
         )
+        finalize_stage3_debug_trace()
         return build_stage3_screened_union_result(
             candidate_union=candidate_union,
             within_union_records=within_union_records,
@@ -2834,6 +2854,7 @@ def screen_candidate_union_with_art_state_prototype(
     after_assignments = dict(step1_after_assignments)
     unresolved_before_coordinates = frozenset(candidate_union.union_footprint.difference(before_assignments))
     report_union_substep('Snapshot rescue before-state reference assignment')
+    rescue_before_internal_assignment_started_at = time.perf_counter()
     internal_before_assignments = {} if not unresolved_before_coordinates else select_stage3_internal_before_reference_windows(
         union_start=candidate_union.start_frame,
         union_end=candidate_union.end_frame,
@@ -2848,7 +2869,9 @@ def screen_candidate_union_with_art_state_prototype(
         target_coordinates=unresolved_before_coordinates,
     )
     before_assignments = merge_stage3_reference_assignments(before_assignments, internal_before_assignments)
+    record_stage3_timing('rescue_before_internal_assignment_seconds', rescue_before_internal_assignment_started_at)
     unresolved_before_coordinates = frozenset(candidate_union.union_footprint.difference(before_assignments))
+    rescue_before_external_assignment_started_at = time.perf_counter()
     external_before_assignments, rescue_before_candidate_count = ({}, 0) if not unresolved_before_coordinates else select_stage3_cell_reference_windows(
         search_start=rescue_before_search_start,
         search_end=rescue_before_search_end,
@@ -2867,6 +2890,7 @@ def screen_candidate_union_with_art_state_prototype(
         target_coordinates=unresolved_before_coordinates,
     )
     before_assignments = merge_stage3_reference_assignments(before_assignments, external_before_assignments)
+    record_stage3_timing('rescue_before_external_assignment_seconds', rescue_before_external_assignment_started_at)
 
     report_union_substep(
         f"Snapshot rescue before-state assignment complete "
@@ -2876,6 +2900,7 @@ def screen_candidate_union_with_art_state_prototype(
     after_assignments = dict(step1_after_assignments)
     unresolved_after_coordinates = frozenset(candidate_union.union_footprint.difference(after_assignments))
     report_union_substep('Snapshot rescue after-state reference assignment')
+    rescue_after_internal_assignment_started_at = time.perf_counter()
     internal_after_assignments = {} if not unresolved_after_coordinates else select_stage3_internal_after_reference_windows(
         union_start=candidate_union.start_frame,
         union_end=candidate_union.end_frame,
@@ -2890,7 +2915,9 @@ def screen_candidate_union_with_art_state_prototype(
         target_coordinates=unresolved_after_coordinates,
     )
     after_assignments = merge_stage3_reference_assignments(after_assignments, internal_after_assignments)
+    record_stage3_timing('rescue_after_internal_assignment_seconds', rescue_after_internal_assignment_started_at)
     unresolved_after_coordinates = frozenset(candidate_union.union_footprint.difference(after_assignments))
+    rescue_after_external_assignment_started_at = time.perf_counter()
     external_after_assignments, rescue_after_candidate_count = ({}, 0) if not unresolved_after_coordinates else select_stage3_cell_reference_windows(
         search_start=rescue_after_search_start,
         search_end=rescue_after_search_end,
@@ -2909,12 +2936,14 @@ def screen_candidate_union_with_art_state_prototype(
         target_coordinates=unresolved_after_coordinates,
     )
     after_assignments = merge_stage3_reference_assignments(after_assignments, external_after_assignments)
+    record_stage3_timing('rescue_after_external_assignment_seconds', rescue_after_external_assignment_started_at)
 
     report_union_substep(
         f"Snapshot rescue after-state assignment complete "
         f"(internal {len(internal_after_assignments)}, external {len(external_after_assignments)})"
     )
     report_union_substep('Snapshot rescue cell classification')
+    rescue_classification_started_at = time.perf_counter()
     rescue_bucket_by_cell: dict[GridCoordinate, str] = {}
     for coordinate in candidate_union.union_footprint:
         before_window = before_assignments.get(coordinate)
@@ -2934,6 +2963,7 @@ def screen_candidate_union_with_art_state_prototype(
             stage3_context,
         )
 
+    record_stage3_timing('rescue_classification_seconds', rescue_classification_started_at)
     rescue_coverage = evaluate_stage3_bucket_coverages(candidate_union.union_footprint, rescue_bucket_by_cell)
     reconstructed_before_coverage = len(before_assignments) / max(1, candidate_union.union_footprint_size)
     rescue_screening_result, rescue_surviving, rescue_reason, rescue_bounded_ambiguity = decide_stage3_bucket_outcome(
@@ -2999,6 +3029,7 @@ def screen_candidate_union_with_art_state_prototype(
     before_reference_activity = 0.0 if representative_before_window is None else float(representative_before_window['mean_window_activity'])
     after_reference_activity = 0.0 if representative_after_window is None else float(representative_after_window['mean_window_activity'])
 
+    finalize_stage3_debug_trace()
     return build_stage3_screened_union_result(
         candidate_union=candidate_union,
         within_union_records=within_union_records,
@@ -3528,7 +3559,7 @@ def evaluate_local_subregion_change(
 
     reference_canvas_shape = get_stage3_canvas_shape(before_samples[0])
     subregion_canvas_mask = build_canvas_footprint_mask_from_coordinates(subregion, reference_canvas_shape)
-    subregion_art_state_mask = crop_canvas_mask_to_art_state(subregion_canvas_mask)
+    subregion_art_state_mask = subregion_canvas_mask
     persistent_mask = build_art_state_change_mask(pre_baseline, post_baseline, settings, cv2)
     focused_persistent_mask = cv2.bitwise_and(persistent_mask, subregion_art_state_mask)
     persistent_difference_score = compute_stage3_art_state_persistent_difference_score(
@@ -3934,6 +3965,7 @@ def compute_stage4_cell_change_score(
     sampled_frames: list[dict[str, object]],
     cell_art_state_masks: dict[GridCoordinate, object],
     baseline_cache: dict[tuple[int, int], tuple[list[dict[str, object]], object | None]],
+    comparison_cache: dict[tuple[int, int, int, int], dict[str, object] | None] | None,
     settings: DetectorSettings,
     cv2,
     stage3_context: dict[str, object] | None = None,
@@ -3945,6 +3977,7 @@ def compute_stage4_cell_change_score(
         sampled_frames,
         cell_art_state_masks,
         baseline_cache,
+        comparison_cache,
         settings,
         cv2,
         stage3_context,
@@ -3955,6 +3988,81 @@ def compute_stage4_cell_change_score(
 
 
 
+def get_stage4_window_pair_comparison(
+    before_window: dict[str, object],
+    current_window: dict[str, object],
+    sampled_frames: list[dict[str, object]],
+    baseline_cache: dict[tuple[int, int], tuple[list[dict[str, object]], object | None]],
+    comparison_cache: dict[tuple[int, int, int, int], dict[str, object] | None] | None,
+    settings: DetectorSettings,
+    cv2,
+    stage3_context: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    cache_key = (
+        int(before_window['window_start']),
+        int(before_window['window_end']),
+        int(current_window['window_start']),
+        int(current_window['window_end']),
+    )
+    if comparison_cache is not None and cache_key in comparison_cache:
+        return comparison_cache[cache_key]
+
+    before_samples, before_baseline = get_stage3_window_baseline(
+        baseline_cache,
+        sampled_frames,
+        cache_key[0],
+        cache_key[1],
+        stage3_context,
+    )
+    current_samples, current_baseline = get_stage3_window_baseline(
+        baseline_cache,
+        sampled_frames,
+        cache_key[2],
+        cache_key[3],
+        stage3_context,
+    )
+    if before_baseline is None or current_baseline is None or not current_samples:
+        if comparison_cache is not None:
+            comparison_cache[cache_key] = None
+        return None
+
+    raw_difference = cv2.absdiff(before_baseline, current_baseline)
+    pair_comparison = {
+        'before_baseline': before_baseline,
+        'current_baseline': current_baseline,
+        'raw_difference': raw_difference,
+        'threshold_mask': cv2.threshold(
+            raw_difference,
+            settings.activity_threshold,
+            255,
+            cv2.THRESH_BINARY,
+        )[1],
+        'change_mask': build_art_state_change_mask(before_baseline, current_baseline, settings, cv2),
+        'before_sample_count': len(before_samples),
+        'current_sample_count': len(current_samples),
+        'before_window': {
+            'window_start': cache_key[0],
+            'window_end': cache_key[1],
+            'start_time': Timecode(total_frames=cache_key[0]).to_hhmmssff(),
+            'end_time': Timecode(total_frames=cache_key[1]).to_hhmmssff(),
+            'mean_window_activity': round(float(before_window.get('mean_window_activity', 0.0)), 6),
+            'max_window_activity': round(float(before_window.get('max_window_activity', 0.0)), 6),
+        },
+        'current_window': {
+            'window_start': cache_key[2],
+            'window_end': cache_key[3],
+            'start_time': Timecode(total_frames=cache_key[2]).to_hhmmssff(),
+            'end_time': Timecode(total_frames=cache_key[3]).to_hhmmssff(),
+            'mean_window_activity': round(float(current_window.get('mean_window_activity', 0.0)), 6),
+            'max_window_activity': round(float(current_window.get('max_window_activity', 0.0)), 6),
+        },
+    }
+    if comparison_cache is not None:
+        comparison_cache[cache_key] = pair_comparison
+    return pair_comparison
+
+
+
 def compute_stage4_cell_change_details(
     coordinate: GridCoordinate,
     before_window: dict[str, object],
@@ -3962,35 +4070,34 @@ def compute_stage4_cell_change_details(
     sampled_frames: list[dict[str, object]],
     cell_art_state_masks: dict[GridCoordinate, object],
     baseline_cache: dict[tuple[int, int], tuple[list[dict[str, object]], object | None]],
+    comparison_cache: dict[tuple[int, int, int, int], dict[str, object] | None] | None,
     settings: DetectorSettings,
     cv2,
     stage3_context: dict[str, object] | None = None,
 ) -> dict[str, object] | None:
-    before_samples, before_baseline = get_stage3_window_baseline(
-        baseline_cache,
+    pair_comparison = get_stage4_window_pair_comparison(
+        before_window,
+        current_window,
         sampled_frames,
-        int(before_window['window_start']),
-        int(before_window['window_end']),
+        baseline_cache,
+        comparison_cache,
+        settings,
+        cv2,
         stage3_context,
     )
-    current_samples, current_baseline = get_stage3_window_baseline(
-        baseline_cache,
-        sampled_frames,
-        int(current_window['window_start']),
-        int(current_window['window_end']),
-        stage3_context,
-    )
-    if before_baseline is None or current_baseline is None or not current_samples:
+    if pair_comparison is None:
         return None
 
+    before_baseline = pair_comparison['before_baseline']
+    current_baseline = pair_comparison['current_baseline']
+    raw_difference = pair_comparison['raw_difference']
+    threshold_mask = pair_comparison['threshold_mask']
+    change_mask = pair_comparison['change_mask']
     cell_mask = cell_art_state_masks[coordinate]
     mask_pixels = cell_mask > 0
     mask_pixel_count = int(np.count_nonzero(mask_pixels))
-    raw_difference = cv2.absdiff(before_baseline, current_baseline)
     focused_raw_difference = cv2.bitwise_and(raw_difference, cell_mask)
-    threshold_mask = cv2.threshold(raw_difference, settings.activity_threshold, 255, cv2.THRESH_BINARY)[1]
     focused_threshold_mask = cv2.bitwise_and(threshold_mask, cell_mask)
-    change_mask = build_art_state_change_mask(before_baseline, current_baseline, settings, cv2)
     focused_change_mask = cv2.bitwise_and(change_mask, cell_mask)
     if mask_pixel_count > 0:
         before_values = before_baseline[mask_pixels]
@@ -4029,24 +4136,10 @@ def compute_stage4_cell_change_details(
         'raw_difference_nonzero_ratio': round(raw_difference_nonzero_ratio, 6),
         'raw_difference_over_threshold_ratio': round(raw_difference_over_threshold_ratio, 6),
         'activity_threshold': float(settings.activity_threshold),
-        'before_sample_count': len(before_samples),
-        'current_sample_count': len(current_samples),
-        'before_window': {
-            'window_start': int(before_window['window_start']),
-            'window_end': int(before_window['window_end']),
-            'start_time': Timecode(total_frames=int(before_window['window_start'])).to_hhmmssff(),
-            'end_time': Timecode(total_frames=int(before_window['window_end'])).to_hhmmssff(),
-            'mean_window_activity': round(float(before_window.get('mean_window_activity', 0.0)), 6),
-            'max_window_activity': round(float(before_window.get('max_window_activity', 0.0)), 6),
-        },
-        'current_window': {
-            'window_start': int(current_window['window_start']),
-            'window_end': int(current_window['window_end']),
-            'start_time': Timecode(total_frames=int(current_window['window_start'])).to_hhmmssff(),
-            'end_time': Timecode(total_frames=int(current_window['window_end'])).to_hhmmssff(),
-            'mean_window_activity': round(float(current_window.get('mean_window_activity', 0.0)), 6),
-            'max_window_activity': round(float(current_window.get('max_window_activity', 0.0)), 6),
-        },
+        'before_sample_count': int(pair_comparison['before_sample_count']),
+        'current_sample_count': int(pair_comparison['current_sample_count']),
+        'before_window': pair_comparison['before_window'],
+        'current_window': pair_comparison['current_window'],
     }
 
 
@@ -4175,6 +4268,18 @@ def evaluate_stage4_cell_level_probe(
     previous_probe_end: int | None,
     reference_window_frames: int = STAGE3_REFERENCE_WINDOW_FRAMES,
 ) -> dict[str, object]:
+    probe_started_at = time.perf_counter()
+    probe_timings: dict[str, float] = {}
+
+    def record_probe_timing(label: str, started_at: float) -> None:
+        probe_timings[label] = round(time.perf_counter() - started_at, 6)
+
+    def finalize_probe_evaluation(payload: dict[str, object]) -> dict[str, object]:
+        probe_timings['total_probe_evaluation_seconds'] = round(time.perf_counter() - probe_started_at, 6)
+        payload['probe_timings'] = dict(probe_timings)
+        return payload
+
+    setup_started_at = time.perf_counter()
     slice_records = collect_records_in_frame_range(ordered_records, slice_start, slice_end)
     relevant_record_start = (
         screened_candidate_union.candidate_union.start_frame
@@ -4202,7 +4307,8 @@ def evaluate_stage4_cell_level_probe(
         after_reference_activity=0.0,
     )
     if not recently_active_cells:
-        return {
+        record_probe_timing('setup_seconds', setup_started_at)
+        return finalize_probe_evaluation({
             'slice_records': slice_records,
             'footprint': recently_active_cells,
             'footprint_size': 0,
@@ -4244,11 +4350,12 @@ def evaluate_stage4_cell_level_probe(
             'after_reference_activity': 0.0,
             'reference_windows_reliable': True,
             'probe_label': 'negative',
-        }
+        })
 
     if not sampled_frames or settings is None:
+        record_probe_timing('setup_seconds', setup_started_at)
         probe_label = 'holding' if freshly_touched_cells or carried_unresolved_cells else 'unclear'
-        return {
+        return finalize_probe_evaluation({
             'slice_records': slice_records,
             'footprint': recently_active_cells,
             'footprint_size': len(recently_active_cells),
@@ -4290,7 +4397,7 @@ def evaluate_stage4_cell_level_probe(
             'after_reference_activity': 0.0,
             'reference_windows_reliable': False,
             'probe_label': probe_label,
-        }
+        })
 
     try:
         import cv2  # type: ignore
@@ -4307,6 +4414,9 @@ def evaluate_stage4_cell_level_probe(
     cell_art_state_masks = build_stage3_cell_art_state_masks(recently_active_cells, reference_canvas_shape)
     stage3_context = build_stage3_runtime_context(ordered_records, sampled_frames)
     baseline_cache: dict[tuple[int, int], tuple[list[dict[str, object]], object | None]] = {}
+    comparison_cache: dict[tuple[int, int, int, int], dict[str, object] | None] = {}
+    record_probe_timing('setup_seconds', setup_started_at)
+    before_reference_assignment_started_at = time.perf_counter()
 
     baseline_assigned_coordinates = frozenset(
         coordinate
@@ -4339,6 +4449,7 @@ def evaluate_stage4_cell_level_probe(
         for coordinate in baseline_assigned_coordinates
     }
     before_assignments.update(searched_before_assignments)
+    record_probe_timing('before_reference_assignment_seconds', before_reference_assignment_started_at)
 
     current_window_touched_cells = frozenset(
         coordinate
@@ -4359,12 +4470,15 @@ def evaluate_stage4_cell_level_probe(
                     int(record.frame_index),
                 )
 
+    current_reference_assignment_started_at = time.perf_counter()
     current_assignments: dict[GridCoordinate, dict[str, object]] = {}
     current_candidate_count = 0
     current_search_starts: list[int] = []
     current_search_ends: list[int] = []
+    current_search_groups: dict[tuple[int, int, bool], set[GridCoordinate]] = {}
     for coordinate in sorted(recently_active_cells):
-        if coordinate in active_cell_last_frames:
+        coordinate_had_recent_activity = coordinate in active_cell_last_frames
+        if coordinate_had_recent_activity:
             coordinate_search_start = min(
                 post_union_resolution_end,
                 active_cell_last_frames[coordinate] + 1,
@@ -4385,7 +4499,19 @@ def evaluate_stage4_cell_level_probe(
         current_search_ends.append(coordinate_search_end)
         if coordinate_search_end <= coordinate_search_start:
             continue
-        coordinate_assignments, coordinate_candidate_count = select_stage3_cell_reference_windows(
+        group_key = (
+            coordinate_search_start,
+            coordinate_search_end,
+            (not coordinate_had_recent_activity),
+        )
+        current_search_groups.setdefault(group_key, set()).add(coordinate)
+
+    for (
+        coordinate_search_start,
+        coordinate_search_end,
+        require_external_movement_outside_coordinate,
+    ), grouped_coordinates in sorted(current_search_groups.items(), key=lambda item: item[0]):
+        grouped_assignments, grouped_candidate_count = select_stage3_cell_reference_windows(
             search_start=coordinate_search_start,
             search_end=coordinate_search_end,
             prefer_nearest=False,
@@ -4393,18 +4519,18 @@ def evaluate_stage4_cell_level_probe(
             endpoint_coordinates=frozenset(),
             require_external_movement_for_all_cells=False,
             require_external_movement_for_endpoints=False,
-            require_external_movement_outside_coordinate_for_all_cells=(coordinate not in active_cell_last_frames),
+            require_external_movement_outside_coordinate_for_all_cells=require_external_movement_outside_coordinate,
             ordered_records=ordered_records,
             sampled_frames=sampled_frames,
             cell_art_state_masks=cell_art_state_masks,
             settings=settings,
             cv2=cv2,
             stage3_context=stage3_context,
-            target_coordinates=frozenset({coordinate}),
+            target_coordinates=frozenset(grouped_coordinates),
         )
-        current_candidate_count += coordinate_candidate_count
-        current_assignments.update(coordinate_assignments)
-
+        current_candidate_count += grouped_candidate_count
+        current_assignments.update(grouped_assignments)
+    record_probe_timing('current_reference_assignment_seconds', current_reference_assignment_started_at)
     current_search_start = min(current_search_starts) if current_search_starts else min(post_union_resolution_end, slice_end)
     current_search_end = max(current_search_ends) if current_search_ends else min(post_union_resolution_end, slice_end)
     judgeable_cells = frozenset(
@@ -4414,6 +4540,7 @@ def evaluate_stage4_cell_level_probe(
     )
     contaminated_cells = frozenset(current_window_touched_cells.difference(judgeable_cells))
 
+    cell_comparison_started_at = time.perf_counter()
     confirmed_changed_cells: set[GridCoordinate] = set()
     confirmed_unchanged_cells: set[GridCoordinate] = set()
     unresolved_cells: set[GridCoordinate] = set(recently_active_cells.difference(judgeable_cells))
@@ -4464,6 +4591,7 @@ def evaluate_stage4_cell_level_probe(
             sampled_frames,
             cell_art_state_masks,
             baseline_cache,
+            comparison_cache,
             settings,
             cv2,
             stage3_context,
@@ -4512,6 +4640,9 @@ def evaluate_stage4_cell_level_probe(
             'reason': 'cell_level_probe_comparison',
         })
 
+    record_probe_timing('cell_comparison_seconds', cell_comparison_started_at)
+
+    classification_started_at = time.perf_counter()
     current_window_activities = [
         float(window.get('mean_window_activity', 0.0))
         for window in current_assignments.values()
@@ -4596,11 +4727,19 @@ def evaluate_stage4_cell_level_probe(
         probe_label = 'unclear'
 
     opening_attribution_start_frame: int | None = None
-    if (
+    supports_band_opening_attribution = (
         probe_label == 'positive'
-        and opening_zone_low_confidence
         and changed_touch_frame_count > 0
-    ):
+        and (
+            opening_zone_low_confidence
+            or (
+                previous_probe_end is not None
+                and not carried_recently_changed_cells
+                and not carried_unresolved_cells
+            )
+        )
+    )
+    if supports_band_opening_attribution:
         opening_attribution_start_frame = find_stage4_opening_attribution_start_frame(
             screened_candidate_union=screened_candidate_union,
             ordered_records=ordered_records,
@@ -4619,12 +4758,13 @@ def evaluate_stage4_cell_level_probe(
         late_resolution_only=late_resolution_only,
     )
 
+    record_probe_timing('classification_seconds', classification_started_at)
     baseline_comparison_updates = {
         coordinate: current_assignments[coordinate]
         for coordinate in confirmed_changed_cells
         if coordinate in current_assignments
     }
-    return {
+    return finalize_probe_evaluation({
         'slice_records': slice_records,
         'footprint': recently_active_cells,
         'footprint_size': len(recently_active_cells),
@@ -4688,7 +4828,29 @@ def evaluate_stage4_cell_level_probe(
         'baseline_comparison_update_cell_count': len(baseline_comparison_updates),
         '_baseline_comparison_updates': baseline_comparison_updates,
         'probe_label': probe_label,
-    }
+    })
+
+def stage4_should_apply_opening_attribution(
+    screened_candidate_union: ScreenedCandidateUnion,
+    first_probe: ClassifiedTimeSlice,
+    first_evaluation: dict[str, object],
+) -> bool:
+    opening_attribution_start_frame = first_evaluation.get('opening_attribution_start_frame')
+    if not isinstance(opening_attribution_start_frame, int):
+        return False
+
+    band_start_frame = first_probe.start_frame
+    if not (
+        screened_candidate_union.candidate_union.start_frame
+        <= opening_attribution_start_frame
+        < band_start_frame
+    ):
+        return False
+
+    if bool(first_evaluation.get('opening_zone_low_confidence', False)):
+        return True
+
+    return (band_start_frame - opening_attribution_start_frame) <= STAGE4_PROBE_INTERVAL_FRAMES
 
 def build_stage4_band_from_probe_results(
     screened_candidate_union: ScreenedCandidateUnion,
@@ -4700,7 +4862,7 @@ def build_stage4_band_from_probe_results(
     first_evaluation = probe_results[0][1]
     band_start_frame = first_probe.start_frame
     opening_attribution_start_frame = first_evaluation.get('opening_attribution_start_frame')
-    if isinstance(opening_attribution_start_frame, int) and screened_candidate_union.candidate_union.start_frame <= opening_attribution_start_frame < band_start_frame:
+    if stage4_should_apply_opening_attribution(screened_candidate_union, first_probe, first_evaluation):
         band_start_frame = opening_attribution_start_frame
     elif (str(first_evaluation.get('probe_label', '')) in ('unclear', 'holding') and bool(first_evaluation.get('opening_zone_low_confidence', False)) and band_start_frame > screened_candidate_union.candidate_union.start_frame):
         band_start_frame = screened_candidate_union.candidate_union.start_frame
@@ -4754,13 +4916,28 @@ def stage4_probe_supports_band_continuity(evaluation: dict[str, object]) -> bool
 
 
 
-def stage4_probe_supports_ambiguous_bridge(evaluation: dict[str, object]) -> bool:
+def stage4_probe_supports_ambiguous_bridge(
+    evaluation: dict[str, object],
+    active_band_probes: list[tuple[ClassifiedTimeSlice, dict[str, object]]] | None = None,
+) -> bool:
     probe_label = str(evaluation.get('probe_label', 'unclear'))
     if probe_label != 'unclear':
         return False
     if not bool(evaluation.get('structural_holding_support', False)):
         return False
-    return int(evaluation.get('unresolved_cell_count', 0)) >= 2
+
+    unresolved_cell_count = int(evaluation.get('unresolved_cell_count', 0))
+    if unresolved_cell_count >= 2:
+        return True
+
+    if unresolved_cell_count < 1 or not active_band_probes or len(active_band_probes) < 2:
+        return False
+
+    last_evaluation = active_band_probes[-1][1]
+    return (
+        str(last_evaluation.get('probe_label', 'unclear')) == 'positive'
+        and bool(last_evaluation.get('structural_holding_support', False))
+    )
 
 
 def stage4_probe_supports_opening_backfill(evaluation: dict[str, object]) -> bool:
@@ -4841,7 +5018,7 @@ def build_stage4_bands_from_probe_results(
         if probe_label in ('holding', 'unclear'):
             if continuity_support:
                 if active_band_probes:
-                    if probe_label == 'holding' or stage4_probe_supports_ambiguous_bridge(evaluation):
+                    if probe_label == 'holding' or stage4_probe_supports_ambiguous_bridge(evaluation, active_band_probes):
                         active_band_probes.append((probe_slice, evaluation))
                     else:
                         close_active_band()
@@ -4880,6 +5057,7 @@ def classify_stage4_time_slices_with_subregion_debug(
         carried_recently_changed_cells: frozenset[GridCoordinate] = frozenset()
         baseline_comparison_state: dict[GridCoordinate, dict[str, object]] = {}
         previous_probe_end: int | None = None
+        union_baseline_assignment_seconds = 0.0
 
         if sampled_frames and settings is not None and screened_candidate_union.candidate_union.union_footprint:
             try:
@@ -4887,6 +5065,7 @@ def classify_stage4_time_slices_with_subregion_debug(
             except ImportError as exc:  # pragma: no cover
                 raise RuntimeError('OpenCV is required for staged cell-level probe classification.') from exc
 
+            union_baseline_assignment_started_at = time.perf_counter()
             sampled_frame_start = min(int(sample['frame_index']) for sample in sampled_frames)
             reference_canvas_shape = get_stage3_canvas_shape(sampled_frames[0])
             union_footprint = screened_candidate_union.candidate_union.union_footprint
@@ -4908,6 +5087,7 @@ def classify_stage4_time_slices_with_subregion_debug(
                 target_coordinates=union_footprint,
             )
             baseline_comparison_state.update(union_baseline_assignments)
+            union_baseline_assignment_seconds = round(time.perf_counter() - union_baseline_assignment_started_at, 6)
 
         for probe_index, (slice_start, slice_end) in enumerate(slice_ranges, start=1):
             evaluation = evaluate_stage4_cell_level_probe(
@@ -4930,6 +5110,7 @@ def classify_stage4_time_slices_with_subregion_debug(
                 slice_end=slice_end,
                 evaluation=evaluation,
             )
+            evaluation['stage4_union_baseline_assignment_seconds'] = union_baseline_assignment_seconds
             debug_entry = serialize_stage4_time_slice_subregion_debug_entry(probe_slice, evaluation)
             stage4_subregion_debug.append(debug_entry)
             stage4_cell_reference_debug.extend(
@@ -5458,9 +5639,12 @@ def get_stage3_canvas_shape(sample: dict[str, object]) -> tuple[int, int]:
     canvas_shape = sample.get('canvas_shape')
     if canvas_shape is not None:
         return (int(canvas_shape[0]), int(canvas_shape[1]))
-    canvas_gray = sample.get('canvas_gray')
-    if canvas_gray is not None:
-        return tuple(int(dimension) for dimension in canvas_gray.shape)
+    gray = sample.get('gray')
+    if gray is not None:
+        return tuple(int(dimension) for dimension in gray.shape)
+    art_gray = sample.get('art_gray')
+    if art_gray is not None:
+        return tuple(int(dimension) for dimension in art_gray.shape)
     raise RuntimeError('Stage 3 sample is missing canvas shape metadata.')
 
 
@@ -5469,11 +5653,11 @@ def write_reusable_stage3_art_state_sample_cache(debug_stem: Path, sampled_frame
     frame_indices = np.asarray([int(sample['frame_index']) for sample in sampled_frames], dtype=np.int32)
     if sampled_frames:
         canvas_shape = np.asarray(get_stage3_canvas_shape(sampled_frames[0]), dtype=np.int32)
-        art_gray_stack = np.stack([np.asarray(sample['art_gray'], dtype=np.uint8) for sample in sampled_frames], axis=0)
+        gray_stack = np.stack([np.asarray(get_stage3_sample_gray(sample), dtype=np.uint8) for sample in sampled_frames], axis=0)
     else:
         canvas_shape = np.asarray((0, 0), dtype=np.int32)
-        art_gray_stack = np.empty((0, 0, 0), dtype=np.uint8)
-    np.savez(output_path, frame_indices=frame_indices, canvas_shape=canvas_shape, art_gray=art_gray_stack)
+        gray_stack = np.empty((0, 0, 0), dtype=np.uint8)
+    np.savez(output_path, frame_indices=frame_indices, canvas_shape=canvas_shape, gray=gray_stack)
     return output_path
 
 
@@ -5481,18 +5665,19 @@ def load_reusable_stage3_art_state_sample_cache(path: Path) -> list[dict[str, ob
     try:
         with np.load(path, allow_pickle=False) as payload:
             frame_indices = payload['frame_indices']
-            art_gray_stack = payload['art_gray']
+            gray_stack = payload['gray'] if 'gray' in payload else payload['art_gray']
             if 'canvas_shape' in payload:
                 canvas_shape = tuple(int(dimension) for dimension in payload['canvas_shape'].tolist())
             elif 'canvas_gray' in payload:
                 canvas_gray_stack = payload['canvas_gray']
-                if len(frame_indices) != len(canvas_gray_stack) or len(frame_indices) != len(art_gray_stack):
+                if len(frame_indices) != len(canvas_gray_stack) or len(frame_indices) != len(gray_stack):
                     raise RuntimeError(f'Reusable Stage 2B frame payload is inconsistent: {path}')
                 return [
                     {
                         'frame_index': int(frame_indices[index]),
                         'canvas_shape': tuple(int(dimension) for dimension in canvas_gray_stack[index].shape),
-                        'art_gray': art_gray_stack[index],
+                        'gray': gray_stack[index],
+                        'art_gray': gray_stack[index],
                     }
                     for index in range(len(frame_indices))
                 ]
@@ -5500,13 +5685,14 @@ def load_reusable_stage3_art_state_sample_cache(path: Path) -> list[dict[str, ob
                 raise RuntimeError(f'Reusable Stage 2B frame payload is missing canvas shape metadata: {path}')
     except Exception as exc:
         raise RuntimeError(f'Unable to load reusable Stage 2B frame payload: {path}') from exc
-    if len(frame_indices) != len(art_gray_stack):
+    if len(frame_indices) != len(gray_stack):
         raise RuntimeError(f'Reusable Stage 2B frame payload is inconsistent: {path}')
     return [
         {
             'frame_index': int(frame_indices[index]),
             'canvas_shape': canvas_shape,
-            'art_gray': art_gray_stack[index],
+            'gray': gray_stack[index],
+            'art_gray': gray_stack[index],
         }
         for index in range(len(frame_indices))
     ]
@@ -5745,6 +5931,8 @@ def serialize_stage4_time_slice_subregion_debug_entry(
         'baseline_assigned_cell_count': int(evaluation.get('baseline_assigned_cell_count', 0)),
         'baseline_comparison_update_cell_count': int(evaluation.get('baseline_comparison_update_cell_count', 0)),
         'current_window': evaluation.get('current_window'),
+        'probe_timings': evaluation.get('probe_timings', {}),
+        'stage4_union_baseline_assignment_seconds': round(float(evaluation.get('stage4_union_baseline_assignment_seconds', 0.0)), 6),
     }
 
 def serialize_stage4_cell_reference_debug_entries(
@@ -5974,11 +6162,26 @@ def detect_staged_activity_ranges(
         reused_stage3_sample_cache_path = find_precomputed_stage3_art_state_sample_cache_path_from_movement_evidence_path(
             precomputed_movement_evidence_path
         )
-        retained_stage3_samples = (
-            load_reusable_stage3_art_state_sample_cache(reused_stage3_sample_cache_path)
-            if reused_stage3_sample_cache_path is not None
-            else None
-        )
+        retained_stage3_samples = None
+        if reused_stage3_sample_cache_path is not None:
+            try:
+                reused_stage3_sample_cache_size = reused_stage3_sample_cache_path.stat().st_size
+            except OSError:
+                reused_stage3_sample_cache_size = None
+            if (
+                reused_stage3_sample_cache_size is not None
+                and reused_stage3_sample_cache_size > MAX_AUTOMATIC_REUSED_STAGE3_SAMPLE_CACHE_BYTES
+            ):
+                emit_stage_status(
+                    status_callback,
+                    'Runtime Stage 1C - Skipping reused Stage 2B frame payload auto-load '
+                    f"({reused_stage3_sample_cache_size // (1024 * 1024)} MB cache); Stage 2B will rescan samples",
+                )
+                reused_stage3_sample_cache_path = None
+            else:
+                retained_stage3_samples = load_reusable_stage3_art_state_sample_cache(
+                    reused_stage3_sample_cache_path
+                )
     elapsed_seconds = time.perf_counter() - stage_started_at
     stage_timings.append(build_stage_timing_entry('runtime_stage_1a_movement_evidence', 'Runtime Stage 1A - Scanning chapter for movement evidence', elapsed_seconds, len(records)))
     if precomputed_movement_evidence_path is None:
@@ -6041,7 +6244,18 @@ def detect_staged_activity_ranges(
     emit_stage_status(status_callback, f"Runtime Stage 2B - Collecting Stage 3 art-state samples complete in {format_stage_elapsed(elapsed_seconds)} ({len(stage3_art_state_samples)} sampled frames)")
     if debug_stem is not None:
         reusable_sample_cache_output_path = build_staged_debug_output_path(debug_stem, 'reusable_stage3_art_state_samples', '.npz')
-        if reused_stage3_sample_cache_path is not None:
+        if not ENABLE_REUSABLE_STAGE3_SAMPLE_CACHE_WRITES:
+            if reused_stage3_sample_cache_path is not None:
+                emit_stage_status(
+                    status_callback,
+                    'Runtime Stage 1C - Reusable Stage 2B frame payload write skipped (temporarily disabled during benchmarking reruns)',
+                )
+            else:
+                emit_stage_status(
+                    status_callback,
+                    'Runtime Stage 1C - Reusable Stage 2B frame payload write skipped (temporarily disabled)',
+                )
+        elif reused_stage3_sample_cache_path is not None:
             emit_stage_status(status_callback, 'Runtime Stage 1C - Linking reused Stage 2B frame payload into current debug folder started')
             stage_started_at = time.perf_counter()
             if reusable_sample_cache_output_path != reused_stage3_sample_cache_path and not reusable_sample_cache_output_path.exists():
@@ -6086,16 +6300,6 @@ def detect_staged_activity_ranges(
         'stage_timings': stage_timings,
     })
 
-    def flush_stage5_progress(current_screened_unions: list[ScreenedCandidateUnion]) -> None:
-        flush_debug_payload({
-            'movement_evidence_records': serialized_records,
-            'movement_spans': serialized_movement_spans,
-            'candidate_unions': serialized_candidate_unions,
-            'screened_candidate_unions': [serialize_screened_candidate_union(screened_union) for screened_union in current_screened_unions],
-            'stage3_screening_traces': [serialize_stage3_screening_trace(screened_union) for screened_union in current_screened_unions],
-            'stage_timings': stage_timings,
-        })
-
     emit_stage_status(status_callback, 'Runtime Stage 3A - Screening candidate unions started')
     stage_started_at = time.perf_counter()
     screened_candidate_unions = screen_stage3_candidate_unions(
@@ -6105,7 +6309,6 @@ def detect_staged_activity_ranges(
         chapter_range=chapter_range,
         settings=settings,
         status_callback=status_callback,
-        union_complete_callback=flush_stage5_progress,
     )
     elapsed_seconds = time.perf_counter() - stage_started_at
     stage_timings.append(build_stage_timing_entry('runtime_stage_3a_union_screening', 'Runtime Stage 3A - Screening candidate unions', elapsed_seconds, len(screened_candidate_unions)))
@@ -6221,6 +6424,21 @@ def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, obje
     )
     output_paths['summary'] = summary_output_path
     return output_paths
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

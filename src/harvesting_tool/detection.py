@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # SECTION A - Imports And Constants
 # ============================================================
 
@@ -14,10 +14,10 @@ from typing import Callable, Iterable
 import numpy as np
 
 FRAME_RATE = 30
-CANVAS_LEFT_RATIO = 0.18
-CANVAS_TOP_RATIO = 0.08
-CANVAS_RIGHT_RATIO = 0.82
-CANVAS_BOTTOM_RATIO = 0.92
+CANVAS_LEFT_RATIO = 199 / 1920
+CANVAS_TOP_RATIO = 51 / 1080
+CANVAS_RIGHT_RATIO = 1494 / 1920
+CANVAS_BOTTOM_RATIO = 1064 / 1080
 GRID_ROWS = 12
 GRID_COLUMNS = 12
 BLOCK_ACTIVITY_RATIO = 0.01
@@ -35,10 +35,6 @@ PERSISTENT_MOTION_RATIO = 0.55
 SECONDARY_PERSISTENT_MOTION_RATIO = 0.35
 TRAIL_MASK_WINDOW = 4
 
-ART_STATE_LEFT_RATIO = 0.20
-ART_STATE_TOP_RATIO = 0.12
-ART_STATE_RIGHT_RATIO = 0.80
-ART_STATE_BOTTOM_RATIO = 0.88
 ART_STATE_VALIDATION_WINDOW_FRAMES = 15 * FRAME_RATE
 ART_STATE_BASELINE_MAX_SAMPLES = 15
 ART_STATE_MIN_RATIO = 0.015
@@ -705,8 +701,8 @@ def build_window_footprint_mask(
     previous_sample = window_samples[0]
     for current_sample in window_samples[1:]:
         motion_mask = build_art_state_change_mask(
-            previous_sample['art_gray'],
-            current_sample['art_gray'],
+            get_art_state_sample_gray(previous_sample),
+            get_art_state_sample_gray(current_sample),
             settings,
             cv2,
         )
@@ -724,13 +720,9 @@ def build_window_footprint_mask(
     return active_block_mask
 
 
+
 def extract_art_state_region(gray_frame):
-    frame_height, frame_width = gray_frame.shape[:2]
-    left = int(frame_width * ART_STATE_LEFT_RATIO)
-    right = int(frame_width * ART_STATE_RIGHT_RATIO)
-    top = int(frame_height * ART_STATE_TOP_RATIO)
-    bottom = int(frame_height * ART_STATE_BOTTOM_RATIO)
-    return gray_frame[top:bottom, left:right]
+    return gray_frame
 
 
 def build_persistent_change_mask(previous_gray, current_gray, next_gray, settings, cv2):
@@ -771,6 +763,13 @@ def build_art_state_change_mask(baseline_art_gray, current_art_gray, settings: D
     return art_mask
 
 
+def get_art_state_sample_gray(sample: dict[str, object]):
+    gray = sample.get('gray')
+    if gray is not None:
+        return gray
+    return sample['art_gray']
+
+
 def compute_overlay_instability_ratio(
     changed_mask,
     post_baseline,
@@ -783,7 +782,7 @@ def compute_overlay_instability_ratio(
 
     instability_ratios: list[float] = []
     for sample in post_samples:
-        sample_mask = build_art_state_change_mask(post_baseline, sample['art_gray'], settings, cv2)
+        sample_mask = build_art_state_change_mask(post_baseline, get_art_state_sample_gray(sample), settings, cv2)
         focused_mask = cv2.bitwise_and(sample_mask, changed_mask)
         instability_ratios.append(float(focused_mask.mean()) / 255.0)
 
@@ -812,7 +811,7 @@ def build_median_baseline(samples: list[dict[str, object]]) -> object | None:
         return None
 
     representative_samples = select_representative_samples(samples)
-    stack = np.stack([sample['art_gray'] for sample in representative_samples], axis=0)
+    stack = np.stack([get_art_state_sample_gray(sample) for sample in representative_samples], axis=0)
     baseline = np.median(stack, axis=0)
     return baseline.astype(np.uint8)
 
@@ -1633,7 +1632,6 @@ def detect_movement_spans(
                 sample = {
                     'frame_index': current_frame,
                     'gray': gray,
-                    'art_gray': extract_art_state_region(gray),
                 }
                 sampled_frames.append(sample)
                 sampled_frame_history.append(sample)
@@ -1850,6 +1848,12 @@ def detect_candidate_clips(
         debug_bundle=debug_bundle,
         trust_burst_boundaries=True,
     )
+
+
+
+
+
+
 
 
 
