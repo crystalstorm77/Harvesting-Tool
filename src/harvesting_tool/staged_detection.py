@@ -153,6 +153,14 @@ STAGE5_VALID_ANCHOR_PROMOTION_MIN_FOOTPRINT = 8
 STAGE5_VALID_ANCHOR_PROMOTION_MIN_SIBLING_EVIDENCE = 0.55
 STAGE5_VALID_ANCHOR_PROMOTION_MIN_SIBLING_OVERLAP = 0.20
 STAGE5_MIN_SUBDIVISION_FRAMES = 15
+STAGE5_BOUNDARY_SEARCH_FRAMES = FRAME_RATE * 3
+STAGE5_MAX_TRIM_FRAMES = (FRAME_RATE * 2) + (FRAME_RATE // 2)
+STAGE5_CONFIRMATION_WINDOW_FRAMES = 3
+STAGE5_SKIP_TRIM_NEAR_EDGE_FRAMES = 5
+STAGE5_MAX_CANDIDATE_CELLS = 48
+STAGE5_BROAD_MOVEMENT_MIN_CELLS = 12
+STAGE5_BROAD_MOVEMENT_MIN_FOOTPRINT_RATIO = 0.50
+STAGE5_BROAD_MOVEMENT_MIN_CONSECUTIVE_FRAMES = 3
 STAGE6_MIN_ROCKY_CLUSTER_FRAMES = FRAME_RATE
 STAGE6_MIN_ROCKY_SLICE_COUNT = 4
 STAGE6_MIN_ROCKY_CLUSTER_AVERAGE_EVIDENCE = 0.68
@@ -280,6 +288,7 @@ class ClassifiedTimeSlice:
     after_reference_activity: float
     reference_windows_reliable: bool
     parent_range: tuple[int, int] | None = None
+    stage5_debug: dict[str, object] | None = None
 
 @dataclass(frozen=True)
 class FinalCandidateRange:
@@ -5792,6 +5801,338 @@ def classify_stage5_minimum_size_leaf(
     if has_adjacent_valid_support:
         return replace(time_slice, classification='boundary', reason='minimum_subdivision_size_reached')
     return replace(time_slice, classification='invalid', reason='minimum_subdivision_size_reached')
+
+
+def build_stage5_ordered_candidate_cells(
+    time_slice: ClassifiedTimeSlice,
+    ordered_records: list[MovementEvidenceRecord],
+    *,
+    search_start: int,
+    search_end: int,
+    prefer_latest: bool,
+    max_candidate_cells: int = STAGE5_MAX_CANDIDATE_CELLS,
+) -> list[tuple[GridCoordinate, int]]:
+    candidate_frames: dict[GridCoordinate, int] = {}
+    for record in collect_records_in_frame_range(ordered_records, search_start, search_end):
+        if not record.movement_present:
+            continue
+        for coordinate in record.touched_grid_coordinates:
+            if coordinate not in time_slice.footprint:
+                continue
+            frame_index = int(record.frame_index)
+            if prefer_latest:
+                candidate_frames[coordinate] = max(frame_index, candidate_frames.get(coordinate, frame_index))
+            else:
+                candidate_frames[coordinate] = min(frame_index, candidate_frames.get(coordinate, frame_index))
+
+    ordered_candidates = sorted(
+        candidate_frames.items(),
+        key=lambda item: (
+            -item[1] if prefer_latest else item[1],
+            item[0][0],
+            item[0][1],
+        ),
+    )
+    return ordered_candidates[:max_candidate_cells]
+
+
+def find_stage5_broad_movement_boundary_frame(
+    time_slice: ClassifiedTimeSlice,
+    ordered_records: list[MovementEvidenceRecord],
+    *,
+    search_start: int,
+    search_end: int,
+    prefer_latest: bool,
+) -> int | None:
+    minimum_touch_count = max(
+        STAGE5_BROAD_MOVEMENT_MIN_CELLS,
+        int(np.ceil(time_slice.footprint_size * STAGE5_BROAD_MOVEMENT_MIN_FOOTPRINT_RATIO)),
+    )
+    qualifying_frames: list[int] = []
+    for record in collect_records_in_frame_range(ordered_records, search_start, search_end):
+        if not record.movement_present:
+            continue
+        touched_coordinates = frozenset(
+            coordinate
+            for coordinate in record.touched_grid_coordinates
+            if coordinate in time_slice.footprint
+        )
+        if len(touched_coordinates) < minimum_touch_count:
+            continue
+        if not stage4_coordinate_span_is_broad(touched_coordinates):
+            continue
+        qualifying_frames.append(int(record.frame_index))
+    if not qualifying_frames:
+        return None
+    qualifying_runs: list[tuple[int, int]] = []
+    run_start = qualifying_frames[0]
+    run_end = qualifying_frames[0]
+    for frame_index in qualifying_frames[1:]:
+        if frame_index <= (run_end + 1):
+            run_end = frame_index
+            continue
+        qualifying_runs.append((run_start, run_end))
+        run_start = frame_index
+        run_end = frame_index
+    qualifying_runs.append((run_start, run_end))
+
+    eligible_runs = [
+        (run_start, run_end)
+        for run_start, run_end in qualifying_runs
+        if ((run_end - run_start) + 1) >= STAGE5_BROAD_MOVEMENT_MIN_CONSECUTIVE_FRAMES
+    ]
+    if not eligible_runs:
+        return None
+    if prefer_latest:
+        return eligible_runs[-1][1]
+    return eligible_runs[0][0]
+
+
+def stage5_trim_respects_minimum_clip_length(
+    *,
+    start_frame: int,
+    end_frame: int,
+    settings: DetectorSettings,
+) -> bool:
+    return (end_frame - start_frame) >= settings.min_clip_length.total_frames
+
+
+def build_stage5_trimmed_time_slice(
+    time_slice: ClassifiedTimeSlice,
+    *,
+    start_frame: int,
+    end_frame: int,
+    ordered_records: list[MovementEvidenceRecord],
+    stage5_debug: dict[str, object] | None = None,
+) -> ClassifiedTimeSlice:
+    return replace(
+        time_slice,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        start_time=Timecode(total_frames=start_frame).to_hhmmssff(),
+        end_time=Timecode(total_frames=end_frame).to_hhmmssff(),
+        within_slice_record_count=len(collect_records_in_frame_range(ordered_records, start_frame, end_frame)),
+        stage5_debug=stage5_debug,
+    )
+
+
+def find_stage5_valid_slice_start_trim_frame(
+    time_slice: ClassifiedTimeSlice,
+    screened_candidate_union: ScreenedCandidateUnion,
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    settings: DetectorSettings,
+    cv2,
+) -> int | None:
+    start_search_end = min(time_slice.end_frame, time_slice.start_frame + STAGE5_BOUNDARY_SEARCH_FRAMES)
+    trim_limit_end = min(time_slice.end_frame, time_slice.start_frame + STAGE5_MAX_TRIM_FRAMES)
+    if (start_search_end - time_slice.start_frame) < STAGE5_CONFIRMATION_WINDOW_FRAMES:
+        return None
+
+    ordered_candidates = build_stage5_ordered_candidate_cells(
+        time_slice,
+        ordered_records,
+        search_start=time_slice.start_frame,
+        search_end=start_search_end,
+        prefer_latest=False,
+    )
+    if not ordered_candidates:
+        return None
+
+    sampled_frame_start = min(int(sample['frame_index']) for sample in sampled_frames)
+    reference_canvas_shape = get_stage3_canvas_shape(sampled_frames[0])
+    cell_art_state_masks = build_stage3_cell_art_state_masks(time_slice.footprint, reference_canvas_shape)
+    stage3_context = build_stage3_runtime_context(ordered_records, sampled_frames)
+    baseline_cache: dict[tuple[int, int], tuple[list[dict[str, object]], object | None]] = {}
+    comparison_cache: dict[tuple[int, int, int, int], dict[str, object] | None] = {}
+    before_assignments, _ = select_stage3_cell_reference_windows(
+        search_start=max(sampled_frame_start, screened_candidate_union.candidate_union.start_frame - STAGE3_ART_STATE_RESCUE_SEARCH_FRAMES),
+        search_end=max(sampled_frame_start, time_slice.start_frame),
+        prefer_nearest=True,
+        footprint=time_slice.footprint,
+        endpoint_coordinates=frozenset(),
+        require_external_movement_for_all_cells=False,
+        require_external_movement_for_endpoints=False,
+        require_external_movement_outside_coordinate_for_all_cells=False,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        target_coordinates=frozenset(coordinate for coordinate, _ in ordered_candidates),
+    )
+    if not before_assignments:
+        return None
+
+    last_window_start = start_search_end - STAGE5_CONFIRMATION_WINDOW_FRAMES
+    earliest_positive_frame: int | None = None
+    earliest_trim_frame: int | None = None
+    for coordinate, first_touch_frame in ordered_candidates:
+        before_window = before_assignments.get(coordinate)
+        if before_window is None:
+            continue
+        positive_frame: int | None = None
+        window_search_start = max(time_slice.start_frame, first_touch_frame)
+        for current_window_start in range(window_search_start, last_window_start + 1):
+            current_window_end = current_window_start + STAGE5_CONFIRMATION_WINDOW_FRAMES
+            current_window = build_stage3_reference_window_metadata(
+                current_window_start,
+                current_window_end,
+                ordered_records,
+                sampled_frames,
+                stage3_context,
+            )
+            change_score = compute_stage4_cell_change_score(
+                coordinate,
+                before_window,
+                current_window,
+                sampled_frames,
+                cell_art_state_masks,
+                baseline_cache,
+                comparison_cache,
+                settings,
+                cv2,
+                stage3_context,
+            )
+            if change_score is None or change_score < 0.50:
+                continue
+            positive_frame = current_window_start
+            break
+        if positive_frame is None:
+            continue
+
+        proposed_trim_frame = min(trim_limit_end, positive_frame)
+        for candidate_frame in range(proposed_trim_frame, time_slice.start_frame - 1, -1):
+            candidate_window_end = min(start_search_end, candidate_frame + STAGE5_CONFIRMATION_WINDOW_FRAMES)
+            if (candidate_window_end - candidate_frame) < 2:
+                continue
+            if not stage3_cell_is_trustworthy_in_window(
+                coordinate,
+                candidate_frame,
+                candidate_window_end,
+                ordered_records,
+                sampled_frames,
+                cell_art_state_masks,
+                time_slice.footprint,
+                False,
+                settings,
+                cv2,
+                stage3_context,
+            ):
+                continue
+            proposed_trim_frame = candidate_frame
+            break
+
+        if (
+            earliest_positive_frame is None
+            or positive_frame < earliest_positive_frame
+            or (
+                positive_frame == earliest_positive_frame
+                and (earliest_trim_frame is None or proposed_trim_frame < earliest_trim_frame)
+            )
+        ):
+            earliest_positive_frame = positive_frame
+            earliest_trim_frame = proposed_trim_frame
+    if earliest_trim_frame is None:
+        return None
+    if (earliest_trim_frame - time_slice.start_frame) <= STAGE5_SKIP_TRIM_NEAR_EDGE_FRAMES:
+        return None
+    return earliest_trim_frame
+
+
+def find_stage5_valid_slice_end_trim_frame(
+    time_slice: ClassifiedTimeSlice,
+    screened_candidate_union: ScreenedCandidateUnion,
+    ordered_records: list[MovementEvidenceRecord],
+    sampled_frames: list[dict[str, object]],
+    settings: DetectorSettings,
+    cv2,
+) -> int | None:
+    end_search_start = max(time_slice.start_frame, time_slice.end_frame - STAGE5_BOUNDARY_SEARCH_FRAMES)
+    trim_limit_start = max(time_slice.start_frame, time_slice.end_frame - STAGE5_MAX_TRIM_FRAMES)
+    if (time_slice.end_frame - end_search_start) < STAGE5_CONFIRMATION_WINDOW_FRAMES:
+        return None
+
+    ordered_candidates = build_stage5_ordered_candidate_cells(
+        time_slice,
+        ordered_records,
+        search_start=end_search_start,
+        search_end=time_slice.end_frame,
+        prefer_latest=True,
+    )
+    if not ordered_candidates:
+        return None
+
+    sampled_frame_start = min(int(sample['frame_index']) for sample in sampled_frames)
+    reference_canvas_shape = get_stage3_canvas_shape(sampled_frames[0])
+    cell_art_state_masks = build_stage3_cell_art_state_masks(time_slice.footprint, reference_canvas_shape)
+    stage3_context = build_stage3_runtime_context(ordered_records, sampled_frames)
+    baseline_cache: dict[tuple[int, int], tuple[list[dict[str, object]], object | None]] = {}
+    comparison_cache: dict[tuple[int, int, int, int], dict[str, object] | None] = {}
+    before_assignments, _ = select_stage3_cell_reference_windows(
+        search_start=max(sampled_frame_start, screened_candidate_union.candidate_union.start_frame - STAGE3_ART_STATE_RESCUE_SEARCH_FRAMES),
+        search_end=max(sampled_frame_start, time_slice.start_frame),
+        prefer_nearest=True,
+        footprint=time_slice.footprint,
+        endpoint_coordinates=frozenset(),
+        require_external_movement_for_all_cells=False,
+        require_external_movement_for_endpoints=False,
+        require_external_movement_outside_coordinate_for_all_cells=False,
+        ordered_records=ordered_records,
+        sampled_frames=sampled_frames,
+        cell_art_state_masks=cell_art_state_masks,
+        settings=settings,
+        cv2=cv2,
+        stage3_context=stage3_context,
+        target_coordinates=frozenset(coordinate for coordinate, _ in ordered_candidates),
+    )
+    if not before_assignments:
+        return None
+
+    latest_proven_end_frame: int | None = None
+    for coordinate, last_touch_frame in ordered_candidates:
+        before_window = before_assignments.get(coordinate)
+        if before_window is None:
+            continue
+        search_end_frame = min(time_slice.end_frame, last_touch_frame + 1)
+        for proposed_end_frame in range(search_end_frame, end_search_start + 1, -1):
+            current_window_start = max(time_slice.start_frame, proposed_end_frame - STAGE5_CONFIRMATION_WINDOW_FRAMES)
+            current_window_end = proposed_end_frame
+            if (current_window_end - current_window_start) < 2:
+                continue
+            current_window = build_stage3_reference_window_metadata(
+                current_window_start,
+                current_window_end,
+                ordered_records,
+                sampled_frames,
+                stage3_context,
+            )
+            change_score = compute_stage4_cell_change_score(
+                coordinate,
+                before_window,
+                current_window,
+                sampled_frames,
+                cell_art_state_masks,
+                baseline_cache,
+                comparison_cache,
+                settings,
+                cv2,
+                stage3_context,
+            )
+            if change_score is None or change_score < 0.50:
+                continue
+            if latest_proven_end_frame is None or proposed_end_frame > latest_proven_end_frame:
+                latest_proven_end_frame = proposed_end_frame
+            break
+    if latest_proven_end_frame is None:
+        return None
+    latest_proven_end_frame = max(trim_limit_start, latest_proven_end_frame)
+    if (time_slice.end_frame - latest_proven_end_frame) <= STAGE5_SKIP_TRIM_NEAR_EDGE_FRAMES:
+        return None
+    return latest_proven_end_frame
+
+
 def stage5_slices_are_directly_adjacent(first_slice: ClassifiedTimeSlice, second_slice: ClassifiedTimeSlice) -> bool:
     return first_slice.end_frame == second_slice.start_frame or second_slice.end_frame == first_slice.start_frame
 
@@ -5882,7 +6223,7 @@ def refine_stage5_sub_slices(
     settings: DetectorSettings | None = None,
     minimum_subdivision_frames: int = STAGE5_MIN_SUBDIVISION_FRAMES,
 ) -> list[ClassifiedTimeSlice]:
-    return sorted(
+    ordered_slices = sorted(
         classified_time_slices,
         key=lambda time_slice: (
             time_slice.start_frame,
@@ -5891,6 +6232,212 @@ def refine_stage5_sub_slices(
             time_slice.slice_index,
         ),
     )
+    if not sampled_frames or settings is None:
+        return ordered_slices
+
+    try:
+        import cv2  # type: ignore
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError('OpenCV is required for Stage 5 boundary refinement.') from exc
+
+    ordered_records = sorted(records, key=lambda record: record.frame_index)
+    screened_union_lookup = {
+        screened_union.candidate_union.union_index: screened_union
+        for screened_union in screened_candidate_unions
+    }
+    refined_slices: list[ClassifiedTimeSlice] = []
+    for time_slice in ordered_slices:
+        if time_slice.classification != 'valid':
+            refined_slices.append(time_slice)
+            continue
+
+        screened_candidate_union = screened_union_lookup.get(time_slice.parent_union_index)
+        if screened_candidate_union is None or not time_slice.footprint:
+            refined_slices.append(time_slice)
+            continue
+
+        start_search_end = min(time_slice.end_frame, time_slice.start_frame + STAGE5_BOUNDARY_SEARCH_FRAMES)
+        end_search_start = max(time_slice.start_frame, time_slice.end_frame - STAGE5_BOUNDARY_SEARCH_FRAMES)
+        stage5_debug: dict[str, object] = {
+            'original_start_frame': time_slice.start_frame,
+            'original_end_frame': time_slice.end_frame,
+            'original_start_time': time_slice.start_time,
+            'original_end_time': time_slice.end_time,
+            'start_search_start_frame': time_slice.start_frame,
+            'start_search_end_frame': start_search_end,
+            'end_search_start_frame': end_search_start,
+            'end_search_end_frame': time_slice.end_frame,
+            'start_candidate_cells': [],
+            'end_candidate_cells': [],
+            'start_broad_movement_frame': None,
+            'end_broad_movement_frame': None,
+            'start_local_candidate_frame': None,
+            'end_local_candidate_frame': None,
+            'start_trim_applied': False,
+            'end_trim_applied': False,
+            'start_trim_reason': 'no_trim',
+            'end_trim_reason': 'no_trim',
+            'start_winning_path': 'none',
+            'end_winning_path': 'none',
+        }
+        start_candidates = build_stage5_ordered_candidate_cells(
+            time_slice,
+            ordered_records,
+            search_start=time_slice.start_frame,
+            search_end=start_search_end,
+            prefer_latest=False,
+        )
+        end_candidates = build_stage5_ordered_candidate_cells(
+            time_slice,
+            ordered_records,
+            search_start=end_search_start,
+            search_end=time_slice.end_frame,
+            prefer_latest=True,
+        )
+        stage5_debug['start_candidate_cells'] = [
+            {
+                'label': format_grid_coordinate_label(coordinate),
+                'coordinate': list(coordinate),
+                'candidate_frame': frame_index,
+                'candidate_time': Timecode(total_frames=frame_index).to_hhmmssff(),
+            }
+            for coordinate, frame_index in start_candidates
+        ]
+        stage5_debug['end_candidate_cells'] = [
+            {
+                'label': format_grid_coordinate_label(coordinate),
+                'coordinate': list(coordinate),
+                'candidate_frame': frame_index,
+                'candidate_time': Timecode(total_frames=frame_index).to_hhmmssff(),
+            }
+            for coordinate, frame_index in end_candidates
+        ]
+
+        broad_start_frame = find_stage5_broad_movement_boundary_frame(
+            time_slice,
+            ordered_records,
+            search_start=time_slice.start_frame,
+            search_end=start_search_end,
+            prefer_latest=False,
+        )
+        broad_end_frame = find_stage5_broad_movement_boundary_frame(
+            time_slice,
+            ordered_records,
+            search_start=end_search_start,
+            search_end=time_slice.end_frame,
+            prefer_latest=True,
+        )
+        stage5_debug['start_broad_movement_frame'] = broad_start_frame
+        stage5_debug['start_broad_movement_time'] = None if broad_start_frame is None else Timecode(total_frames=broad_start_frame).to_hhmmssff()
+        stage5_debug['end_broad_movement_frame'] = broad_end_frame
+        stage5_debug['end_broad_movement_time'] = None if broad_end_frame is None else Timecode(total_frames=broad_end_frame).to_hhmmssff()
+
+        local_start_frame = find_stage5_valid_slice_start_trim_frame(
+            time_slice,
+            screened_candidate_union,
+            ordered_records,
+            sampled_frames,
+            settings,
+            cv2,
+        )
+        local_end_frame = find_stage5_valid_slice_end_trim_frame(
+            time_slice,
+            screened_candidate_union,
+            ordered_records,
+            sampled_frames,
+            settings,
+            cv2,
+        )
+        stage5_debug['start_local_candidate_frame'] = local_start_frame
+        stage5_debug['start_local_candidate_time'] = None if local_start_frame is None else Timecode(total_frames=local_start_frame).to_hhmmssff()
+        stage5_debug['end_local_candidate_frame'] = local_end_frame
+        stage5_debug['end_local_candidate_time'] = None if local_end_frame is None else Timecode(total_frames=local_end_frame).to_hhmmssff()
+
+        trimmed_start_frame = None
+        if broad_start_frame is not None and (broad_start_frame - time_slice.start_frame) > STAGE5_SKIP_TRIM_NEAR_EDGE_FRAMES:
+            trimmed_start_frame = broad_start_frame
+            stage5_debug['start_trim_reason'] = 'broad_movement_start'
+            stage5_debug['start_winning_path'] = 'broad_movement'
+        elif local_start_frame is not None:
+            trimmed_start_frame = local_start_frame
+            stage5_debug['start_trim_reason'] = 'changed_cell_confirmation'
+            stage5_debug['start_winning_path'] = 'changed_cell_confirmation'
+        else:
+            stage5_debug['start_trim_reason'] = 'no_qualified_start_candidate'
+        candidate_slice = time_slice
+        if (
+            trimmed_start_frame is not None
+            and trimmed_start_frame < candidate_slice.end_frame
+            and stage5_trim_respects_minimum_clip_length(
+                start_frame=trimmed_start_frame,
+                end_frame=candidate_slice.end_frame,
+                settings=settings,
+            )
+        ):
+            candidate_slice = build_stage5_trimmed_time_slice(
+                candidate_slice,
+                start_frame=trimmed_start_frame,
+                end_frame=candidate_slice.end_frame,
+                ordered_records=ordered_records,
+                stage5_debug=stage5_debug,
+            )
+            stage5_debug['start_trim_applied'] = True
+            stage5_debug['trimmed_start_frame'] = trimmed_start_frame
+            stage5_debug['trimmed_start_time'] = Timecode(total_frames=trimmed_start_frame).to_hhmmssff()
+        elif trimmed_start_frame is not None and not stage5_trim_respects_minimum_clip_length(
+            start_frame=trimmed_start_frame,
+            end_frame=candidate_slice.end_frame,
+            settings=settings,
+        ):
+            stage5_debug['start_trim_reason'] = 'minimum_clip_length_veto'
+            stage5_debug['start_winning_path'] = 'veto'
+
+        trimmed_end_frame = None
+        if broad_end_frame is not None:
+            proposed_broad_end_frame = min(candidate_slice.end_frame, broad_end_frame + 1)
+            if (candidate_slice.end_frame - proposed_broad_end_frame) > STAGE5_SKIP_TRIM_NEAR_EDGE_FRAMES:
+                trimmed_end_frame = proposed_broad_end_frame
+                stage5_debug['end_trim_reason'] = 'broad_movement_end'
+                stage5_debug['end_winning_path'] = 'broad_movement'
+        elif local_end_frame is not None:
+            trimmed_end_frame = local_end_frame
+            stage5_debug['end_trim_reason'] = 'changed_cell_confirmation'
+            stage5_debug['end_winning_path'] = 'changed_cell_confirmation'
+        elif stage5_debug['end_trim_reason'] == 'no_trim':
+            stage5_debug['end_trim_reason'] = 'no_qualified_end_candidate'
+        if (
+            trimmed_end_frame is not None
+            and candidate_slice.start_frame < trimmed_end_frame
+            and stage5_trim_respects_minimum_clip_length(
+                start_frame=candidate_slice.start_frame,
+                end_frame=trimmed_end_frame,
+                settings=settings,
+            )
+        ):
+            candidate_slice = build_stage5_trimmed_time_slice(
+                candidate_slice,
+                start_frame=candidate_slice.start_frame,
+                end_frame=trimmed_end_frame,
+                ordered_records=ordered_records,
+                stage5_debug=stage5_debug,
+            )
+            stage5_debug['end_trim_applied'] = True
+            stage5_debug['trimmed_end_frame'] = trimmed_end_frame
+            stage5_debug['trimmed_end_time'] = Timecode(total_frames=trimmed_end_frame).to_hhmmssff()
+        elif trimmed_end_frame is not None and not stage5_trim_respects_minimum_clip_length(
+            start_frame=candidate_slice.start_frame,
+            end_frame=trimmed_end_frame,
+            settings=settings,
+        ):
+            stage5_debug['end_trim_reason'] = 'minimum_clip_length_veto'
+            stage5_debug['end_winning_path'] = 'veto'
+
+        if candidate_slice.stage5_debug is None:
+            candidate_slice = replace(candidate_slice, stage5_debug=stage5_debug)
+
+        refined_slices.append(candidate_slice)
+
+    return refined_slices
 
 def is_stage6_candidate_slice(
     time_slice: ClassifiedTimeSlice,
@@ -6432,6 +6979,7 @@ def serialize_classified_time_slice(time_slice: ClassifiedTimeSlice) -> dict[str
         'after_reference_activity': round(time_slice.after_reference_activity, 6),
         'reference_windows_reliable': time_slice.reference_windows_reliable,
         'parent_range': list(time_slice.parent_range) if time_slice.parent_range is not None else None,
+        'stage5_debug': time_slice.stage5_debug,
     }
 
 

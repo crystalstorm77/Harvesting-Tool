@@ -37,6 +37,7 @@ from harvesting_tool.staged_detection import (
     classify_stage4_time_slices,
     classify_stage4_time_slices_with_subregion_debug,
     classify_stage5_minimum_size_leaf,
+    find_stage5_broad_movement_boundary_frame,
     refine_stage5_sub_slices,
     screen_stage3_candidate_unions,
     select_stage3_art_state_reference_window,
@@ -1766,7 +1767,7 @@ class TimeSliceClassificationTests(unittest.TestCase):
 
 
 class SubSliceRefinementTests(unittest.TestCase):
-    def test_stage5_returns_stage4_bands_without_recursive_subdivision(self) -> None:
+    def test_stage5_returns_stage4_bands_without_recursive_subdivision_when_references_are_unavailable(self) -> None:
         first_band = ClassifiedTimeSlice(
             slice_index=1,
             parent_union_index=1,
@@ -1808,6 +1809,283 @@ class SubSliceRefinementTests(unittest.TestCase):
 
         self.assertEqual([(slice_info.start_frame, slice_info.end_frame) for slice_info in refined], [(300, 360), (420, 480)])
         self.assertEqual([slice_info.reason for slice_info in refined], ['probe_supported_band', 'probe_supported_band'])
+
+    def test_stage5_trims_valid_slice_start_using_three_frame_confirmation_window(self) -> None:
+        screened_union = make_screened_union(
+            start_frame=80,
+            end_frame=180,
+            union_footprint=frozenset({(2, 2)}),
+        )
+        valid_slice = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=screened_union.candidate_union.union_index,
+            slice_level=0,
+            start_frame=100,
+            end_frame=140,
+            start_time='00:00:03:10',
+            end_time='00:00:04:20',
+            footprint=frozenset({(2, 2)}),
+            footprint_size=1,
+            within_slice_record_count=3,
+            classification='valid',
+            reason='probe_supported_band',
+            lasting_change_evidence_score=0.8,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        records = [
+            make_record(1, 112, movement_present=True, touched_grid_coordinates=((2, 2),)),
+            make_record(2, 113, movement_present=True, touched_grid_coordinates=((2, 2),)),
+            make_record(3, 114, movement_present=True, touched_grid_coordinates=((2, 2),)),
+        ]
+        sampled_frames = [
+            make_stage3_art_state_sample(88, changed=False),
+            make_stage3_art_state_sample(90, changed=False),
+            make_stage3_art_state_sample(92, changed=False),
+            make_stage3_art_state_sample(94, changed=False),
+            make_stage3_art_state_sample(96, changed=False),
+            make_stage3_art_state_sample(98, changed=False),
+            make_stage3_art_state_sample(112, changed_cells=((2, 2),)),
+            make_stage3_art_state_sample(113, changed_cells=((2, 2),)),
+            make_stage3_art_state_sample(114, changed_cells=((2, 2),)),
+            make_stage3_art_state_sample(118, changed_cells=((2, 2),)),
+        ]
+
+        refined = refine_stage5_sub_slices(
+            [screened_union],
+            [valid_slice],
+            records,
+            sampled_frames=sampled_frames,
+            settings=make_settings(),
+            minimum_subdivision_frames=15,
+        )
+
+        self.assertEqual(len(refined), 1)
+        self.assertEqual(refined[0].start_frame, 112)
+        self.assertEqual(refined[0].end_frame, 140)
+
+    def test_stage5_trims_valid_slice_end_using_latest_changed_cell_touch(self) -> None:
+        screened_union = make_screened_union(
+            start_frame=80,
+            end_frame=180,
+            union_footprint=frozenset({(2, 2)}),
+        )
+        valid_slice = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=screened_union.candidate_union.union_index,
+            slice_level=0,
+            start_frame=100,
+            end_frame=140,
+            start_time='00:00:03:10',
+            end_time='00:00:04:20',
+            footprint=frozenset({(2, 2)}),
+            footprint_size=1,
+            within_slice_record_count=3,
+            classification='valid',
+            reason='probe_supported_band',
+            lasting_change_evidence_score=0.8,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        records = [
+            make_record(1, 122, movement_present=True, touched_grid_coordinates=((2, 2),)),
+            make_record(2, 125, movement_present=True, touched_grid_coordinates=((2, 2),)),
+            make_record(3, 126, movement_present=True, touched_grid_coordinates=((2, 2),)),
+        ]
+        sampled_frames = [
+            make_stage3_art_state_sample(88, changed=False),
+            make_stage3_art_state_sample(90, changed=False),
+            make_stage3_art_state_sample(92, changed=False),
+            make_stage3_art_state_sample(94, changed=False),
+            make_stage3_art_state_sample(96, changed=False),
+            make_stage3_art_state_sample(98, changed=False),
+            make_stage3_art_state_sample(122, changed_cells=((2, 2),)),
+            make_stage3_art_state_sample(125, changed_cells=((2, 2),)),
+            make_stage3_art_state_sample(126, changed_cells=((2, 2),)),
+            make_stage3_art_state_sample(130, changed_cells=((2, 2),)),
+        ]
+
+        refined = refine_stage5_sub_slices(
+            [screened_union],
+            [valid_slice],
+            records,
+            sampled_frames=sampled_frames,
+            settings=make_settings(),
+            minimum_subdivision_frames=15,
+        )
+
+        self.assertEqual(len(refined), 1)
+        self.assertEqual(refined[0].start_frame, 122)
+        self.assertEqual(refined[0].end_frame, 140)
+
+    def test_stage5_uses_broad_movement_start_for_large_footprint_slice(self) -> None:
+        footprint = frozenset((row_index, column_index) for row_index in range(6) for column_index in range(6))
+        screened_union = make_screened_union(
+            start_frame=80,
+            end_frame=220,
+            union_footprint=footprint,
+        )
+        valid_slice = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=screened_union.candidate_union.union_index,
+            slice_level=0,
+            start_frame=100,
+            end_frame=180,
+            start_time='00:00:03:10',
+            end_time='00:00:06:00',
+            footprint=footprint,
+            footprint_size=len(footprint),
+            within_slice_record_count=10,
+            classification='valid',
+            reason='probe_supported_band',
+            lasting_change_evidence_score=0.8,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        broad_touch = tuple((row_index, column_index) for row_index in range(6) for column_index in range(6))
+        records = [
+            make_record(1, 112, movement_present=True, touched_grid_coordinates=broad_touch),
+            make_record(2, 113, movement_present=True, touched_grid_coordinates=broad_touch),
+            make_record(3, 114, movement_present=True, touched_grid_coordinates=broad_touch),
+        ]
+        sampled_frames = [
+            make_stage3_art_state_sample(88, changed=False),
+            make_stage3_art_state_sample(90, changed=False),
+            make_stage3_art_state_sample(92, changed=False),
+            make_stage3_art_state_sample(94, changed=False),
+            make_stage3_art_state_sample(96, changed=False),
+            make_stage3_art_state_sample(98, changed=False),
+            make_stage3_art_state_sample(112, changed_cells=broad_touch),
+            make_stage3_art_state_sample(113, changed_cells=broad_touch),
+            make_stage3_art_state_sample(114, changed_cells=broad_touch),
+            make_stage3_art_state_sample(118, changed_cells=broad_touch),
+        ]
+
+        refined = refine_stage5_sub_slices(
+            [screened_union],
+            [valid_slice],
+            records,
+            sampled_frames=sampled_frames,
+            settings=make_settings(),
+            minimum_subdivision_frames=15,
+        )
+
+        self.assertEqual(len(refined), 1)
+        self.assertEqual(refined[0].start_frame, 112)
+        self.assertIsNotNone(refined[0].stage5_debug)
+        self.assertEqual(refined[0].stage5_debug['start_broad_movement_frame'], 112)
+        self.assertEqual(refined[0].stage5_debug['start_winning_path'], 'broad_movement')
+
+    def test_stage5_broad_movement_requires_multi_frame_run(self) -> None:
+        footprint = frozenset((row_index, column_index) for row_index in range(6) for column_index in range(6))
+        broad_touch = tuple((row_index, column_index) for row_index in range(6) for column_index in range(6))
+        valid_slice = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=1,
+            slice_level=0,
+            start_frame=100,
+            end_frame=180,
+            start_time='00:00:03:10',
+            end_time='00:00:06:00',
+            footprint=footprint,
+            footprint_size=len(footprint),
+            within_slice_record_count=10,
+            classification='valid',
+            reason='probe_supported_band',
+            lasting_change_evidence_score=0.8,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        one_frame_records = [
+            make_record(1, 112, movement_present=True, touched_grid_coordinates=broad_touch),
+        ]
+        three_frame_records = [
+            make_record(1, 112, movement_present=True, touched_grid_coordinates=broad_touch),
+            make_record(2, 113, movement_present=True, touched_grid_coordinates=broad_touch),
+            make_record(3, 114, movement_present=True, touched_grid_coordinates=broad_touch),
+        ]
+
+        self.assertIsNone(
+            find_stage5_broad_movement_boundary_frame(
+                valid_slice,
+                one_frame_records,
+                search_start=100,
+                search_end=140,
+                prefer_latest=False,
+            )
+        )
+        self.assertEqual(
+            find_stage5_broad_movement_boundary_frame(
+                valid_slice,
+                three_frame_records,
+                search_start=100,
+                search_end=140,
+                prefer_latest=False,
+            ),
+            112,
+        )
+
+    def test_stage5_vetoes_end_trim_that_would_violate_minimum_clip_length(self) -> None:
+        footprint = frozenset((row_index, column_index) for row_index in range(6) for column_index in range(6))
+        screened_union = make_screened_union(
+            start_frame=80,
+            end_frame=220,
+            union_footprint=footprint,
+        )
+        valid_slice = ClassifiedTimeSlice(
+            slice_index=1,
+            parent_union_index=screened_union.candidate_union.union_index,
+            slice_level=0,
+            start_frame=100,
+            end_frame=120,
+            start_time='00:00:03:10',
+            end_time='00:00:04:00',
+            footprint=footprint,
+            footprint_size=len(footprint),
+            within_slice_record_count=10,
+            classification='valid',
+            reason='probe_supported_band',
+            lasting_change_evidence_score=0.8,
+            before_reference_activity=0.0,
+            after_reference_activity=0.0,
+            reference_windows_reliable=True,
+        )
+        broad_touch = tuple((row_index, column_index) for row_index in range(6) for column_index in range(6))
+        records = [
+            make_record(1, 102, movement_present=True, touched_grid_coordinates=broad_touch),
+            make_record(2, 103, movement_present=True, touched_grid_coordinates=broad_touch),
+            make_record(3, 104, movement_present=True, touched_grid_coordinates=broad_touch),
+        ]
+        sampled_frames = [
+            make_stage3_art_state_sample(88, changed=False),
+            make_stage3_art_state_sample(90, changed=False),
+            make_stage3_art_state_sample(92, changed=False),
+            make_stage3_art_state_sample(94, changed=False),
+            make_stage3_art_state_sample(96, changed=False),
+            make_stage3_art_state_sample(98, changed=False),
+            make_stage3_art_state_sample(102, changed_cells=broad_touch),
+            make_stage3_art_state_sample(103, changed_cells=broad_touch),
+            make_stage3_art_state_sample(104, changed_cells=broad_touch),
+        ]
+
+        refined = refine_stage5_sub_slices(
+            [screened_union],
+            [valid_slice],
+            records,
+            sampled_frames=sampled_frames,
+            settings=make_settings(),
+            minimum_subdivision_frames=15,
+        )
+
+        self.assertEqual(len(refined), 1)
+        self.assertEqual(refined[0].start_frame, 100)
+        self.assertEqual(refined[0].end_frame, 120)
+        self.assertIsNotNone(refined[0].stage5_debug)
+        self.assertEqual(refined[0].stage5_debug['end_trim_reason'], 'minimum_clip_length_veto')
 
     def test_stage5_leaves_non_valid_band_handoffs_unchanged_for_future_boundary_work(self) -> None:
         unresolved_band = ClassifiedTimeSlice(

@@ -1,0 +1,67 @@
+[
+  {
+    "range_index": 1,
+    "parent_union_index": 1,
+    "start_frame": 14,
+    "end_frame": 245,
+    "start_time": "00:00:00:14",
+    "end_time": "00:00:08:05",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_boundary": false,
+    "boundary_count": 0
+  },
+  {
+    "range_index": 2,
+    "parent_union_index": 2,
+    "start_frame": 380,
+    "end_frame": 390,
+    "start_time": "00:00:12:20",
+    "end_time": "00:00:13:00",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_boundary": false,
+    "boundary_count": 0
+  },
+  {
+    "range_index": 3,
+    "parent_union_index": 2,
+    "start_frame": 559,
+    "end_frame": 750,
+    "start_time": "00:00:18:19",
+    "end_time": "00:00:25:00",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_boundary": false,
+    "boundary_count": 0
+  },
+  {
+    "range_index": 4,
+    "parent_union_index": 2,
+    "start_frame": 860,
+    "end_frame": 1114,
+    "start_time": "00:00:28:20",
+    "end_time": "00:00:37:04",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_boundary": false,
+    "boundary_count": 0
+  },
+  {
+    "range_index": 5,
+    "parent_union_index": 3,
+    "start_frame": 1282,
+    "end_frame": 1349,
+    "start_time": "00:00:42:22",
+    "end_time": "00:00:44:29",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_boundary": false,
+    "boundary_count": 0
+  }
+]
