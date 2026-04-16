@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 # ============================================================
 # SECTION A - Imports And Helpers
@@ -29,6 +29,8 @@ from harvesting_tool.staged_detection import (
     build_staged_debug_summary_lines,
     decide_stage3_bucket_outcome,
     evaluate_stage4_cell_level_probe,
+    find_stage4_near_global_opening_attribution_start_frame,
+    stage4_extract_post_reset_contaminated_cells,
     load_precomputed_stage3_art_state_sample_cache_from_movement_evidence_path,
     load_reusable_stage3_art_state_sample_cache,
     build_stage4_bands_from_probe_results,
@@ -1136,8 +1138,66 @@ class TimeSliceClassificationTests(unittest.TestCase):
         bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
 
         self.assertEqual(len(bands), 1)
-        self.assertEqual((bands[0].start_frame, bands[0].end_frame), (355, 485))
+        self.assertEqual((bands[0].start_frame, bands[0].end_frame), (415, 485))
 
+    def test_stage4_post_reset_contamination_expands_to_local_neighbors(self) -> None:
+        contaminated = stage4_extract_post_reset_contaminated_cells({
+            'probe_label': 'positive',
+            'unresolved_cell_count': 5,
+            'confirmed_changed_cell_count': 36,
+            'changed_support_score': 0.62,
+            'confirmed_changed_cells': [
+                {'coordinate': [1, 1]},
+                {'coordinate': [1, 4]},
+                {'coordinate': [4, 1]},
+                {'coordinate': [4, 4]},
+            ],
+            'unresolved_cells': [
+                {'coordinate': [6, 9]},
+                {'coordinate': [6, 10]},
+                {'coordinate': [7, 10]},
+                {'coordinate': [8, 9]},
+                {'coordinate': [8, 10]},
+            ],
+            'recently_active_cells': [
+                {'coordinate': [6, 9]},
+                {'coordinate': [6, 10]},
+                {'coordinate': [6, 11]},
+                {'coordinate': [7, 10]},
+                {'coordinate': [7, 11]},
+                {'coordinate': [8, 9]},
+                {'coordinate': [8, 10]},
+            ],
+        })
+
+        self.assertEqual(
+            contaminated,
+            frozenset({(6, 9), (6, 10), (6, 11), (7, 10), (7, 11), (8, 9), (8, 10)}),
+        )
+
+    def test_stage4_near_global_opening_attribution_finds_earlier_broad_reset_frame(self) -> None:
+        screened_union = make_screened_union(start_frame=7000, end_frame=7200)
+        target_coordinates = frozenset(
+            (row_index, column_index)
+            for row_index in range(GRID_ROWS)
+            for column_index in range(GRID_COLUMNS)
+        )
+        records = [
+            make_record(1, 7008, touched_grid_coordinates=((6, 9), (6, 10), (7, 9))),
+            make_record(2, 7017, touched_grid_coordinates=tuple(target_coordinates)),
+            make_record(3, 7038, touched_grid_coordinates=((5, 10), (5, 11), (6, 11), (6, 10))),
+            make_record(4, 7039, touched_grid_coordinates=((4, 10), (5, 10), (5, 11), (6, 11), (6, 10))),
+        ]
+
+        attribution_start = find_stage4_near_global_opening_attribution_start_frame(
+            screened_candidate_union=screened_union,
+            ordered_records=records,
+            search_start_frame=7010,
+            slice_end=7046,
+            target_coordinates=target_coordinates,
+        )
+
+        self.assertEqual(attribution_start, 7017)
     def test_stage4_structural_unclear_bridge_keeps_active_band_alive(self) -> None:
         screened_union = make_screened_union(start_frame=300, end_frame=540)
         first_positive_probe = ClassifiedTimeSlice(
@@ -1359,7 +1419,7 @@ class TimeSliceClassificationTests(unittest.TestCase):
         bands = build_stage4_bands_from_probe_results(screened_union, probe_results)
 
         self.assertEqual(len(bands), 2)
-        self.assertEqual([(band.start_frame, band.end_frame) for band in bands], [(300, 425), (535, 540)])
+        self.assertEqual([(band.start_frame, band.end_frame) for band in bands], [(415, 425), (535, 540)])
 
     def test_stage4_first_positive_probe_can_open_from_local_attribution_start(self) -> None:
         screened_union = make_screened_union(start_frame=300, end_frame=540)
@@ -1491,6 +1551,117 @@ class TimeSliceClassificationTests(unittest.TestCase):
         self.assertEqual(evaluation['confirmed_changed_cell_count'], 2)
         self.assertEqual(evaluation['changed_touch_frame_count'], 1)
         self.assertLessEqual(evaluation['changed_touch_frame_ratio'], 0.10)
+    def test_stage4_previous_broad_negative_blocks_weak_opening_attribution(self) -> None:
+        screened_union = make_screened_union(
+            start_frame=300,
+            end_frame=600,
+            union_footprint=frozenset({(6, 8), (6, 9), (7, 8)}),
+        )
+        records = [
+            make_record(
+                1,
+                535,
+                movement_present=True,
+                movement_strength_score=0.75,
+                temporal_persistence_score=0.6,
+                spatial_extent_score=0.4,
+                touched_grid_coordinates=((6, 8),),
+            ),
+            make_record(
+                2,
+                539,
+                movement_present=True,
+                movement_strength_score=0.72,
+                temporal_persistence_score=0.58,
+                spatial_extent_score=0.4,
+                touched_grid_coordinates=((7, 8),),
+            ),
+        ]
+        sampled_frames = [
+            make_stage3_art_state_sample(500, changed=False),
+            make_stage3_art_state_sample(504, changed=False),
+            make_stage3_art_state_sample(540, changed_cells=((6, 8), (7, 8))),
+            make_stage3_art_state_sample(544, changed_cells=((6, 8), (7, 8))),
+            make_stage3_art_state_sample(548, changed_cells=((6, 8), (7, 8))),
+        ]
+
+        evaluation = evaluate_stage4_cell_level_probe(
+            screened_candidate_union=screened_union,
+            slice_start=535,
+            slice_end=545,
+            ordered_records=records,
+            sampled_frames=sampled_frames,
+            settings=make_settings(),
+            carried_unresolved_cells=frozenset(),
+            carried_recently_changed_cells=frozenset(),
+            carried_post_reset_contaminated_cells=frozenset(),
+            baseline_comparison_state={},
+            previous_probe_end=525,
+            previous_probe_blocks_opening_attribution=True,
+        )
+
+        self.assertEqual(evaluation['probe_label'], 'positive')
+        self.assertIsNone(evaluation['opening_attribution_start_frame'])
+    def test_stage4_changed_frontier_opening_attribution_can_cross_previous_broad_negative(self) -> None:
+        screened_union = make_screened_union(
+            start_frame=300,
+            end_frame=600,
+            union_footprint=frozenset({(5, 2), (5, 3), (6, 2), (6, 3), (7, 2), (7, 3)}),
+        )
+        records = [
+            make_record(
+                1,
+                530,
+                movement_present=True,
+                movement_strength_score=0.78,
+                temporal_persistence_score=0.62,
+                spatial_extent_score=0.4,
+                touched_grid_coordinates=((5, 2), (6, 2), (7, 2)),
+            ),
+            make_record(
+                2,
+                533,
+                movement_present=True,
+                movement_strength_score=0.80,
+                temporal_persistence_score=0.64,
+                spatial_extent_score=0.42,
+                touched_grid_coordinates=((5, 2), (5, 3), (6, 2), (6, 3)),
+            ),
+            make_record(
+                3,
+                537,
+                movement_present=True,
+                movement_strength_score=0.82,
+                temporal_persistence_score=0.66,
+                spatial_extent_score=0.45,
+                touched_grid_coordinates=((5, 2), (5, 3), (6, 2), (6, 3), (7, 2)),
+            ),
+        ]
+        sampled_frames = [
+            make_stage3_art_state_sample(500, changed=False),
+            make_stage3_art_state_sample(504, changed=False),
+            make_stage3_art_state_sample(540, changed_cells=((5, 2), (5, 3), (6, 2), (6, 3), (7, 2), (7, 3))),
+            make_stage3_art_state_sample(544, changed_cells=((5, 2), (5, 3), (6, 2), (6, 3), (7, 2), (7, 3))),
+            make_stage3_art_state_sample(548, changed_cells=((5, 2), (5, 3), (6, 2), (6, 3), (7, 2), (7, 3))),
+        ]
+
+        evaluation = evaluate_stage4_cell_level_probe(
+            screened_candidate_union=screened_union,
+            slice_start=535,
+            slice_end=545,
+            ordered_records=records,
+            sampled_frames=sampled_frames,
+            settings=make_settings(),
+            carried_unresolved_cells=frozenset(),
+            carried_recently_changed_cells=frozenset(),
+            carried_post_reset_contaminated_cells=frozenset(),
+            baseline_comparison_state={},
+            previous_probe_end=525,
+            previous_probe_blocks_opening_attribution=True,
+        )
+
+        self.assertEqual(evaluation['probe_label'], 'positive')
+        self.assertEqual(evaluation['opening_attribution_start_frame'], 530)
     def test_stage4_builds_separate_valid_bands_when_a_negative_probe_gap_splits_union_activity(self) -> None:
         screened_union = make_screened_union(start_frame=300, end_frame=540)
         first_positive_probe = ClassifiedTimeSlice(
@@ -2170,6 +2341,11 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+
+
 
 
 

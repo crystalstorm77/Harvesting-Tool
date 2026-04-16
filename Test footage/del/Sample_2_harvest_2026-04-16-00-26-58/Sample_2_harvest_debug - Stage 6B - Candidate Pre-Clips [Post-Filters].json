@@ -1,0 +1,18 @@
+[
+  {
+    "clip_index": 1,
+    "clip_start": "00:00:15:05",
+    "clip_end": "00:00:21:21",
+    "activity_start": "00:00:15:07",
+    "activity_end": "00:00:21:17",
+    "duration": "00:00:06:16"
+  },
+  {
+    "clip_index": 2,
+    "clip_start": "00:00:25:21",
+    "clip_end": "00:00:30:00",
+    "activity_start": "00:00:25:23",
+    "activity_end": "00:00:30:00",
+    "duration": "00:00:04:09"
+  }
+]

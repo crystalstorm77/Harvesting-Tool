@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 # ============================================================
 # SECTION A - Imports And Reused Detection Primitives
@@ -108,10 +108,27 @@ STAGE4_PROBE_MIN_ABSOLUTE_CHANGED_CELLS = 1
 STAGE4_PROBE_NEGATIVE_MIN_JUDGEABLE_COVERAGE = 0.90
 STAGE4_PROBE_NEGATIVE_MAX_UNRESOLVED_SUPPORT = 0.10
 STAGE4_PROBE_HOLDING_MIN_UNRESOLVED_SUPPORT = 0.15
+STAGE4_OPENING_REVALIDATION_MAX_CHAPTER_OFFSET_FRAMES = FRAME_RATE * 10
+STAGE4_OPENING_REVALIDATION_MAX_CHANGED_CELLS = 4
+STAGE4_OPENING_REVALIDATION_MAX_CHANGED_SUPPORT = 0.15
+STAGE4_OPENING_REVALIDATION_LOOKAHEAD_PROBES = 3
+STAGE4_OPENING_REVALIDATION_MIN_UNCHANGED_MATCH_RATIO = 0.75
 STAGE4_PROBE_CURRENT_SEARCH_FRAMES = FRAME_RATE * 2
 STAGE4_PROBE_LATE_RESOLUTION_MAX_CHANGED_TOUCH_FRAMES = 1
 STAGE4_PROBE_LATE_RESOLUTION_MAX_CHANGED_TOUCH_RATIO = 0.20
 STAGE4_PROBE_LATE_RESOLUTION_MAX_AFTER_ACTIVITY = 0.05
+STAGE4_STATE_RESET_MIN_CHANGED_SUPPORT = 0.55
+STAGE4_STATE_RESET_MIN_CHANGED_CELLS = 4
+STAGE4_STATE_RESET_MIN_CHANGED_CLUSTER_COUNT = 2
+STAGE4_STATE_RESET_MIN_ROW_SPAN = 2
+STAGE4_STATE_RESET_MIN_COLUMN_SPAN = 2
+STAGE4_POST_RESET_LOCAL_SEARCH_FRAMES = STAGE4_PROBE_LOCAL_WINDOW_FRAMES
+STAGE4_NEAR_GLOBAL_OPENING_MIN_CHANGED_SUPPORT = 0.90
+STAGE4_NEAR_GLOBAL_OPENING_MAX_UNRESOLVED_CELLS = 9
+STAGE4_NEAR_GLOBAL_OPENING_MAX_UNCHANGED_CELLS = 9
+STAGE4_NEAR_GLOBAL_OPENING_MIN_TOUCHED_COVERAGE = 0.90
+STAGE4_CHANGED_FRONTIER_OPENING_MIN_TOUCHED_COVERAGE = 0.50
+STAGE4_CHANGED_FRONTIER_OPENING_MIN_TOUCHED_CELLS = 2
 STRONG_ACTIVE_REFERENCE_UNDETERMINED_FLOOR = 0.60
 ROCKY_MINIMUM_SIZE_EVIDENCE_FLOOR = 0.60
 ACTIVE_REFERENCE_ROCKY_RESCUE_FLOOR = 0.55
@@ -2077,50 +2094,87 @@ def select_stage3_internal_after_reference_windows(
     assignments: dict[GridCoordinate, dict[str, object]] = {}
     target_footprint = footprint if target_coordinates is None else target_coordinates
     effective_search_end = union_end + 1 if search_end is None else max(union_end + 1, search_end)
-    for coordinate in target_footprint:
+    step_frames = max(1, get_stage3_reference_candidate_step_frames(settings))
+    grouped_coordinates: dict[tuple[str, int], list[tuple[int, GridCoordinate]]] = {}
+
+    for coordinate in sorted(target_footprint):
         cell_bounds = touch_frame_bounds.get(coordinate, {})
         if 'last_touch_frame' not in cell_bounds:
             continue
         search_start = cell_bounds['last_touch_frame'] + 1
+        if (effective_search_end - search_start) <= STAGE3_ART_STATE_AFTER_WINDOW_FRAMES:
+            group_key = ('exact', search_start)
+        else:
+            group_key = ('mod', search_start % step_frames)
+        grouped_coordinates.setdefault(group_key, []).append((search_start, coordinate))
+
+    ordered_groups = sorted(
+        grouped_coordinates.values(),
+        key=lambda coordinate_group: min(search_start for search_start, _ in coordinate_group),
+    )
+    for coordinate_group in ordered_groups:
+        ordered_group_coordinates = sorted(coordinate_group, key=lambda item: (item[0], item[1]))
+        group_search_start = ordered_group_coordinates[0][0]
         candidate_windows = build_stage3_reference_window_candidates(
-            search_start,
+            group_search_start,
             effective_search_end,
             STAGE3_ART_STATE_AFTER_WINDOW_FRAMES,
-            get_stage3_reference_candidate_step_frames(settings),
+            step_frames,
         )
+        unresolved_coordinates = {
+            coordinate: search_start
+            for search_start, coordinate in ordered_group_coordinates
+        }
         for window_start, window_end in candidate_windows:
-            if not stage3_cell_is_trustworthy_in_window(
-                coordinate,
-                window_start,
-                window_end,
-                ordered_records,
-                sampled_frames,
-                cell_art_state_masks,
-                frozenset({coordinate}),
-                False,
-                settings,
-                cv2,
-                stage3_context,
-            ):
+            eligible_coordinates = [
+                coordinate
+                for coordinate, coordinate_search_start in unresolved_coordinates.items()
+                if coordinate_search_start <= window_start
+            ]
+            if not eligible_coordinates:
                 continue
-            if not window_has_meaningful_movement_outside_coordinate(
-                ordered_records,
-                window_start,
-                window_end,
-                coordinate,
-                stage3_context,
-            ):
-                continue
-            metadata = build_stage3_reference_window_metadata(
-                window_start,
-                window_end,
-                ordered_records,
-                sampled_frames,
-                stage3_context,
-            )
-            metadata['tier'] = 'internal_after'
-            assignments[coordinate] = metadata
-            break
+            metadata: dict[str, object] | None = None
+            for coordinate in eligible_coordinates:
+                if not stage3_cell_is_trustworthy_in_window(
+                    coordinate,
+                    window_start,
+                    window_end,
+                    ordered_records,
+                    sampled_frames,
+                    cell_art_state_masks,
+                    frozenset({coordinate}),
+                    False,
+                    settings,
+                    cv2,
+                    stage3_context,
+                ):
+                    continue
+                if not window_has_meaningful_movement_outside_coordinate(
+                    ordered_records,
+                    window_start,
+                    window_end,
+                    coordinate,
+                    stage3_context,
+                ):
+                    continue
+                if metadata is None:
+                    metadata = build_stage3_reference_window_metadata(
+                        window_start,
+                        window_end,
+                        ordered_records,
+                        sampled_frames,
+                        stage3_context,
+                    )
+                    metadata['tier'] = 'internal_after'
+                assignments[coordinate] = metadata
+            if assignments:
+                unresolved_coordinates = {
+                    coordinate: coordinate_search_start
+                    for coordinate, coordinate_search_start in unresolved_coordinates.items()
+                    if coordinate not in assignments
+                }
+            if not unresolved_coordinates:
+                break
     return assignments
 
 
@@ -4274,6 +4328,26 @@ def stage4_coordinate_sets_have_local_connection(
 
 
 
+def stage4_collect_locally_connected_coordinates(
+    base_coordinates: Iterable[GridCoordinate],
+    candidate_coordinates: Iterable[GridCoordinate],
+) -> frozenset[GridCoordinate]:
+    base_set = frozenset(base_coordinates)
+    candidate_set = frozenset(candidate_coordinates)
+    if not base_set or not candidate_set:
+        return frozenset()
+    return frozenset(
+        coordinate
+        for coordinate in candidate_set
+        if any(
+            abs(coordinate[0] - base_coordinate[0]) <= 1
+            and abs(coordinate[1] - base_coordinate[1]) <= 1
+            for base_coordinate in base_set
+        )
+    )
+
+
+
 def build_stage4_probe_reason_summary(
     *,
     probe_label: str,
@@ -4321,6 +4395,7 @@ def find_stage4_opening_attribution_start_frame(
     *,
     screened_candidate_union: ScreenedCandidateUnion,
     ordered_records: list[MovementEvidenceRecord],
+    search_start_frame: int,
     slice_end: int,
     target_coordinates: frozenset[GridCoordinate],
     max_gap_frames: int = 4,
@@ -4332,7 +4407,7 @@ def find_stage4_opening_attribution_start_frame(
         record
         for record in collect_records_in_frame_range(
             ordered_records,
-            screened_candidate_union.candidate_union.start_frame,
+            search_start_frame,
             slice_end,
         )
         if record.movement_present and any(
@@ -4351,7 +4426,101 @@ def find_stage4_opening_attribution_start_frame(
             break
         earliest_frame = frame_index
         previous_frame = frame_index
-    return max(screened_candidate_union.candidate_union.start_frame, earliest_frame)
+    return max(search_start_frame, earliest_frame)
+
+
+def stage4_probe_is_near_global_opening_candidate(evaluation: dict[str, object]) -> bool:
+    if str(evaluation.get('probe_label', 'unclear')) != 'positive':
+        return False
+
+    changed_support_score = float(evaluation.get('judgeable_changed_support_score', 0.0))
+    unresolved_cell_count = int(evaluation.get('unresolved_cell_count', 0))
+    unchanged_cell_count = int(evaluation.get('confirmed_unchanged_cell_count', 0))
+    changed_cells = extract_stage4_probe_coordinates(evaluation.get('confirmed_changed_cells', []))
+    return (
+        bool(changed_cells)
+        and changed_support_score >= STAGE4_NEAR_GLOBAL_OPENING_MIN_CHANGED_SUPPORT
+        and unresolved_cell_count <= STAGE4_NEAR_GLOBAL_OPENING_MAX_UNRESOLVED_CELLS
+        and unchanged_cell_count <= STAGE4_NEAR_GLOBAL_OPENING_MAX_UNCHANGED_CELLS
+        and stage4_coordinate_span_is_broad(changed_cells)
+    )
+
+
+def find_stage4_near_global_opening_attribution_start_frame(
+    *,
+    screened_candidate_union: ScreenedCandidateUnion,
+    ordered_records: list[MovementEvidenceRecord],
+    search_start_frame: int,
+    slice_end: int,
+    target_coordinates: frozenset[GridCoordinate],
+) -> int | None:
+    if not target_coordinates:
+        return None
+
+    required_touch_count = max(
+        1,
+        int(np.ceil(len(target_coordinates) * STAGE4_NEAR_GLOBAL_OPENING_MIN_TOUCHED_COVERAGE)),
+    )
+    qualifying_records = [
+        record
+        for record in collect_records_in_frame_range(
+            ordered_records,
+            search_start_frame,
+            slice_end,
+        )
+        if record.movement_present
+        and len(set(record.touched_grid_coordinates).intersection(target_coordinates)) >= required_touch_count
+        and stage4_coordinate_span_is_broad(
+            frozenset(set(record.touched_grid_coordinates).intersection(target_coordinates))
+        )
+    ]
+    if not qualifying_records:
+        return None
+
+    return max(search_start_frame, int(qualifying_records[0].frame_index))
+
+
+def find_stage4_changed_frontier_opening_attribution_start_frame(
+    *,
+    screened_candidate_union: ScreenedCandidateUnion,
+    ordered_records: list[MovementEvidenceRecord],
+    search_start_frame: int,
+    slice_end: int,
+    target_coordinates: frozenset[GridCoordinate],
+    max_gap_frames: int = 4,
+) -> int | None:
+    if not target_coordinates:
+        return None
+
+    required_touch_count = 1
+    if len(target_coordinates) > 1:
+        required_touch_count = max(
+            STAGE4_CHANGED_FRONTIER_OPENING_MIN_TOUCHED_CELLS,
+            int(np.ceil(len(target_coordinates) * STAGE4_CHANGED_FRONTIER_OPENING_MIN_TOUCHED_COVERAGE)),
+        )
+
+    qualifying_records = [
+        record
+        for record in collect_records_in_frame_range(
+            ordered_records,
+            search_start_frame,
+            slice_end,
+        )
+        if record.movement_present
+        and len(set(record.touched_grid_coordinates).intersection(target_coordinates)) >= required_touch_count
+    ]
+    if not qualifying_records:
+        return None
+
+    earliest_frame = int(qualifying_records[-1].frame_index)
+    previous_frame = earliest_frame
+    for record in reversed(qualifying_records[:-1]):
+        frame_index = int(record.frame_index)
+        if previous_frame - frame_index > max_gap_frames:
+            break
+        earliest_frame = frame_index
+        previous_frame = frame_index
+    return max(search_start_frame, earliest_frame)
 
 
 def evaluate_stage4_cell_level_probe(
@@ -4366,6 +4535,8 @@ def evaluate_stage4_cell_level_probe(
     carried_recently_changed_cells: frozenset[GridCoordinate],
     baseline_comparison_state: dict[GridCoordinate, dict[str, object]],
     previous_probe_end: int | None,
+    previous_probe_blocks_opening_attribution: bool = False,
+    carried_post_reset_contaminated_cells: frozenset[GridCoordinate] = frozenset(),
     reference_window_frames: int = STAGE3_REFERENCE_WINDOW_FRAMES,
 ) -> dict[str, object]:
     probe_started_at = time.perf_counter()
@@ -4558,6 +4729,12 @@ def evaluate_stage4_cell_level_probe(
         for coordinate in record.touched_grid_coordinates
         if coordinate in recently_active_cells
     )
+    post_reset_contaminated_cells = frozenset(
+        coordinate
+        for coordinate in carried_post_reset_contaminated_cells
+        if coordinate in recently_active_cells
+    )
+
 
     active_cell_last_frames: dict[GridCoordinate, int] = {}
     for record in relevant_source_records:
@@ -4595,6 +4772,11 @@ def evaluate_stage4_cell_level_probe(
                 slice_end + STAGE4_PROBE_HALF_WINDOW_FRAMES,
             ),
         )
+        if coordinate in post_reset_contaminated_cells:
+            coordinate_search_end = min(
+                coordinate_search_end,
+                slice_end + STAGE4_POST_RESET_LOCAL_SEARCH_FRAMES,
+            )
         current_search_starts.append(coordinate_search_start)
         current_search_ends.append(coordinate_search_end)
         if coordinate_search_end <= coordinate_search_start:
@@ -4697,7 +4879,11 @@ def evaluate_stage4_cell_level_probe(
             stage3_context,
         )
         change_score = None if change_details is None else float(change_details['change_score'])
-        if change_score is None:
+        coordinate_is_post_reset_contaminated = (
+            coordinate in post_reset_contaminated_cells
+            and coordinate in current_window_touched_cells
+        )
+        if change_score is None or coordinate_is_post_reset_contaminated:
             unresolved_cells.add(coordinate)
             cell_classification = 'unresolved'
         elif change_score >= 0.50:
@@ -4755,13 +4941,16 @@ def evaluate_stage4_cell_level_probe(
     )
     total_relevant_cells = max(1, len(recently_active_cells))
     total_judgeable_cells = max(1, len(judgeable_cells))
+    effective_unresolved_cells = unresolved_cells.difference(post_reset_contaminated_cells)
     changed_support_score = len(confirmed_changed_cells) / total_relevant_cells
     unchanged_support_score = len(confirmed_unchanged_cells) / total_relevant_cells
     unresolved_support_score = len(unresolved_cells) / total_relevant_cells
+    effective_unresolved_support_score = len(effective_unresolved_cells) / total_relevant_cells
     judgeable_changed_support_score = len(confirmed_changed_cells) / total_judgeable_cells
     judgeable_coverage = len(judgeable_cells) / total_relevant_cells
     changed_cell_count = len(confirmed_changed_cells)
     unresolved_cell_count = len(unresolved_cells)
+    effective_unresolved_cell_count = len(effective_unresolved_cells)
     changed_has_fresh_probe_support = stage4_coordinate_sets_have_local_connection(
         confirmed_changed_cells,
         current_window_touched_cells,
@@ -4787,14 +4976,14 @@ def evaluate_stage4_cell_level_probe(
         and after_reference_activity <= STAGE4_PROBE_LATE_RESOLUTION_MAX_AFTER_ACTIVITY
     )
 
-    unresolved_has_recent_activity_continuity = stage4_coordinate_sets_have_local_connection(unresolved_cells, freshly_touched_cells)
-    unresolved_has_carried_continuity = stage4_coordinate_sets_have_local_connection(unresolved_cells, carried_unresolved_cells)
-    structural_holding_support = bool(unresolved_cells) and (
+    unresolved_has_recent_activity_continuity = stage4_coordinate_sets_have_local_connection(effective_unresolved_cells, freshly_touched_cells)
+    unresolved_has_carried_continuity = stage4_coordinate_sets_have_local_connection(effective_unresolved_cells, carried_unresolved_cells)
+    structural_holding_support = bool(effective_unresolved_cells) and (
         unresolved_has_recent_activity_continuity
         or unresolved_has_carried_continuity
     )
     negative_has_broad_coverage = judgeable_coverage >= STAGE4_PROBE_NEGATIVE_MIN_JUDGEABLE_COVERAGE
-    negative_has_tiny_unresolved_remainder = unresolved_support_score <= STAGE4_PROBE_NEGATIVE_MAX_UNRESOLVED_SUPPORT
+    negative_has_tiny_unresolved_remainder = effective_unresolved_support_score <= STAGE4_PROBE_NEGATIVE_MAX_UNRESOLVED_SUPPORT
 
     if changed_cell_count >= STAGE4_PROBE_MIN_ABSOLUTE_CHANGED_CELLS and not late_resolution_only:
         classification = 'valid'
@@ -4827,25 +5016,106 @@ def evaluate_stage4_cell_level_probe(
         probe_label = 'unclear'
 
     opening_attribution_start_frame: int | None = None
+    contamination_only_gap = (
+        bool(carried_post_reset_contaminated_cells)
+        and bool(carried_unresolved_cells)
+        and frozenset(carried_unresolved_cells).issubset(carried_post_reset_contaminated_cells)
+    )
+    near_global_opening_candidate = stage4_probe_is_near_global_opening_candidate({
+        'probe_label': probe_label,
+        'judgeable_changed_support_score': judgeable_changed_support_score,
+        'unresolved_cell_count': unresolved_cell_count,
+        'confirmed_unchanged_cell_count': len(confirmed_unchanged_cells),
+        'confirmed_changed_cells': build_stage4_probe_cell_rows(confirmed_changed_cells),
+    })
     supports_band_opening_attribution = (
         probe_label == 'positive'
         and changed_touch_frame_count > 0
+        and (
+            not previous_probe_blocks_opening_attribution
+            or near_global_opening_candidate
+        )
         and (
             opening_zone_low_confidence
             or (
                 previous_probe_end is not None
                 and not carried_recently_changed_cells
-                and not carried_unresolved_cells
+                and (
+                    not carried_unresolved_cells
+                    or contamination_only_gap
+                )
             )
         )
     )
+    supports_changed_frontier_opening_attribution = (
+        probe_label == 'positive'
+        and previous_probe_blocks_opening_attribution
+        and previous_probe_end is not None
+        and changed_cell_count > 0
+        and not near_global_opening_candidate
+        and not opening_zone_low_confidence
+        and not carried_recently_changed_cells
+        and not carried_unresolved_cells
+        and changed_touch_frame_count > 0
+    )
+    opening_search_start_frame = (
+        screened_candidate_union.candidate_union.start_frame
+        if previous_probe_end is None
+        else previous_probe_end
+    )
     if supports_band_opening_attribution:
-        opening_attribution_start_frame = find_stage4_opening_attribution_start_frame(
+        if near_global_opening_candidate:
+            opening_attribution_start_frame = find_stage4_near_global_opening_attribution_start_frame(
+                screened_candidate_union=screened_candidate_union,
+                ordered_records=ordered_records,
+                search_start_frame=opening_search_start_frame,
+                slice_end=slice_end,
+                target_coordinates=recently_active_cells,
+            )
+        if opening_attribution_start_frame is None:
+            opening_attribution_start_frame = find_stage4_opening_attribution_start_frame(
+                screened_candidate_union=screened_candidate_union,
+                ordered_records=ordered_records,
+                search_start_frame=opening_search_start_frame,
+                slice_end=slice_end,
+                target_coordinates=recently_active_cells,
+            )
+    elif supports_changed_frontier_opening_attribution:
+        opening_attribution_start_frame = find_stage4_changed_frontier_opening_attribution_start_frame(
             screened_candidate_union=screened_candidate_union,
             ordered_records=ordered_records,
+            search_start_frame=opening_search_start_frame,
             slice_end=slice_end,
-            target_coordinates=recently_active_cells,
+            target_coordinates=confirmed_changed_cells,
         )
+
+    confirmed_changed_cell_rows = build_stage4_probe_cell_rows(confirmed_changed_cells)
+    confirmed_unchanged_cell_rows = build_stage4_probe_cell_rows(confirmed_unchanged_cells)
+    unresolved_cell_rows = build_stage4_probe_cell_rows(unresolved_cells)
+    state_reset_candidate = stage4_probe_is_state_reset_candidate({
+        'probe_label': probe_label,
+        'unresolved_cell_count': unresolved_cell_count,
+        'confirmed_changed_cell_count': changed_cell_count,
+        'changed_support_score': changed_support_score,
+        'confirmed_changed_cells': confirmed_changed_cell_rows,
+    })
+    post_reset_contaminated_carry = (
+        stage4_extract_post_reset_contaminated_cells({
+            'probe_label': probe_label,
+            'unresolved_cell_count': unresolved_cell_count,
+            'confirmed_changed_cell_count': changed_cell_count,
+            'changed_support_score': changed_support_score,
+            'confirmed_changed_cells': confirmed_changed_cell_rows,
+            'unresolved_cells': unresolved_cell_rows,
+            'recently_active_cells': build_stage4_probe_cell_rows(recently_active_cells),
+        })
+        if state_reset_candidate
+        else frozenset(
+            coordinate
+            for coordinate in unresolved_cells
+            if coordinate in carried_post_reset_contaminated_cells
+        )
+    )
 
     reason_summary = build_stage4_probe_reason_summary(
         probe_label=probe_label,
@@ -4882,10 +5152,11 @@ def evaluate_stage4_cell_level_probe(
         'recently_active_cells': build_stage4_probe_cell_rows(recently_active_cells),
         'judgeable_cells': build_stage4_probe_cell_rows(judgeable_cells),
         'contaminated_cells': build_stage4_probe_cell_rows(contaminated_cells),
-        'confirmed_changed_cells': build_stage4_probe_cell_rows(confirmed_changed_cells),
-        'confirmed_unchanged_cells': build_stage4_probe_cell_rows(confirmed_unchanged_cells),
-        'unresolved_cells': build_stage4_probe_cell_rows(unresolved_cells),
+        'confirmed_changed_cells': confirmed_changed_cell_rows,
+        'confirmed_unchanged_cells': confirmed_unchanged_cell_rows,
+        'unresolved_cells': unresolved_cell_rows,
         'cell_results': cell_results,
+        'post_reset_contaminated_cells': build_stage4_probe_cell_rows(post_reset_contaminated_carry),
         'changed_support_score': changed_support_score,
         'judgeable_changed_support_score': judgeable_changed_support_score,
         'unchanged_support_score': unchanged_support_score,
@@ -4928,6 +5199,7 @@ def evaluate_stage4_cell_level_probe(
         'baseline_comparison_update_cell_count': len(baseline_comparison_updates),
         '_baseline_comparison_updates': baseline_comparison_updates,
         'probe_label': probe_label,
+        'state_reset_candidate': state_reset_candidate,
     })
 
 def stage4_should_apply_opening_attribution(
@@ -5040,7 +5312,10 @@ def stage4_probe_supports_ambiguous_bridge(
     )
 
 
-def stage4_probe_supports_opening_backfill(evaluation: dict[str, object]) -> bool:
+def stage4_probe_supports_opening_backfill(
+    evaluation: dict[str, object],
+    anchor_evaluation: dict[str, object] | None = None,
+) -> bool:
     probe_label = str(evaluation.get('probe_label', 'unclear'))
     changed_support_score = float(evaluation.get('changed_support_score', 0.0))
     judgeable_changed_support_score = float(evaluation.get('judgeable_changed_support_score', 0.0))
@@ -5048,19 +5323,224 @@ def stage4_probe_supports_opening_backfill(evaluation: dict[str, object]) -> boo
     unresolved_cell_count = int(evaluation.get('unresolved_cell_count', 0))
     structural_holding_support = bool(evaluation.get('structural_holding_support', False))
 
+    baseline_support = False
     if probe_label == 'holding':
-        return (
+        baseline_support = (
             confirmed_changed_cell_count > 0
             or changed_support_score > 0.0
             or judgeable_changed_support_score > 0.0
             or (structural_holding_support and unresolved_cell_count > 0)
         )
+    elif probe_label == 'unclear':
+        # Do not let zero-changed ambiguous probes define the front edge of a
+        # positive band. They can still bridge once a band is active.
+        baseline_support = (
+            confirmed_changed_cell_count > 0
+            or changed_support_score > 0.0
+            or judgeable_changed_support_score > 0.0
+        )
 
-    if probe_label == 'unclear':
-        return structural_holding_support and unresolved_cell_count > 0
+    if not baseline_support:
+        return False
 
+    if (
+        anchor_evaluation is None
+        or 'unresolved_cells' not in evaluation
+        or 'confirmed_changed_cells' not in anchor_evaluation
+    ):
+        return baseline_support
+
+    anchor_changed_cells = extract_stage4_probe_coordinates(
+        anchor_evaluation.get('confirmed_changed_cells', [])
+    )
+    unresolved_cells = extract_stage4_probe_coordinates(evaluation.get('unresolved_cells', []))
+    if not anchor_changed_cells or not unresolved_cells:
+        return baseline_support
+
+    unresolved_has_anchor_connection = stage4_coordinate_sets_have_local_connection(
+        unresolved_cells,
+        anchor_changed_cells,
+    )
+    if probe_label == 'holding' and (
+        confirmed_changed_cell_count > 0
+        or changed_support_score > 0.0
+        or judgeable_changed_support_score > 0.0
+    ):
+        return True
+
+    return unresolved_has_anchor_connection
+
+
+
+def extract_stage4_probe_coordinates(cell_rows: Iterable[dict[str, object]]) -> frozenset[GridCoordinate]:
+    coordinates: set[GridCoordinate] = set()
+    for cell_row in cell_rows:
+        coordinate = cell_row.get('coordinate') if isinstance(cell_row, dict) else None
+        if (
+            isinstance(coordinate, (list, tuple))
+            and len(coordinate) == 2
+            and all(isinstance(value, int) for value in coordinate)
+        ):
+            coordinates.add((int(coordinate[0]), int(coordinate[1])))
+    return frozenset(coordinates)
+
+
+def stage4_coordinate_span_is_broad(coordinates: frozenset[GridCoordinate]) -> bool:
+    if not coordinates:
+        return False
+    row_indices = [coordinate[0] for coordinate in coordinates]
+    column_indices = [coordinate[1] for coordinate in coordinates]
+    row_span = max(row_indices) - min(row_indices)
+    column_span = max(column_indices) - min(column_indices)
+    return row_span >= STAGE4_STATE_RESET_MIN_ROW_SPAN and column_span >= STAGE4_STATE_RESET_MIN_COLUMN_SPAN
+
+
+
+def stage4_probe_is_state_reset_candidate(evaluation: dict[str, object]) -> bool:
+    if str(evaluation.get('probe_label', 'unclear')) != 'positive':
+        return False
+
+    unresolved_cell_count = int(evaluation.get('unresolved_cell_count', 0))
+    changed_cell_count = int(evaluation.get('confirmed_changed_cell_count', 0))
+    changed_support_score = float(evaluation.get('changed_support_score', 0.0))
+    changed_cells = extract_stage4_probe_coordinates(evaluation.get('confirmed_changed_cells', []))
+    if (
+        unresolved_cell_count <= 0
+        or changed_cell_count < STAGE4_STATE_RESET_MIN_CHANGED_CELLS
+        or not changed_cells
+    ):
+        return False
+
+    changed_clusters = build_stage3_connected_clusters(changed_cells)
+    has_reset_shape = (
+        len(changed_clusters) >= STAGE4_STATE_RESET_MIN_CHANGED_CLUSTER_COUNT
+        or stage4_coordinate_span_is_broad(changed_cells)
+    )
+    return has_reset_shape and changed_support_score >= STAGE4_STATE_RESET_MIN_CHANGED_SUPPORT
+
+
+
+def stage4_extract_post_reset_contaminated_cells(evaluation: dict[str, object]) -> frozenset[GridCoordinate]:
+    if not stage4_probe_is_state_reset_candidate(evaluation):
+        return frozenset()
+    unresolved_cells = extract_stage4_probe_coordinates(evaluation.get('unresolved_cells', []))
+    recently_active_cells = extract_stage4_probe_coordinates(evaluation.get('recently_active_cells', []))
+    unresolved_neighbors = stage4_collect_locally_connected_coordinates(
+        unresolved_cells,
+        recently_active_cells.difference(unresolved_cells),
+    )
+    return frozenset(unresolved_cells.union(unresolved_neighbors))
+
+
+def stage4_opening_probe_needs_revalidation(
+    screened_candidate_union: ScreenedCandidateUnion,
+    evaluation: dict[str, object],
+    sampled_frames: list[dict[str, object]] | None,
+) -> bool:
+    if not sampled_frames:
+        return False
+    if str(evaluation.get('probe_label', 'unclear')) != 'positive':
+        return False
+    if not bool(evaluation.get('opening_zone_low_confidence', False)):
+        return False
+
+    sampled_frame_start = min(int(sample['frame_index']) for sample in sampled_frames)
+    if screened_candidate_union.candidate_union.start_frame > (
+        sampled_frame_start + STAGE4_OPENING_REVALIDATION_MAX_CHAPTER_OFFSET_FRAMES
+    ):
+        return False
+
+    changed_cells = extract_stage4_probe_coordinates(evaluation.get('confirmed_changed_cells', []))
+    if not changed_cells or len(changed_cells) > STAGE4_OPENING_REVALIDATION_MAX_CHANGED_CELLS:
+        return False
+    if len(build_stage3_connected_clusters(changed_cells)) != 1:
+        return False
+
+    changed_support_score = float(evaluation.get('changed_support_score', 0.0))
+    judgeable_changed_support_score = float(evaluation.get('judgeable_changed_support_score', 0.0))
+    return (
+        changed_support_score <= STAGE4_OPENING_REVALIDATION_MAX_CHANGED_SUPPORT
+        and judgeable_changed_support_score <= STAGE4_OPENING_REVALIDATION_MAX_CHANGED_SUPPORT
+    )
+
+
+def stage4_opening_probe_collapses_under_later_revalidation(
+    target_changed_cells: frozenset[GridCoordinate],
+    probe_results: list[tuple[ClassifiedTimeSlice, dict[str, object]]],
+    probe_index: int,
+) -> bool:
+    if not target_changed_cells:
+        return False
+
+    lookahead_results = probe_results[
+        probe_index + 1 : probe_index + 1 + STAGE4_OPENING_REVALIDATION_LOOKAHEAD_PROBES
+    ]
+    for _, later_evaluation in lookahead_results:
+        later_cell_results = {
+            tuple(cell_result['coordinate']): str(cell_result.get('classification', 'unresolved'))
+            for cell_result in later_evaluation.get('cell_results', [])
+            if isinstance(cell_result, dict)
+            and isinstance(cell_result.get('coordinate'), list)
+            and len(cell_result['coordinate']) == 2
+        }
+        if any(
+            later_cell_results.get(coordinate) == 'confirmed_changed'
+            for coordinate in target_changed_cells
+        ):
+            return False
+
+        unchanged_matches = sum(
+            1
+            for coordinate in target_changed_cells
+            if later_cell_results.get(coordinate) == 'confirmed_unchanged'
+        )
+        if unchanged_matches <= 0:
+            continue
+
+        unchanged_match_ratio = unchanged_matches / max(1, len(target_changed_cells))
+        if unchanged_match_ratio >= STAGE4_OPENING_REVALIDATION_MIN_UNCHANGED_MATCH_RATIO:
+            return True
     return False
 
+
+def stage4_apply_opening_probe_revalidation(
+    screened_candidate_union: ScreenedCandidateUnion,
+    probe_results: list[tuple[ClassifiedTimeSlice, dict[str, object]]],
+    sampled_frames: list[dict[str, object]] | None,
+) -> list[tuple[ClassifiedTimeSlice, dict[str, object]]]:
+    rewritten_probe_results = list(probe_results)
+    for probe_index, (probe_slice, evaluation) in enumerate(rewritten_probe_results):
+        if not stage4_opening_probe_needs_revalidation(
+            screened_candidate_union,
+            evaluation,
+            sampled_frames,
+        ):
+            continue
+
+        target_changed_cells = extract_stage4_probe_coordinates(evaluation.get('confirmed_changed_cells', []))
+        if not stage4_opening_probe_collapses_under_later_revalidation(
+            target_changed_cells,
+            rewritten_probe_results,
+            probe_index,
+        ):
+            break
+
+        rewritten_evaluation = dict(evaluation)
+        rewritten_evaluation['classification'] = 'invalid'
+        rewritten_evaluation['reason'] = 'probe_cell_opening_revalidation_failed'
+        rewritten_evaluation['reason_summary'] = ('negative: opening low-confidence changed cells collapsed under later clean revalidation;')
+        rewritten_evaluation['probe_label'] = 'negative'
+        rewritten_evaluation['lasting_change_evidence_score'] = 0.0
+        rewritten_evaluation['opening_revalidation_rejected'] = True
+        rewritten_probe = replace(
+            probe_slice,
+            classification='invalid',
+            reason='probe_cell_opening_revalidation_failed',
+            lasting_change_evidence_score=0.0,
+        )
+        rewritten_probe_results[probe_index] = (rewritten_probe, rewritten_evaluation)
+        break
+    return rewritten_probe_results
 
 def build_stage4_bands_from_probe_results(
     screened_candidate_union: ScreenedCandidateUnion,
@@ -5091,7 +5571,8 @@ def build_stage4_bands_from_probe_results(
             if not active_band_probes and pending_holding_probes:
                 prepend_start = len(pending_holding_probes)
                 while prepend_start > 0 and stage4_probe_supports_opening_backfill(
-                    pending_holding_probes[prepend_start - 1][1]
+                    pending_holding_probes[prepend_start - 1][1],
+                    evaluation,
                 ):
                     prepend_start -= 1
                 if prepend_start < len(pending_holding_probes):
@@ -5106,7 +5587,8 @@ def build_stage4_bands_from_probe_results(
             if pending_holding_probes and not active_band_probes:
                 prepend_start = len(pending_holding_probes)
                 while prepend_start > 0 and stage4_probe_supports_opening_backfill(
-                    pending_holding_probes[prepend_start - 1][1]
+                    pending_holding_probes[prepend_start - 1][1],
+                    evaluation,
                 ):
                     prepend_start -= 1
                 if prepend_start < len(pending_holding_probes):
@@ -5155,6 +5637,8 @@ def classify_stage4_time_slices_with_subregion_debug(
         probe_results: list[tuple[ClassifiedTimeSlice, dict[str, object]]] = []
         carried_unresolved_cells: frozenset[GridCoordinate] = frozenset()
         carried_recently_changed_cells: frozenset[GridCoordinate] = frozenset()
+        carried_post_reset_contaminated_cells: frozenset[GridCoordinate] = frozenset()
+        previous_probe_blocks_opening_attribution = False
         baseline_comparison_state: dict[GridCoordinate, dict[str, object]] = {}
         previous_probe_end: int | None = None
         union_baseline_assignment_seconds = 0.0
@@ -5199,8 +5683,10 @@ def classify_stage4_time_slices_with_subregion_debug(
                 settings=settings,
                 carried_unresolved_cells=carried_unresolved_cells,
                 carried_recently_changed_cells=carried_recently_changed_cells,
+                carried_post_reset_contaminated_cells=carried_post_reset_contaminated_cells,
                 baseline_comparison_state=baseline_comparison_state,
                 previous_probe_end=previous_probe_end,
+                previous_probe_blocks_opening_attribution=previous_probe_blocks_opening_attribution,
             )
             probe_slice = build_classified_time_slice_from_evaluation(
                 screened_candidate_union=screened_candidate_union,
@@ -5229,11 +5715,26 @@ def classify_stage4_time_slices_with_subregion_debug(
                 for cell_row in evaluation.get('unresolved_cells', [])
                 if isinstance(cell_row, dict) and 'coordinate' in cell_row
             )
+            carried_post_reset_contaminated_cells = frozenset(
+                tuple(cell_row['coordinate'])
+                for cell_row in evaluation.get('post_reset_contaminated_cells', [])
+                if isinstance(cell_row, dict) and 'coordinate' in cell_row
+            )
             if str(evaluation.get('probe_label')) == 'negative':
                 carried_unresolved_cells = frozenset()
                 carried_recently_changed_cells = frozenset()
+                carried_post_reset_contaminated_cells = frozenset()
+            previous_probe_blocks_opening_attribution = (
+                str(evaluation.get('probe_label')) == 'negative'
+                and str(evaluation.get('reason')) == 'probe_cell_broad_unchanged_support'
+            )
             previous_probe_end = slice_end
 
+        probe_results = stage4_apply_opening_probe_revalidation(
+            screened_candidate_union,
+            probe_results,
+            sampled_frames,
+        )
         classified_slices.extend(
             build_stage4_bands_from_probe_results(screened_candidate_union, probe_results)
         )
@@ -6003,6 +6504,7 @@ def serialize_stage4_time_slice_subregion_debug_entry(
         'recently_active_cells': evaluation.get('recently_active_cells', []),
         'judgeable_cells': evaluation.get('judgeable_cells', []),
         'contaminated_cells': evaluation.get('contaminated_cells', []),
+        'post_reset_contaminated_cells': evaluation.get('post_reset_contaminated_cells', []),
         'confirmed_changed_cells': evaluation.get('confirmed_changed_cells', []),
         'confirmed_unchanged_cells': evaluation.get('confirmed_unchanged_cells', []),
         'unresolved_cells': evaluation.get('unresolved_cells', []),
@@ -6023,6 +6525,7 @@ def serialize_stage4_time_slice_subregion_debug_entry(
         'opening_attribution_start_frame': evaluation.get('opening_attribution_start_frame'),
         'opening_attribution_start_time': evaluation.get('opening_attribution_start_time'),
         'late_resolution_only': bool(evaluation.get('late_resolution_only', False)),
+        'state_reset_candidate': bool(evaluation.get('state_reset_candidate', False)),
         'changed_touch_frame_count': int(evaluation.get('changed_touch_frame_count', 0)),
         'changed_touch_frame_ratio': round(float(evaluation.get('changed_touch_frame_ratio', 0.0)), 6),
         'probe_label': evaluation.get('probe_label'),
@@ -6524,6 +7027,20 @@ def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, obje
     )
     output_paths['summary'] = summary_output_path
     return output_paths
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -1,0 +1,41 @@
+[
+  {
+    "range_index": 1,
+    "parent_union_index": 1,
+    "start_frame": 457,
+    "end_frame": 647,
+    "start_time": "00:00:15:07",
+    "end_time": "00:00:21:17",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_boundary": false,
+    "boundary_count": 0
+  },
+  {
+    "range_index": 2,
+    "parent_union_index": 2,
+    "start_frame": 773,
+    "end_frame": 807,
+    "start_time": "00:00:25:23",
+    "end_time": "00:00:26:27",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_boundary": false,
+    "boundary_count": 0
+  },
+  {
+    "range_index": 3,
+    "parent_union_index": 2,
+    "start_frame": 860,
+    "end_frame": 1707,
+    "start_time": "00:00:28:20",
+    "end_time": "00:00:56:27",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_boundary": false,
+    "boundary_count": 0
+  }
+]

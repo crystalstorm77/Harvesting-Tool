@@ -1,0 +1,37 @@
+[
+  {
+    "stage_key": "runtime_stage_1a_movement_evidence",
+    "stage_label": "Runtime Stage 1A - Scanning chapter for movement evidence",
+    "elapsed_seconds": 0.094351,
+    "elapsed_hhmmss": "00:00",
+    "item_count": 6568
+  },
+  {
+    "stage_key": "runtime_stage_1b_movement_spans",
+    "stage_label": "Runtime Stage 1B - Building movement spans",
+    "elapsed_seconds": 0.0102,
+    "elapsed_hhmmss": "00:00",
+    "item_count": 35
+  },
+  {
+    "stage_key": "runtime_stage_2a_candidate_unions",
+    "stage_label": "Runtime Stage 2A - Building candidate unions",
+    "elapsed_seconds": 0.00393,
+    "elapsed_hhmmss": "00:00",
+    "item_count": 15
+  },
+  {
+    "stage_key": "runtime_stage_2b_art_state_samples",
+    "stage_label": "Runtime Stage 2B - Collecting Stage 3 art-state samples",
+    "elapsed_seconds": 160.217322,
+    "elapsed_hhmmss": "02:40",
+    "item_count": 6569
+  },
+  {
+    "stage_key": "runtime_stage_3a_union_screening",
+    "stage_label": "Runtime Stage 3A - Screening candidate unions",
+    "elapsed_seconds": 480.785147,
+    "elapsed_hhmmss": "08:00",
+    "item_count": 15
+  }
+]

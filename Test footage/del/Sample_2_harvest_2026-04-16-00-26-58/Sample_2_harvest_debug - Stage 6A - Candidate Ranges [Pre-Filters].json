@@ -1,0 +1,28 @@
+[
+  {
+    "range_index": 1,
+    "parent_union_index": 1,
+    "start_frame": 457,
+    "end_frame": 647,
+    "start_time": "00:00:15:07",
+    "end_time": "00:00:21:17",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_boundary": false,
+    "boundary_count": 0
+  },
+  {
+    "range_index": 2,
+    "parent_union_index": 2,
+    "start_frame": 773,
+    "end_frame": 1807,
+    "start_time": "00:00:25:23",
+    "end_time": "00:01:00:07",
+    "source_classifications": [
+      "valid"
+    ],
+    "includes_boundary": false,
+    "boundary_count": 0
+  }
+]

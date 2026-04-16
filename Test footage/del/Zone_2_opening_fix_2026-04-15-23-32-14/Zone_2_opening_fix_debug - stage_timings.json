@@ -1,0 +1,23 @@
+[
+  {
+    "stage_key": "runtime_stage_1a_movement_evidence",
+    "stage_label": "Runtime Stage 1A - Scanning chapter for movement evidence",
+    "elapsed_seconds": 0.182633,
+    "elapsed_hhmmss": "00:00",
+    "item_count": 6568
+  },
+  {
+    "stage_key": "runtime_stage_1b_movement_spans",
+    "stage_label": "Runtime Stage 1B - Building movement spans",
+    "elapsed_seconds": 0.010235,
+    "elapsed_hhmmss": "00:00",
+    "item_count": 35
+  },
+  {
+    "stage_key": "runtime_stage_2a_candidate_unions",
+    "stage_label": "Runtime Stage 2A - Building candidate unions",
+    "elapsed_seconds": 0.003633,
+    "elapsed_hhmmss": "00:00",
+    "item_count": 15
+  }
+]
