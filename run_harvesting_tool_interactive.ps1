@@ -95,6 +95,7 @@ $defaultLeadInFrames = '2'
 $defaultTailAfterSeconds = '0'
 $defaultTailAfterFrames = '4'
 $defaultSampleStride = '1'
+$defaultScanResolution = 'full'
 $defaultActivityThreshold = '8.0'
 $defaultActivePixelRatio = '0.0015'
 $defaultMinBurst = '00:00:00:10'
@@ -133,10 +134,19 @@ $leadInFrames = Read-HostWithDefault -Prompt 'Lead-in frames' -DefaultValue $def
 $tailAfterSeconds = Read-HostWithDefault -Prompt 'Tail-after seconds' -DefaultValue $defaultTailAfterSeconds
 $tailAfterFrames = Read-HostWithDefault -Prompt 'Tail-after frames' -DefaultValue $defaultTailAfterFrames
 $sampleStride = Read-HostWithDefault -Prompt 'Sample stride' -DefaultValue $defaultSampleStride
+$scanResolution = Read-HostWithDefault -Prompt 'Scan resolution (full/half/quarter/eighth)' -DefaultValue $defaultScanResolution
 $activityThreshold = Read-HostWithDefault -Prompt 'Activity threshold' -DefaultValue $defaultActivityThreshold
 $activePixelRatio = Read-HostWithDefault -Prompt 'Active pixel ratio' -DefaultValue $defaultActivePixelRatio
 $minBurst = Read-HostWithDefault -Prompt 'Minimum burst duration' -DefaultValue $defaultMinBurst
 $useLegacyDetector = Read-YesNoWithDefault -Prompt 'Use legacy detector instead of V3 staged detector' -DefaultValue $defaultUseLegacyDetector
+
+$scanResolution = $scanResolution.Trim().ToLowerInvariant()
+if ($scanResolution -notin @('full', 'half', 'quarter', 'eighth')) {
+    Write-Host ''
+    Write-Host "Invalid scan resolution '$scanResolution'. Expected one of: full, half, quarter, eighth." -ForegroundColor Red
+    Read-Host 'Press Enter to close'
+    exit 1
+}
 
 $outputStem = Join-Path $runOutputRoot $safeStemName
 $debugStem = Join-Path $runOutputRoot ($safeStemName + '_debug')
@@ -148,6 +158,7 @@ Write-Host "  Output folder: $runOutputRoot"
 Write-Host "  Chapter: $chapterStart -> $chapterEnd"
 Write-Host "  Output stem: $outputStem"
 Write-Host "  Debug stem: $debugStem"
+Write-Host "  Scan resolution: $scanResolution"
 Write-Host "  Resolve timeline name: $resolveTimelineName"
 Write-Host "  Use legacy detector: $useLegacyDetector"
 if (-not [string]::IsNullOrWhiteSpace($precomputedMovementEvidenceJson)) {
@@ -203,6 +214,7 @@ $engineArgs = @(
     '-OutputStem', $outputStem,
     '-DebugStem', $debugStem,
     '-SampleStride', ([int]$sampleStride).ToString(),
+    '-ScanResolution', $scanResolution,
     '-ActivityThreshold', ([double]$activityThreshold).ToString([System.Globalization.CultureInfo]::InvariantCulture),
     '-ActivePixelRatio', ([double]$activePixelRatio).ToString([System.Globalization.CultureInfo]::InvariantCulture),
     '-MinBurst', $minBurst,

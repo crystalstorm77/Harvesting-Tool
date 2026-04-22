@@ -1,0 +1,12 @@
+{
+  "mode": "full",
+  "scale_divisor": 1,
+  "source_frame_width": 3840,
+  "source_frame_height": 2160,
+  "selected_frame_width": 3840,
+  "selected_frame_height": 2160,
+  "source_canvas_width": 2590,
+  "source_canvas_height": 2026,
+  "analysis_canvas_width": 2590,
+  "analysis_canvas_height": 2026
+}

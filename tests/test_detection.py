@@ -15,6 +15,9 @@ from harvesting_tool.detection import (
     ART_STATE_BASELINE_MAX_SAMPLES,
     ART_STATE_REVEAL_WINDOW_FRAMES,
     VALIDATION_MERGE_GAP_FRAMES,
+    build_scan_resolution_display_labels,
+    build_scan_resolution_metadata,
+    compute_scaled_dimensions,
     DetectionDebugBundle,
     DetectorSettings,
     SampleDebugRow,
@@ -137,6 +140,29 @@ class TimecodeAndOutputTests(unittest.TestCase):
             self.assertTrue(paths["bursts_json"].exists())
             self.assertTrue(paths["candidate_clips_json"].exists())
             self.assertIn("micro_event_marker", paths["frames_csv"].read_text(encoding="utf-8"))
+
+    def test_scan_resolution_display_labels_match_expected_sizes(self) -> None:
+        labels = build_scan_resolution_display_labels(1920, 1080)
+
+        self.assertEqual(labels["full"], "1920x1080")
+        self.assertEqual(labels["half"], "960x540")
+        self.assertEqual(labels["quarter"], "480x270")
+        self.assertEqual(labels["eighth"], "240x135")
+
+    def test_scan_resolution_metadata_tracks_selected_frame_and_canvas_sizes(self) -> None:
+        settings = make_settings()
+        settings = DetectorSettings(**{**settings.__dict__, "scan_resolution": "half"})
+
+        metadata = build_scan_resolution_metadata(3840, 2160, settings)
+
+        self.assertEqual(metadata["mode"], "half")
+        self.assertEqual(metadata["selected_frame_width"], 1920)
+        self.assertEqual(metadata["selected_frame_height"], 1080)
+        self.assertGreater(int(metadata["source_canvas_width"]), int(metadata["analysis_canvas_width"]))
+
+    def test_compute_scaled_dimensions_uses_floor_division_with_minimum_one(self) -> None:
+        self.assertEqual(compute_scaled_dimensions(1919, 1079, "half"), (959, 539))
+        self.assertEqual(compute_scaled_dimensions(3, 3, "eighth"), (1, 1))
 
 
 # ============================================================

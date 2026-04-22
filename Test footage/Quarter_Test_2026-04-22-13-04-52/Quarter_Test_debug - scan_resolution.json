@@ -1,0 +1,12 @@
+{
+  "mode": "quarter",
+  "scale_divisor": 4,
+  "source_frame_width": 3840,
+  "source_frame_height": 2160,
+  "selected_frame_width": 960,
+  "selected_frame_height": 540,
+  "source_canvas_width": 2590,
+  "source_canvas_height": 2026,
+  "analysis_canvas_width": 647,
+  "analysis_canvas_height": 506
+}

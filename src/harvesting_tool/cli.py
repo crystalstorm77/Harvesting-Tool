@@ -10,11 +10,14 @@ from pathlib import Path
 from typing import Callable
 
 from harvesting_tool.detection import (
+    DEFAULT_SCAN_RESOLUTION,
     DetectionDebugBundle,
     DetectorSettings,
     Timecode,
+    build_scan_resolution_display_labels,
     build_candidate_clips,
     detect_candidate_clips,
+    inspect_video_frame_dimensions,
     parse_chapter_range,
     write_cut_lists,
     write_debug_artifacts,
@@ -42,6 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug-stem", type=Path, help="Optional output path stem for detector diagnostic files.")
     parser.add_argument("--precomputed-movement-evidence-json", type=Path, help="Optional path to a previously created Stage 1A movement evidence JSON file. When provided, the staged detector reuses that record instead of rescanning the chapter for movement evidence.")
     parser.add_argument("--sample-stride", type=int, default=3, help="Analyze every Nth frame for first-pass activity detection.")
+    parser.add_argument(
+        "--scan-resolution",
+        choices=["full", "half", "quarter", "eighth"],
+        default=DEFAULT_SCAN_RESOLUTION,
+        help="Choose the resolution used for scan analysis.",
+    )
     parser.add_argument("--activity-threshold", type=float, default=12.0, help="Per-pixel delta threshold for activity.")
     parser.add_argument("--active-pixel-ratio", type=float, default=0.015, help="Fraction of changed pixels needed to mark activity.")
     parser.add_argument("--min-burst", default="00:00:00:10", help="Minimum burst length in HH:MM:SS:FF.")
@@ -84,6 +93,7 @@ def build_settings(args: argparse.Namespace) -> DetectorSettings:
         max_clip_length=Timecode.from_hhmmssff(args.max_clip_length),
         pause_threshold=Timecode.from_hhmmssff(args.pause_threshold),
         sample_stride=effective_sample_stride,
+        scan_resolution=args.scan_resolution,
         activity_threshold=args.activity_threshold,
         active_pixel_ratio=args.active_pixel_ratio,
         min_burst_length=Timecode.from_hhmmssff(args.min_burst),
@@ -141,6 +151,15 @@ def run(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Path], ResolveR
     settings = build_settings(args)
     progress_reporter = build_progress_reporter()
     status_reporter = build_status_reporter()
+    frame_width, frame_height = inspect_video_frame_dimensions(args.video_path)
+    resolution_labels = build_scan_resolution_display_labels(frame_width, frame_height)
+    status_reporter(
+        "Scan resolution options: "
+        + ", ".join(f"{mode} {label}" for mode, label in resolution_labels.items())
+    )
+    status_reporter(
+        f"Selected scan resolution: {settings.scan_resolution} {resolution_labels[settings.scan_resolution]}"
+    )
 
     if not args.use_legacy_detector:
         final_ranges, staged_debug_payload = detect_staged_activity_ranges(

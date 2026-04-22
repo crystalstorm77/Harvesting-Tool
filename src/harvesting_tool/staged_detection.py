@@ -31,6 +31,7 @@ from harvesting_tool.detection import (
     DetectorSettings,
     Timecode,
     backtrack_event_start,
+    build_scan_resolution_metadata,
     build_art_state_change_mask,
     build_median_baseline,
     build_persistent_change_mask,
@@ -38,6 +39,8 @@ from harvesting_tool.detection import (
     collect_window_samples,
     count_active_blocks,
     emit_scan_progress,
+    extract_canvas_region,
+    inspect_video_frame_dimensions,
     is_weak_art_change_signal,
     should_enter_active_state,
     should_remain_active_state,
@@ -314,17 +317,6 @@ def clamp_score(value: float) -> float:
 
 
 
-def extract_canvas_region(frame, cv2):
-    frame_height, frame_width = frame.shape[:2]
-    left = int(frame_width * CANVAS_LEFT_RATIO)
-    right = int(frame_width * CANVAS_RIGHT_RATIO)
-    top = int(frame_height * CANVAS_TOP_RATIO)
-    bottom = int(frame_height * CANVAS_BOTTOM_RATIO)
-    canvas_frame = frame[top:bottom, left:right]
-    gray = cv2.cvtColor(canvas_frame, cv2.COLOR_BGR2GRAY)
-    return cv2.GaussianBlur(gray, (3, 3), 0)
-
-
 def get_stage3_sample_gray(sample: dict[str, object]):
     gray = sample.get('gray')
     if gray is not None:
@@ -485,7 +477,7 @@ def detect_movement_evidence_records(
                 last_percent=last_progress_percent,
             )
             if ((current_frame - chapter_range.start.total_frames) % settings.sample_stride) == 0:
-                canvas_gray = extract_canvas_region(frame, cv2)
+                canvas_gray = extract_canvas_region(frame, settings, cv2)
                 stage1_sample = {
                     'frame_index': current_frame,
                     'gray': canvas_gray,
@@ -943,7 +935,7 @@ def collect_stage3_art_state_samples(
             if not success:
                 break
             if ((current_frame - chapter_range.start.total_frames) % settings.sample_stride) == 0:
-                canvas_gray = extract_canvas_region(frame, cv2)
+                canvas_gray = extract_canvas_region(frame, settings, cv2)
                 sampled_frames.append(
                     {
                         'frame_index': current_frame,
@@ -6730,12 +6722,52 @@ def serialize_movement_evidence_record(record: MovementEvidenceRecord) -> dict[s
     }
 
 
+def extract_scan_resolution_mode(value: object) -> str:
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return str(value.item())
+        if value.size == 1:
+            return str(value.reshape(-1)[0])
+    return str(value)
+
+
+def validate_scan_resolution_metadata(
+    *,
+    actual_mode: str,
+    actual_canvas_shape: tuple[int, int] | None,
+    expected_metadata: dict[str, object] | None,
+    artifact_description: str,
+    artifact_path: Path,
+) -> None:
+    if expected_metadata is None:
+        return
+    expected_mode = str(expected_metadata['mode'])
+    if actual_mode != expected_mode:
+        raise RuntimeError(
+            f"{artifact_description} was created at scan resolution '{actual_mode}' "
+            f"but current run uses '{expected_mode}': {artifact_path}"
+        )
+    expected_canvas_shape = (
+        int(expected_metadata['analysis_canvas_height']),
+        int(expected_metadata['analysis_canvas_width']),
+    )
+    if actual_canvas_shape is not None and actual_canvas_shape != expected_canvas_shape:
+        raise RuntimeError(
+            f"{artifact_description} has analysis canvas shape {actual_canvas_shape[1]}x{actual_canvas_shape[0]} "
+            f"but current run expects {expected_canvas_shape[1]}x{expected_canvas_shape[0]}: {artifact_path}"
+        )
+
+
 
 
 
 def build_precomputed_movement_evidence_cache_path(path: Path) -> Path:
     return path.with_suffix('.npz')
-def write_precomputed_movement_evidence_record_cache(path: Path, serialized_records: list[dict[str, object]]) -> Path:
+def write_precomputed_movement_evidence_record_cache(
+    path: Path,
+    serialized_records: list[dict[str, object]],
+    scan_resolution_metadata: dict[str, object] | None = None,
+) -> Path:
     output_path = build_precomputed_movement_evidence_cache_path(path)
     record_count = len(serialized_records)
     record_indices = np.empty(record_count, dtype=np.int32)
@@ -6786,9 +6818,24 @@ def write_precomputed_movement_evidence_record_cache(path: Path, serialized_reco
         movement_strength_scores=movement_strength_scores,
         touched_coordinate_offsets=touched_coordinate_offsets,
         touched_coordinate_values=touched_coordinate_values,
+        scan_resolution_mode='full' if scan_resolution_metadata is None else str(scan_resolution_metadata['mode']),
+        analysis_canvas_shape=(
+            np.asarray(
+                (
+                    int(scan_resolution_metadata['analysis_canvas_height']),
+                    int(scan_resolution_metadata['analysis_canvas_width']),
+                ),
+                dtype=np.int32,
+            )
+            if scan_resolution_metadata is not None
+            else np.asarray((0, 0), dtype=np.int32)
+        ),
     )
     return output_path
-def load_precomputed_movement_evidence_record_cache(path: Path) -> list[MovementEvidenceRecord]:
+def load_precomputed_movement_evidence_record_cache(
+    path: Path,
+    expected_scan_resolution_metadata: dict[str, object] | None = None,
+) -> list[MovementEvidenceRecord]:
     try:
         with np.load(path, allow_pickle=False) as payload:
             record_indices = payload['record_indices']
@@ -6803,8 +6850,25 @@ def load_precomputed_movement_evidence_record_cache(path: Path) -> list[Movement
             movement_strength_scores = payload['movement_strength_scores']
             touched_coordinate_offsets = payload['touched_coordinate_offsets']
             touched_coordinate_values = payload['touched_coordinate_values']
+            scan_resolution_mode = (
+                extract_scan_resolution_mode(payload['scan_resolution_mode'])
+                if 'scan_resolution_mode' in payload
+                else 'full'
+            )
+            analysis_canvas_shape = (
+                tuple(int(dimension) for dimension in payload['analysis_canvas_shape'].tolist())
+                if 'analysis_canvas_shape' in payload
+                else None
+            )
     except Exception as exc:
         raise RuntimeError(f'Unable to load precomputed movement evidence cache: {path}') from exc
+    validate_scan_resolution_metadata(
+        actual_mode=scan_resolution_mode,
+        actual_canvas_shape=analysis_canvas_shape,
+        expected_metadata=expected_scan_resolution_metadata,
+        artifact_description='Precomputed movement evidence cache',
+        artifact_path=path,
+    )
     record_count = len(record_indices)
     expected_lengths = (
         len(frame_indices),
@@ -6879,13 +6943,25 @@ def deserialize_movement_evidence_record(payload: dict[str, object]) -> Movement
     )
 
 
-def load_precomputed_movement_evidence_records(path: Path) -> list[MovementEvidenceRecord]:
+def load_precomputed_movement_evidence_records(
+    path: Path,
+    expected_scan_resolution_metadata: dict[str, object] | None = None,
+) -> list[MovementEvidenceRecord]:
     cache_path = find_precomputed_movement_evidence_cache_path(path)
     if cache_path is not None:
         try:
-            return load_precomputed_movement_evidence_record_cache(cache_path)
+            return load_precomputed_movement_evidence_record_cache(
+                cache_path,
+                expected_scan_resolution_metadata=expected_scan_resolution_metadata,
+            )
         except RuntimeError:
+            if expected_scan_resolution_metadata is not None:
+                raise
             pass
+    if expected_scan_resolution_metadata is not None and str(expected_scan_resolution_metadata['mode']) != 'full':
+        raise RuntimeError(
+            f"Precomputed movement evidence JSON without cache metadata can only be reused with full scan resolution: {path}"
+        )
     raw_payload = json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(raw_payload, list):
         raise RuntimeError(f'Precomputed movement evidence JSON must contain a top-level list: {path}')
@@ -6913,7 +6989,11 @@ def get_stage3_canvas_shape(sample: dict[str, object]) -> tuple[int, int]:
     raise RuntimeError('Stage 3 sample is missing canvas shape metadata.')
 
 
-def write_reusable_stage3_art_state_sample_cache(debug_stem: Path, sampled_frames: list[dict[str, object]]) -> Path:
+def write_reusable_stage3_art_state_sample_cache(
+    debug_stem: Path,
+    sampled_frames: list[dict[str, object]],
+    scan_resolution_metadata: dict[str, object] | None = None,
+) -> Path:
     output_path = build_staged_debug_output_path(debug_stem, 'reusable_stage3_art_state_samples', '.npz')
     frame_indices = np.asarray([int(sample['frame_index']) for sample in sampled_frames], dtype=np.int32)
     if sampled_frames:
@@ -6922,21 +7002,42 @@ def write_reusable_stage3_art_state_sample_cache(debug_stem: Path, sampled_frame
     else:
         canvas_shape = np.asarray((0, 0), dtype=np.int32)
         gray_stack = np.empty((0, 0, 0), dtype=np.uint8)
-    np.savez(output_path, frame_indices=frame_indices, canvas_shape=canvas_shape, gray=gray_stack)
+    np.savez(
+        output_path,
+        frame_indices=frame_indices,
+        canvas_shape=canvas_shape,
+        gray=gray_stack,
+        scan_resolution_mode='full' if scan_resolution_metadata is None else str(scan_resolution_metadata['mode']),
+    )
     return output_path
 
 
-def load_reusable_stage3_art_state_sample_cache(path: Path) -> list[dict[str, object]]:
+def load_reusable_stage3_art_state_sample_cache(
+    path: Path,
+    expected_scan_resolution_metadata: dict[str, object] | None = None,
+) -> list[dict[str, object]]:
     try:
         with np.load(path, allow_pickle=False) as payload:
             frame_indices = payload['frame_indices']
             gray_stack = payload['gray'] if 'gray' in payload else payload['art_gray']
+            scan_resolution_mode = (
+                extract_scan_resolution_mode(payload['scan_resolution_mode'])
+                if 'scan_resolution_mode' in payload
+                else 'full'
+            )
             if 'canvas_shape' in payload:
                 canvas_shape = tuple(int(dimension) for dimension in payload['canvas_shape'].tolist())
             elif 'canvas_gray' in payload:
                 canvas_gray_stack = payload['canvas_gray']
                 if len(frame_indices) != len(canvas_gray_stack) or len(frame_indices) != len(gray_stack):
                     raise RuntimeError(f'Reusable Stage 2B frame payload is inconsistent: {path}')
+                validate_scan_resolution_metadata(
+                    actual_mode=scan_resolution_mode,
+                    actual_canvas_shape=tuple(int(dimension) for dimension in canvas_gray_stack[0].shape) if len(canvas_gray_stack) else None,
+                    expected_metadata=expected_scan_resolution_metadata,
+                    artifact_description='Reusable Stage 2B frame payload',
+                    artifact_path=path,
+                )
                 return [
                     {
                         'frame_index': int(frame_indices[index]),
@@ -6950,6 +7051,13 @@ def load_reusable_stage3_art_state_sample_cache(path: Path) -> list[dict[str, ob
                 raise RuntimeError(f'Reusable Stage 2B frame payload is missing canvas shape metadata: {path}')
     except Exception as exc:
         raise RuntimeError(f'Unable to load reusable Stage 2B frame payload: {path}') from exc
+    validate_scan_resolution_metadata(
+        actual_mode=scan_resolution_mode,
+        actual_canvas_shape=canvas_shape,
+        expected_metadata=expected_scan_resolution_metadata,
+        artifact_description='Reusable Stage 2B frame payload',
+        artifact_path=path,
+    )
     if len(frame_indices) != len(gray_stack):
         raise RuntimeError(f'Reusable Stage 2B frame payload is inconsistent: {path}')
     return [
@@ -7406,6 +7514,8 @@ def detect_staged_activity_ranges(
 ) -> tuple[list[tuple[int, int]], dict[str, object]]:
     stage_timings: list[dict[str, object]] = []
     total_started_at = time.perf_counter()
+    frame_width, frame_height = inspect_video_frame_dimensions(video_path)
+    scan_resolution_metadata = build_scan_resolution_metadata(frame_width, frame_height, settings)
 
     def flush_debug_payload(debug_payload: dict[str, object]) -> None:
         if debug_stem is None:
@@ -7426,7 +7536,10 @@ def detect_staged_activity_ranges(
             progress_callback=progress_callback,
         )
     else:
-        records = load_precomputed_movement_evidence_records(precomputed_movement_evidence_path)
+        records = load_precomputed_movement_evidence_records(
+            precomputed_movement_evidence_path,
+            expected_scan_resolution_metadata=scan_resolution_metadata,
+        )
         reused_stage3_sample_cache_path = find_precomputed_stage3_art_state_sample_cache_path_from_movement_evidence_path(
             precomputed_movement_evidence_path
         )
@@ -7448,8 +7561,16 @@ def detect_staged_activity_ranges(
                 reused_stage3_sample_cache_path = None
             else:
                 retained_stage3_samples = load_reusable_stage3_art_state_sample_cache(
-                    reused_stage3_sample_cache_path
+                    reused_stage3_sample_cache_path,
+                    expected_scan_resolution_metadata=scan_resolution_metadata,
                 )
+    if retained_stage3_samples:
+        scan_resolution_metadata = build_scan_resolution_metadata(
+            frame_width,
+            frame_height,
+            settings,
+            analysis_canvas_shape=get_stage3_canvas_shape(retained_stage3_samples[0]),
+        )
     elapsed_seconds = time.perf_counter() - stage_started_at
     stage_timings.append(build_stage_timing_entry('runtime_stage_1a_movement_evidence', 'Runtime Stage 1A - Scanning chapter for movement evidence', elapsed_seconds, len(records)))
     if precomputed_movement_evidence_path is None:
@@ -7458,6 +7579,7 @@ def detect_staged_activity_ranges(
         emit_stage_status(status_callback, f"Runtime Stage 1A - Loading precomputed movement evidence complete in {format_stage_elapsed(elapsed_seconds)} ({len(records)} movement evidence records)")
     serialized_records = [serialize_movement_evidence_record(record) for record in records]
     flush_debug_payload({
+        'scan_resolution': scan_resolution_metadata,
         'movement_evidence_records': serialized_records,
         'stage_timings': stage_timings,
     })
@@ -7470,6 +7592,7 @@ def detect_staged_activity_ranges(
     emit_stage_status(status_callback, f"Runtime Stage 1B - Building movement spans complete in {format_stage_elapsed(elapsed_seconds)} ({len(movement_spans)} movement spans)")
     serialized_movement_spans = [serialize_movement_span(span) for span in movement_spans]
     flush_debug_payload({
+        'scan_resolution': scan_resolution_metadata,
         'movement_evidence_records': serialized_records,
         'movement_spans': serialized_movement_spans,
         'stage_timings': stage_timings,
@@ -7483,6 +7606,7 @@ def detect_staged_activity_ranges(
     emit_stage_status(status_callback, f"Runtime Stage 2A - Building candidate unions complete in {format_stage_elapsed(elapsed_seconds)} ({len(candidate_unions)} candidate unions)")
     serialized_candidate_unions = [serialize_candidate_union(candidate_union) for candidate_union in candidate_unions]
     flush_debug_payload({
+        'scan_resolution': scan_resolution_metadata,
         'movement_evidence_records': serialized_records,
         'movement_spans': serialized_movement_spans,
         'candidate_unions': serialized_candidate_unions,
@@ -7507,6 +7631,13 @@ def detect_staged_activity_ranges(
         precomputed_samples=retained_stage3_samples,
         reuse_source_description=reuse_source_description,
     )
+    if stage3_art_state_samples:
+        scan_resolution_metadata = build_scan_resolution_metadata(
+            frame_width,
+            frame_height,
+            settings,
+            analysis_canvas_shape=get_stage3_canvas_shape(stage3_art_state_samples[0]),
+        )
     elapsed_seconds = time.perf_counter() - stage_started_at
     stage_timings.append(build_stage_timing_entry('runtime_stage_2b_art_state_samples', 'Runtime Stage 2B - Collecting Stage 3 art-state samples', elapsed_seconds, len(stage3_art_state_samples)))
     emit_stage_status(status_callback, f"Runtime Stage 2B - Collecting Stage 3 art-state samples complete in {format_stage_elapsed(elapsed_seconds)} ({len(stage3_art_state_samples)} sampled frames)")
@@ -7530,7 +7661,11 @@ def detect_staged_activity_ranges(
                 try:
                     os.link(reused_stage3_sample_cache_path, reusable_sample_cache_output_path)
                 except OSError:
-                    write_reusable_stage3_art_state_sample_cache(debug_stem, stage3_art_state_samples)
+                    write_reusable_stage3_art_state_sample_cache(
+                        debug_stem,
+                        stage3_art_state_samples,
+                        scan_resolution_metadata=scan_resolution_metadata,
+                    )
             elapsed_seconds = time.perf_counter() - stage_started_at
             stage_timings.append(
                 build_stage_timing_entry(
@@ -7547,7 +7682,11 @@ def detect_staged_activity_ranges(
         else:
             emit_stage_status(status_callback, 'Runtime Stage 1C - Writing reusable Stage 2B frame payload started')
             stage_started_at = time.perf_counter()
-            write_reusable_stage3_art_state_sample_cache(debug_stem, stage3_art_state_samples)
+            write_reusable_stage3_art_state_sample_cache(
+                debug_stem,
+                stage3_art_state_samples,
+                scan_resolution_metadata=scan_resolution_metadata,
+            )
             elapsed_seconds = time.perf_counter() - stage_started_at
             stage_timings.append(
                 build_stage_timing_entry(
@@ -7562,6 +7701,7 @@ def detect_staged_activity_ranges(
                 f"Runtime Stage 1C - Writing reusable Stage 2B frame payload complete in {format_stage_elapsed(elapsed_seconds)} ({len(stage3_art_state_samples)} sampled frames)",
             )
     flush_debug_payload({
+        'scan_resolution': scan_resolution_metadata,
         'movement_evidence_records': serialized_records,
         'movement_spans': serialized_movement_spans,
         'candidate_unions': serialized_candidate_unions,
@@ -7584,6 +7724,7 @@ def detect_staged_activity_ranges(
     serialized_screened_candidate_unions = [serialize_screened_candidate_union(screened_union) for screened_union in screened_candidate_unions]
     serialized_stage3_screening_traces = [serialize_stage3_screening_trace(screened_union) for screened_union in screened_candidate_unions]
     flush_debug_payload({
+        'scan_resolution': scan_resolution_metadata,
         'movement_evidence_records': serialized_records,
         'movement_spans': serialized_movement_spans,
         'candidate_unions': serialized_candidate_unions,
@@ -7600,6 +7741,7 @@ def detect_staged_activity_ranges(
     emit_stage_status(status_callback, f"Runtime Stage 4 - Detecting probe-bands complete in {format_stage_elapsed(elapsed_seconds)} ({len(classified_time_slices)} probe-bands)")
     serialized_classified_time_slices = [serialize_classified_time_slice(time_slice) for time_slice in classified_time_slices]
     flush_debug_payload({
+        'scan_resolution': scan_resolution_metadata,
         'movement_evidence_records': serialized_records,
         'movement_spans': serialized_movement_spans,
         'candidate_unions': serialized_candidate_unions,
@@ -7650,6 +7792,7 @@ def detect_staged_activity_ranges(
         emit_stage_status(status_callback, f"- {stage_label}: {elapsed_hhmmss}{detail_suffix}")
 
     debug_payload: dict[str, object] = {
+        'scan_resolution': scan_resolution_metadata,
         'movement_evidence_records': serialized_records,
         'movement_spans': serialized_movement_spans,
         'candidate_unions': serialized_candidate_unions,
@@ -7673,6 +7816,11 @@ def build_staged_debug_output_path(debug_stem: Path, artifact_key: str, suffix: 
 def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, object]) -> dict[str, Path]:
     debug_stem.parent.mkdir(parents=True, exist_ok=True)
     output_paths: dict[str, Path] = {}
+    scan_resolution_metadata = (
+        debug_payload['scan_resolution']
+        if isinstance(debug_payload.get('scan_resolution'), dict)
+        else None
+    )
     for section_name, items in debug_payload.items():
         output_path = build_staged_debug_output_path(debug_stem, section_name, '.json')
         output_path.write_text(json.dumps(items, indent=2), encoding='utf-8')
@@ -7681,6 +7829,7 @@ def write_staged_debug_artifacts(debug_stem: Path, debug_payload: dict[str, obje
             output_paths['movement_evidence_records_cache'] = write_precomputed_movement_evidence_record_cache(
                 output_path,
                 items,
+                scan_resolution_metadata=scan_resolution_metadata,
             )
     reusable_sample_cache_path = build_staged_debug_output_path(debug_stem, 'reusable_stage3_art_state_samples', '.npz')
     if reusable_sample_cache_path.exists():

@@ -45,12 +45,14 @@ class CliRoutingTests(unittest.TestCase):
                 '--max-harvest', '00:01:00:00',
                 '--output-stem', 'out/sample',
                 '--precomputed-movement-evidence-json', 'out/movement_evidence.json',
+                '--scan-resolution', 'half',
                 '--use-legacy-detector',
                 '--staged-stage3-art-state-prototype',
             ]
         )
 
         self.assertEqual(args.precomputed_movement_evidence_json, Path('out/movement_evidence.json'))
+        self.assertEqual(args.scan_resolution, 'half')
         self.assertTrue(args.use_legacy_detector)
         self.assertTrue(args.staged_stage3_art_state_prototype)
 
@@ -70,6 +72,7 @@ class CliRoutingTests(unittest.TestCase):
         settings = build_settings(args)
 
         self.assertEqual(settings.sample_stride, 1)
+        self.assertEqual(settings.scan_resolution, 'full')
 
     def test_build_settings_preserves_explicit_nondefault_stride_for_v3_pipeline(self) -> None:
         parser = build_parser()
@@ -88,6 +91,24 @@ class CliRoutingTests(unittest.TestCase):
         settings = build_settings(args)
 
         self.assertEqual(settings.sample_stride, 2)
+
+    def test_build_settings_threads_scan_resolution(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                'sample.mp4',
+                '--chapter-start', '00:00:00:00',
+                '--chapter-end', '00:00:01:00',
+                '--min-harvest', '00:00:05:00',
+                '--max-harvest', '00:01:00:00',
+                '--output-stem', 'out/sample',
+                '--scan-resolution', 'quarter',
+            ]
+        )
+
+        settings = build_settings(args)
+
+        self.assertEqual(settings.scan_resolution, 'quarter')
 
     def test_run_uses_staged_detector_path_by_default(self) -> None:
         parser = build_parser()
@@ -115,6 +136,7 @@ class CliRoutingTests(unittest.TestCase):
                 patch('harvesting_tool.cli.build_candidate_clips', return_value=[make_clip()]) as build_clips_mock, \
                 patch('harvesting_tool.cli.write_cut_lists', return_value=(output_stem.with_suffix('.txt'), output_stem.with_suffix('.json'))) as write_cut_lists_mock, \
                 patch('harvesting_tool.cli.write_staged_debug_artifacts', return_value=fake_debug_paths) as write_staged_debug_mock, \
+                patch('harvesting_tool.cli.inspect_video_frame_dimensions', return_value=(1920, 1080)) as inspect_dimensions_mock, \
                 patch('harvesting_tool.cli.detect_candidate_clips') as legacy_detect_mock:
                 text_path, json_path, debug_paths, review_result = run(args)
 
@@ -131,6 +153,7 @@ class CliRoutingTests(unittest.TestCase):
         build_clips_mock.assert_called_once()
         write_cut_lists_mock.assert_called_once()
         write_staged_debug_mock.assert_called_once()
+        inspect_dimensions_mock.assert_called_once_with(args.video_path)
         legacy_detect_mock.assert_not_called()
         self.assertEqual(text_path, output_stem.with_suffix('.txt'))
         self.assertEqual(json_path, output_stem.with_suffix('.json'))

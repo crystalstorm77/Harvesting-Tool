@@ -2618,6 +2618,32 @@ class StagedDebugArtifactOutputTests(unittest.TestCase):
             self.assertEqual(loaded_from_cache[0]['canvas_shape'], stage3_samples[0]['canvas_shape'])
             self.assertTrue(np.array_equal(loaded_from_cache[0]['art_gray'], stage3_samples[0]['art_gray']))
 
+    def test_reusable_stage3_art_state_sample_cache_rejects_scan_resolution_mismatch(self) -> None:
+        stage3_samples = [make_stage3_art_state_sample(12, changed=True), make_stage3_art_state_sample(14)]
+        expected_metadata = {
+            'mode': 'half',
+            'analysis_canvas_height': 120,
+            'analysis_canvas_width': 120,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            debug_stem = Path(tmpdir) / 'Backpack'
+            write_reusable_stage3_art_state_sample_cache(
+                debug_stem,
+                stage3_samples,
+                scan_resolution_metadata={
+                    'mode': 'full',
+                    'analysis_canvas_height': 120,
+                    'analysis_canvas_width': 120,
+                },
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "scan resolution 'full'.*uses 'half'"):
+                load_reusable_stage3_art_state_sample_cache(
+                    debug_stem.with_name('Backpack - Stage 1C - Reusable Stage 2B Frame Payload.npz'),
+                    expected_scan_resolution_metadata=expected_metadata,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

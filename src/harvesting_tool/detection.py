@@ -56,6 +56,13 @@ ART_STATE_SUBWINDOW_STEP_FRAMES = FRAME_RATE // 2
 ART_STATE_UNSUPPORTED_STOP_WINDOWS = 2
 ART_STATE_RESTART_BLOCK_GAIN = 5
 ART_STATE_RESTART_RATIO_GAIN = 0.005
+DEFAULT_SCAN_RESOLUTION = "full"
+SCAN_RESOLUTION_DIVISORS = {
+    "full": 1,
+    "half": 2,
+    "quarter": 4,
+    "eighth": 8,
+}
 # ============================================================
 # SECTION B - Timecode And Clip Data Structures
 # ============================================================
@@ -156,6 +163,7 @@ class DetectorSettings:
     activity_threshold: float = 12.0
     active_pixel_ratio: float = 0.015
     min_burst_length: Timecode = Timecode(total_frames=15)
+    scan_resolution: str = DEFAULT_SCAN_RESOLUTION
 
     def __post_init__(self) -> None:
         if self.max_harvest.total_frames < self.min_harvest.total_frames:
@@ -168,6 +176,12 @@ class DetectorSettings:
             raise ValueError("Pause threshold must be non-negative.")
         if self.sample_stride <= 0:
             raise ValueError("Sample stride must be greater than zero.")
+        if self.scan_resolution not in SCAN_RESOLUTION_DIVISORS:
+            raise ValueError(
+                "Scan resolution must be one of: "
+                + ", ".join(SCAN_RESOLUTION_DIVISORS.keys())
+                + "."
+            )
 
 
 @dataclass(frozen=True)
@@ -201,6 +215,112 @@ class DetectionDebugBundle:
 # ============================================================
 # SECTION C - Chapter Parsing And Clip Serialization
 # ============================================================
+
+def get_scan_resolution_divisor(scan_resolution: str) -> int:
+    try:
+        return SCAN_RESOLUTION_DIVISORS[scan_resolution]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unsupported scan resolution '{scan_resolution}'. "
+            f"Expected one of: {', '.join(SCAN_RESOLUTION_DIVISORS.keys())}."
+        ) from exc
+
+
+def compute_scaled_dimensions(width: int, height: int, scan_resolution: str) -> tuple[int, int]:
+    divisor = get_scan_resolution_divisor(scan_resolution)
+    return max(1, width // divisor), max(1, height // divisor)
+
+
+def compute_canvas_bounds(frame_width: int, frame_height: int) -> tuple[int, int, int, int]:
+    left = int(frame_width * CANVAS_LEFT_RATIO)
+    right = int(frame_width * CANVAS_RIGHT_RATIO)
+    top = int(frame_height * CANVAS_TOP_RATIO)
+    bottom = int(frame_height * CANVAS_BOTTOM_RATIO)
+    return left, right, top, bottom
+
+
+def compute_canvas_dimensions_for_frame(frame_width: int, frame_height: int) -> tuple[int, int]:
+    left, right, top, bottom = compute_canvas_bounds(frame_width, frame_height)
+    return max(1, right - left), max(1, bottom - top)
+
+
+def build_scan_resolution_display_labels(frame_width: int, frame_height: int) -> dict[str, str]:
+    return {
+        mode: f"{width}x{height}"
+        for mode, (width, height) in (
+            (mode, compute_scaled_dimensions(frame_width, frame_height, mode))
+            for mode in SCAN_RESOLUTION_DIVISORS
+        )
+    }
+
+
+def build_scan_resolution_metadata(
+    frame_width: int,
+    frame_height: int,
+    settings: DetectorSettings,
+    analysis_canvas_shape: tuple[int, int] | None = None,
+) -> dict[str, object]:
+    selected_frame_width, selected_frame_height = compute_scaled_dimensions(
+        frame_width,
+        frame_height,
+        settings.scan_resolution,
+    )
+    source_canvas_width, source_canvas_height = compute_canvas_dimensions_for_frame(frame_width, frame_height)
+    if analysis_canvas_shape is None:
+        analysis_canvas_width, analysis_canvas_height = compute_scaled_dimensions(
+            source_canvas_width,
+            source_canvas_height,
+            settings.scan_resolution,
+        )
+    else:
+        analysis_canvas_height = int(analysis_canvas_shape[0])
+        analysis_canvas_width = int(analysis_canvas_shape[1])
+    return {
+        "mode": settings.scan_resolution,
+        "scale_divisor": get_scan_resolution_divisor(settings.scan_resolution),
+        "source_frame_width": frame_width,
+        "source_frame_height": frame_height,
+        "selected_frame_width": selected_frame_width,
+        "selected_frame_height": selected_frame_height,
+        "source_canvas_width": source_canvas_width,
+        "source_canvas_height": source_canvas_height,
+        "analysis_canvas_width": analysis_canvas_width,
+        "analysis_canvas_height": analysis_canvas_height,
+    }
+
+
+def inspect_video_frame_dimensions(video_path: Path) -> tuple[int, int]:
+    try:
+        import cv2  # type: ignore
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("OpenCV is required to inspect video dimensions.") from exc
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"Unable to open video file: {video_path}")
+    try:
+        frame_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    finally:
+        capture.release()
+    if frame_width <= 0 or frame_height <= 0:
+        raise RuntimeError(f"Unable to determine video dimensions: {video_path}")
+    return frame_width, frame_height
+
+
+def extract_canvas_region(frame, settings: DetectorSettings, cv2):
+    frame_height, frame_width = frame.shape[:2]
+    left, right, top, bottom = compute_canvas_bounds(frame_width, frame_height)
+    canvas_frame = frame[top:bottom, left:right]
+    gray = cv2.cvtColor(canvas_frame, cv2.COLOR_BGR2GRAY)
+    if settings.scan_resolution != DEFAULT_SCAN_RESOLUTION:
+        scaled_width, scaled_height = compute_scaled_dimensions(
+            gray.shape[1],
+            gray.shape[0],
+            settings.scan_resolution,
+        )
+        gray = cv2.resize(gray, (scaled_width, scaled_height), interpolation=cv2.INTER_AREA)
+    return cv2.GaussianBlur(gray, (3, 3), 0)
 
 def parse_chapter_range(start: str, end: str) -> ChapterRange:
     return ChapterRange(start=Timecode.from_hhmmssff(start), end=Timecode.from_hhmmssff(end))
@@ -244,6 +364,7 @@ def build_cut_list_payload(clips: Iterable[CandidateClip], settings: DetectorSet
             "pause_threshold": settings.pause_threshold.to_hhmmssff(),
             "lead_in": settings.lead_in.to_seconds_frames(),
             "tail_after": settings.tail_after.to_seconds_frames(),
+            "scan_resolution": settings.scan_resolution,
         },
         "actual": {
             "clip_count": len(clip_list),
@@ -1620,15 +1741,7 @@ def detect_movement_spans(
             )
 
             if ((current_frame - chapter_range.start.total_frames) % settings.sample_stride) == 0:
-                frame_height, frame_width = frame.shape[:2]
-                left = int(frame_width * CANVAS_LEFT_RATIO)
-                right = int(frame_width * CANVAS_RIGHT_RATIO)
-                top = int(frame_height * CANVAS_TOP_RATIO)
-                bottom = int(frame_height * CANVAS_BOTTOM_RATIO)
-                canvas_frame = frame[top:bottom, left:right]
-
-                gray = cv2.cvtColor(canvas_frame, cv2.COLOR_BGR2GRAY)
-                gray = cv2.GaussianBlur(gray, (3, 3), 0)
+                gray = extract_canvas_region(frame, settings, cv2)
                 sample = {
                     'frame_index': current_frame,
                     'gray': gray,

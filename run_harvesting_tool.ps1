@@ -18,6 +18,8 @@ param(
     [string]$OutputStem = "A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\hb_test_harvest",
     [string]$DebugStem = "A:\Desktop\Crap to Sort\Automation Projects\Harvesting Tool\Test footage\hb_test_harvest_debug",
     [int]$SampleStride = 1,
+    [ValidateSet("full", "half", "quarter", "eighth")]
+    [string]$ScanResolution = "full",
     [string]$PrecomputedMovementEvidenceJson = "",
     [double]$ActivityThreshold = 8.0,
     [double]$ActivePixelRatio = 0.0015,
@@ -44,6 +46,7 @@ Write-Host "Video: $VideoPath"
 Write-Host "Chapter: $ChapterStart -> $ChapterEnd"
 Write-Host "Output: $outputTextPath and $outputJsonPath"
 Write-Host "Debug: $DebugStem"
+Write-Host "Scan resolution: $ScanResolution"
 Write-Host "Resolve timeline name: $ResolveTimelineName"
 Write-Host "Use legacy detector: $UseLegacyDetector"
 Write-Host ""
@@ -70,6 +73,7 @@ $cliArgs = @(
     '--output-stem', $OutputStem,
     '--debug-stem', $DebugStem,
     '--sample-stride', $SampleStride,
+    '--scan-resolution', $ScanResolution,
     '--activity-threshold', $ActivityThreshold,
     '--active-pixel-ratio', $ActivePixelRatio,
     '--min-burst', $MinBurst

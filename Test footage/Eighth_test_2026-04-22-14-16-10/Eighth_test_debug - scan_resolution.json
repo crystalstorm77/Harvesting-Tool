@@ -1,0 +1,12 @@
+{
+  "mode": "eighth",
+  "scale_divisor": 8,
+  "source_frame_width": 3840,
+  "source_frame_height": 2160,
+  "selected_frame_width": 480,
+  "selected_frame_height": 270,
+  "source_canvas_width": 2590,
+  "source_canvas_height": 2026,
+  "analysis_canvas_width": 323,
+  "analysis_canvas_height": 253
+}
