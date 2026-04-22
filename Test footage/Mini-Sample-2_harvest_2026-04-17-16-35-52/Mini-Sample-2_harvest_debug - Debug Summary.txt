@@ -1,0 +1,93 @@
+Staged detector summary
+
+Movement evidence
+- Movement evidence records created: 1741
+
+Stage 1 - Movement spans
+- Movement spans created: 11
+
+Movement span ranges
+- Span 1: 00:00:00:14 to 00:00:08:05
+- Span 2: 00:00:10:25 to 00:00:17:27
+- Span 3: 00:00:18:01 to 00:00:19:22
+- Span 4: 00:00:20:05 to 00:00:21:05
+- Span 6: 00:00:21:15 to 00:00:23:04
+- Span 8: 00:00:23:20 to 00:00:25:02
+- Span 10: 00:00:25:17 to 00:00:26:12
+- Span 11: 00:00:26:15 to 00:00:27:10
+- Span 13: 00:00:28:05 to 00:00:37:04
+- Span 14: 00:00:38:27 to 00:00:44:29
+- Span 16: 00:00:51:01 to 00:00:55:15
+
+Stage 2 - Candidate unions
+- Candidate unions created: 4
+
+Candidate union ranges
+- Union 1: 00:00:00:14 to 00:00:08:05
+- Union 2: 00:00:10:25 to 00:00:37:04
+- Union 3: 00:00:38:27 to 00:00:44:29
+- Union 4: 00:00:51:01 to 00:00:55:15
+
+Stage 3 - Union screening
+- Candidate unions screened: 4
+- Survived: 3
+- Rejected: 1
+- Provisional survivals: 0
+
+Stage 4 - Probe-bands
+- Probe-bands created: 5
+- Valid: 5
+- Invalid: 0
+- Undetermined: 0
+
+Stage 5 - Local boundary refinement
+- Refined slices produced: 5
+- Valid: 5
+- Invalid: 0
+- Boundary: 0
+- Undetermined remaining after refinement: 0
+
+Stage 6 - Final retained ranges
+- Final retained ranges built from valid material: 5
+- Ranges that include boundary support: 0
+- Candidate clips produced: 5
+
+Runtime timings
+- Runtime Stage 1A - Scanning chapter for movement evidence: 00:00 (1741 items)
+- Runtime Stage 1B - Building movement spans: 00:00 (11 items)
+- Runtime Stage 2A - Building candidate unions: 00:00 (4 items)
+- Runtime Stage 2B - Collecting Stage 3 art-state samples: 00:47 (1742 items)
+- Runtime Stage 3A - Screening candidate unions: 05:38 (4 items)
+- Runtime Stage 4 - Detecting probe-bands: 02:29 (5 items)
+- Runtime Stage 5 - Running recursive refinement: 05:26 (5 items)
+- Runtime Stage 6 - Assembling final retained ranges: 00:00 (5 items)
+- Total staged detector time: 14:21
+
+Final retained ranges
+- Range 1: 00:00:00:14 to 00:00:08:05
+  Built from: valid only
+  Boundary slices attached: 0
+- Range 2: 00:00:12:20 to 00:00:13:00
+  Built from: valid only
+  Boundary slices attached: 0
+- Range 3: 00:00:18:19 to 00:00:25:00
+  Built from: valid only
+  Boundary slices attached: 0
+- Range 4: 00:00:28:20 to 00:00:37:04
+  Built from: valid only
+  Boundary slices attached: 0
+- Range 5: 00:00:42:22 to 00:00:44:29
+  Built from: valid only
+  Boundary slices attached: 0
+
+Candidate clips
+- Clip 1: 00:00:00:12 to 00:00:08:09
+  Activity inside clip: 00:00:00:14 to 00:00:08:05
+- Clip 2: 00:00:12:18 to 00:00:13:04
+  Activity inside clip: 00:00:12:20 to 00:00:13:00
+- Clip 3: 00:00:18:17 to 00:00:25:04
+  Activity inside clip: 00:00:18:19 to 00:00:25:00
+- Clip 4: 00:00:28:18 to 00:00:37:08
+  Activity inside clip: 00:00:28:20 to 00:00:37:04
+- Clip 5: 00:00:42:20 to 00:00:45:03
+  Activity inside clip: 00:00:42:22 to 00:00:44:29

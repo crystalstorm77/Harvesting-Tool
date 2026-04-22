@@ -1,0 +1,64 @@
+[
+  {
+    "stage_key": "runtime_stage_1a_movement_evidence",
+    "stage_label": "Runtime Stage 1A - Scanning chapter for movement evidence",
+    "elapsed_seconds": 0.073328,
+    "elapsed_hhmmss": "00:00",
+    "item_count": 1741
+  },
+  {
+    "stage_key": "runtime_stage_1b_movement_spans",
+    "stage_label": "Runtime Stage 1B - Building movement spans",
+    "elapsed_seconds": 0.00213,
+    "elapsed_hhmmss": "00:00",
+    "item_count": 11
+  },
+  {
+    "stage_key": "runtime_stage_2a_candidate_unions",
+    "stage_label": "Runtime Stage 2A - Building candidate unions",
+    "elapsed_seconds": 0.000614,
+    "elapsed_hhmmss": "00:00",
+    "item_count": 4
+  },
+  {
+    "stage_key": "runtime_stage_2b_art_state_samples",
+    "stage_label": "Runtime Stage 2B - Collecting Stage 3 art-state samples",
+    "elapsed_seconds": 47.13599,
+    "elapsed_hhmmss": "00:47",
+    "item_count": 1742
+  },
+  {
+    "stage_key": "runtime_stage_3a_union_screening",
+    "stage_label": "Runtime Stage 3A - Screening candidate unions",
+    "elapsed_seconds": 338.053642,
+    "elapsed_hhmmss": "05:38",
+    "item_count": 4
+  },
+  {
+    "stage_key": "runtime_stage_4_time_slice_classification",
+    "stage_label": "Runtime Stage 4 - Detecting probe-bands",
+    "elapsed_seconds": 149.341999,
+    "elapsed_hhmmss": "02:29",
+    "item_count": 5
+  },
+  {
+    "stage_key": "runtime_stage_5_recursive_refinement",
+    "stage_label": "Runtime Stage 5 - Running recursive refinement",
+    "elapsed_seconds": 326.247149,
+    "elapsed_hhmmss": "05:26",
+    "item_count": 5
+  },
+  {
+    "stage_key": "runtime_stage_6_final_ranges",
+    "stage_label": "Runtime Stage 6 - Assembling final retained ranges",
+    "elapsed_seconds": 0.000115,
+    "elapsed_hhmmss": "00:00",
+    "item_count": 5
+  },
+  {
+    "stage_key": "stage_total",
+    "stage_label": "Total staged detector time",
+    "elapsed_seconds": 861.285253,
+    "elapsed_hhmmss": "14:21"
+  }
+]

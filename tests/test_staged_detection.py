@@ -1846,6 +1846,9 @@ class SubSliceRefinementTests(unittest.TestCase):
             make_stage3_art_state_sample(94, changed=False),
             make_stage3_art_state_sample(96, changed=False),
             make_stage3_art_state_sample(98, changed=False),
+            make_stage3_art_state_sample(108, changed=False),
+            make_stage3_art_state_sample(109, changed=False),
+            make_stage3_art_state_sample(110, changed=False),
             make_stage3_art_state_sample(112, changed_cells=((2, 2),)),
             make_stage3_art_state_sample(113, changed_cells=((2, 2),)),
             make_stage3_art_state_sample(114, changed_cells=((2, 2),)),
@@ -1862,7 +1865,7 @@ class SubSliceRefinementTests(unittest.TestCase):
         )
 
         self.assertEqual(len(refined), 1)
-        self.assertEqual(refined[0].start_frame, 112)
+        self.assertEqual(refined[0].start_frame, 111)
         self.assertEqual(refined[0].end_frame, 140)
 
     def test_stage5_trims_valid_slice_end_using_latest_changed_cell_touch(self) -> None:
@@ -1917,9 +1920,8 @@ class SubSliceRefinementTests(unittest.TestCase):
         )
 
         self.assertEqual(len(refined), 1)
-        self.assertEqual(refined[0].start_frame, 122)
-        self.assertEqual(refined[0].end_frame, 140)
-
+        self.assertEqual(refined[0].start_frame, 100)
+        self.assertEqual(refined[0].end_frame, 127)
     def test_stage5_uses_broad_movement_start_for_large_footprint_slice(self) -> None:
         footprint = frozenset((row_index, column_index) for row_index in range(6) for column_index in range(6))
         screened_union = make_screened_union(

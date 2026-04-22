@@ -1,0 +1,253 @@
+{
+  "frame_rate": 30,
+  "requested": {
+    "min_harvest": "00:00:10:00",
+    "max_harvest": "00:05:00:00",
+    "min_clip_length": "00:00:00:15",
+    "max_clip_length": "00:10:00:00",
+    "pause_threshold": "00:00:05:00",
+    "lead_in": {
+      "seconds": 0,
+      "frames": 2
+    },
+    "tail_after": {
+      "seconds": 0,
+      "frames": 4
+    }
+  },
+  "actual": {
+    "clip_count": 12,
+    "harvested_duration": "00:01:28:14",
+    "met_minimum": true
+  },
+  "clips": [
+    {
+      "clip_index": 1,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:00:15:20",
+      "activity_end": "00:00:20:28",
+      "clip_start": "00:00:15:18",
+      "clip_end": "00:00:21:02",
+      "duration": "00:00:05:14",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    },
+    {
+      "clip_index": 2,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:00:26:01",
+      "activity_end": "00:00:26:16",
+      "clip_start": "00:00:25:29",
+      "clip_end": "00:00:26:20",
+      "duration": "00:00:00:21",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    },
+    {
+      "clip_index": 3,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:00:30:12",
+      "activity_end": "00:00:55:28",
+      "clip_start": "00:00:30:10",
+      "clip_end": "00:00:56:02",
+      "duration": "00:00:25:22",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    },
+    {
+      "clip_index": 4,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:01:16:21",
+      "activity_end": "00:01:27:00",
+      "clip_start": "00:01:16:19",
+      "clip_end": "00:01:27:04",
+      "duration": "00:00:10:15",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    },
+    {
+      "clip_index": 5,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:02:06:19",
+      "activity_end": "00:02:10:23",
+      "clip_start": "00:02:06:17",
+      "clip_end": "00:02:10:27",
+      "duration": "00:00:04:10",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    },
+    {
+      "clip_index": 6,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:02:13:13",
+      "activity_end": "00:02:18:26",
+      "clip_start": "00:02:13:11",
+      "clip_end": "00:02:19:00",
+      "duration": "00:00:05:19",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    },
+    {
+      "clip_index": 7,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:02:29:01",
+      "activity_end": "00:02:34:20",
+      "clip_start": "00:02:28:29",
+      "clip_end": "00:02:34:24",
+      "duration": "00:00:05:25",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    },
+    {
+      "clip_index": 8,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:02:37:10",
+      "activity_end": "00:02:44:17",
+      "clip_start": "00:02:37:08",
+      "clip_end": "00:02:44:21",
+      "duration": "00:00:07:13",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    },
+    {
+      "clip_index": 9,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:02:54:22",
+      "activity_end": "00:02:56:00",
+      "clip_start": "00:02:54:20",
+      "clip_end": "00:02:56:04",
+      "duration": "00:00:01:14",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    },
+    {
+      "clip_index": 10,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:03:01:02",
+      "activity_end": "00:03:04:05",
+      "clip_start": "00:03:01:00",
+      "clip_end": "00:03:04:09",
+      "duration": "00:00:03:09",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    },
+    {
+      "clip_index": 11,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:03:13:05",
+      "activity_end": "00:03:20:04",
+      "clip_start": "00:03:13:03",
+      "clip_end": "00:03:20:08",
+      "duration": "00:00:07:05",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    },
+    {
+      "clip_index": 12,
+      "source_path": "A:\\Desktop\\Crap to Sort\\Automation Projects\\Harvesting Tool\\Test footage\\Sample 2\\Sample 2.mp4",
+      "chapter_start": "00:00:00:00",
+      "chapter_end": "00:03:38:29",
+      "activity_start": "00:03:23:07",
+      "activity_end": "00:03:33:28",
+      "clip_start": "00:03:23:05",
+      "clip_end": "00:03:34:02",
+      "duration": "00:00:10:27",
+      "lead_in": {
+        "seconds": 0,
+        "frames": 2
+      },
+      "tail_after": {
+        "seconds": 0,
+        "frames": 4
+      }
+    }
+  ]
+}
